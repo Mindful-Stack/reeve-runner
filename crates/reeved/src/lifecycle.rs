@@ -49,7 +49,11 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the current process PID to `path`. Errors if the file already exists.
+/// Write the current process PID to `path`, truncating any existing file.
+///
+/// This function does NOT enforce single-instance semantics. Callers that
+/// need to refuse to start when another daemon is alive must check for a
+/// running owner via `read_pid_file` + `process_running` before calling this.
 pub fn write_pid_file(path: &Path) -> Result<()> {
     ensure_parent_dir(path)?;
     let pid = std::process::id();
