@@ -413,13 +413,28 @@ Append to `crates/reeve-protocol/src/lib.rs` `tests` module:
     #[test]
     fn rpc_response_with_result_omits_error_field() {
         let resp = RpcResponse {
-            id: 1,
+            id: Some(1),
             result: Some(serde_json::json!({"ok": true})),
             error: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"result\""));
         assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn rpc_response_with_no_id_omits_id_field() {
+        let resp = RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError {
+                code: RpcError::INVALID_PARAMS,
+                message: "bad".into(),
+            }),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("\"id\""));
+        assert!(json.contains("\"error\""));
     }
 
     #[test]
@@ -466,9 +481,12 @@ pub struct RpcRequest {
 /// A JSON-line RPC response from daemon → client.
 ///
 /// Exactly one of `result` or `error` is `Some` for any non-malformed response.
+/// `id` is `None` only when the daemon could not parse the request well
+/// enough to recover its id (e.g. malformed JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcResponse {
-    pub id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
