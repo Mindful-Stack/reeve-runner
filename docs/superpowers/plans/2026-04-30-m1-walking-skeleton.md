@@ -123,7 +123,9 @@ No containers, agents, or git plumbing yet.
 name = "reeve-protocol"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [dependencies]
 serde = { workspace = true }
@@ -146,7 +148,9 @@ thiserror = { workspace = true }
 name = "reeved"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "reeved"
@@ -162,7 +166,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
-nix = { version = "0.29", features = ["signal", "process"] }
+nix = { version = "0.29", features = ["signal", "process", "user"] }
 uuid = { version = "1.10", features = ["v4"] }
 ```
 
@@ -183,7 +187,9 @@ fn main() {
 name = "reeve"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "reeve"
