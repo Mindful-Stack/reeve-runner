@@ -180,4 +180,17 @@ mod tests {
         let conn = open(":memory:").unwrap();
         assert!(get_card(&conn, "missing").unwrap().is_none());
     }
+
+    #[test]
+    fn column_db_string_matches_serde_for_all_variants() {
+        // Pins the invariant that the DB column string (column_as_str /
+        // parse_column) stays in sync with the JSON wire format from
+        // #[serde(rename_all = "lowercase")] on Column.
+        for col in Column::ALL {
+            let db_str = column_as_str(col);
+            let json_str = serde_json::to_value(col).unwrap();
+            assert_eq!(serde_json::Value::String(db_str.into()), json_str);
+            assert_eq!(parse_column(db_str).unwrap(), col);
+        }
+    }
 }
