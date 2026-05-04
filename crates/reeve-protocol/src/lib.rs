@@ -51,6 +51,77 @@ pub struct Card {
     pub parent_id: Option<String>,
 }
 
+/// A JSON-line RPC request from client → daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcRequest {
+    pub id: u64,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
+/// A JSON-line RPC response from daemon → client.
+///
+/// Exactly one of `result` or `error` is `Some` for any non-malformed response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcResponse {
+    pub id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("rpc error {code}: {message}")]
+pub struct RpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+impl RpcError {
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    pub const INVALID_PARAMS: i32 = -32602;
+    pub const INTERNAL: i32 = -32603;
+    pub const NOT_FOUND: i32 = 404;
+}
+
+/// Parameters for the `ls` method.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LsParams {}
+
+/// Result for the `ls` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LsResult {
+    pub cards: Vec<Card>,
+}
+
+/// Parameters for the `new` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewParams {
+    pub household: String,
+    pub brief: String,
+    pub needs_heavy: bool,
+}
+
+/// Result for the `new` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewResult {
+    pub card: Card,
+}
+
+/// Parameters for the `mv` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MvParams {
+    pub id: String,
+    pub column: Column,
+}
+
+/// Result for the `mv` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MvResult {
+    pub card: Card,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +153,52 @@ mod tests {
         let json = serde_json::to_string(&card).unwrap();
         let back: Card = serde_json::from_str(&json).unwrap();
         assert_eq!(back, card);
+    }
+
+    #[test]
+    fn rpc_request_serializes_with_method_and_params() {
+        let req = RpcRequest {
+            id: 7,
+            method: "ls".into(),
+            params: serde_json::json!({}),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"id\":7"));
+        assert!(json.contains("\"method\":\"ls\""));
+    }
+
+    #[test]
+    fn rpc_response_with_result_omits_error_field() {
+        let resp = RpcResponse {
+            id: 1,
+            result: Some(serde_json::json!({"ok": true})),
+            error: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"result\""));
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn new_params_round_trip() {
+        let p = NewParams {
+            household: "myarchy".into(),
+            brief: "do the thing".into(),
+            needs_heavy: false,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: NewParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn mv_params_round_trip() {
+        let p = MvParams {
+            id: "abc".into(),
+            column: Column::Implementing,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: MvParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
     }
 }
