@@ -4,10 +4,6 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn runtime_dir() -> PathBuf {
-    reeve_protocol::paths::runtime_dir()
-}
-
 pub fn socket_path() -> PathBuf {
     reeve_protocol::paths::socket_path()
 }

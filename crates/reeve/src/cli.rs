@@ -125,10 +125,12 @@ fn print_cards(cards: &[Card]) {
         println!("(no cards)");
         return;
     }
-    println!("{:<36}  {:<14}  {:<12}  {}", "ID", "COLUMN", "HOUSEHOLD", "BRIEF");
+    println!("{:<36}  {:<14}  {:<12}  BRIEF", "ID", "COLUMN", "HOUSEHOLD");
     for card in cards {
-        let brief: String = if card.brief.len() > 60 {
-            format!("{}…", &card.brief[..59])
+        // Truncate by chars (not bytes) so multibyte UTF-8 in briefs is safe.
+        let brief: String = if card.brief.chars().count() > 60 {
+            let head: String = card.brief.chars().take(59).collect();
+            format!("{head}…")
         } else {
             card.brief.clone()
         };
