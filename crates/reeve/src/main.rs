@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod tui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,10 +15,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
-        None => {
-            eprintln!("TUI not implemented yet (M1 task 12)");
-            Ok(())
-        }
+        None => tui::run(),
         Some(cli::Command::Daemon(sub)) => cli::run_daemon(sub),
         Some(cmd) => {
             let runtime = tokio::runtime::Runtime::new()?;
