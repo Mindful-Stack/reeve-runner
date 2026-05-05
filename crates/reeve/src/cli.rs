@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use reeve_protocol::{Card, Column, LsResult, MvResult, NewResult, paths};
 use std::path::PathBuf;
+use std::process::Stdio;
 
 fn reeved_path() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("locate current_exe")?;
@@ -160,8 +161,6 @@ fn print_cards(cards: &[Card]) {
         );
     }
 }
-
-use std::process::Stdio;
 
 pub fn run_daemon(cmd: DaemonCommand) -> Result<()> {
     match cmd {
