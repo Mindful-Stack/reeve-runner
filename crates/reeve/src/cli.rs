@@ -58,18 +58,12 @@ pub enum DaemonCommand {
 }
 
 fn parse_column(s: &str) -> Result<Column, String> {
-    match s.to_lowercase().as_str() {
-        "backlog" => Ok(Column::Backlog),
-        "planning" => Ok(Column::Planning),
-        "implementing" => Ok(Column::Implementing),
-        "testing" => Ok(Column::Testing),
-        "review" => Ok(Column::Review),
-        "done" => Ok(Column::Done),
-        other => Err(format!(
-            "unknown column {other:?}; expected one of {:?}",
+    Column::from_wire_str(&s.to_lowercase()).ok_or_else(|| {
+        format!(
+            "unknown column {s:?}; expected one of {:?}",
             Column::ALL.iter().map(|c| c.label()).collect::<Vec<_>>()
-        )),
-    }
+        )
+    })
 }
 
 pub async fn run(cmd: Command) -> Result<()> {

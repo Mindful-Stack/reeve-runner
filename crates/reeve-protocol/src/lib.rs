@@ -36,6 +36,33 @@ impl Column {
             Column::Done => "Done",
         }
     }
+
+    /// Lowercase wire form, used by the JSON envelope (via serde rename),
+    /// the SQLite `column_` field, and the CLI `mv <id> <column>` argument
+    /// parser. The single source of truth for all three.
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Column::Backlog => "backlog",
+            Column::Planning => "planning",
+            Column::Implementing => "implementing",
+            Column::Testing => "testing",
+            Column::Review => "review",
+            Column::Done => "done",
+        }
+    }
+
+    /// Parse the lowercase wire form. Returns `None` for unknown values.
+    pub fn from_wire_str(s: &str) -> Option<Self> {
+        match s {
+            "backlog" => Some(Column::Backlog),
+            "planning" => Some(Column::Planning),
+            "implementing" => Some(Column::Implementing),
+            "testing" => Some(Column::Testing),
+            "review" => Some(Column::Review),
+            "done" => Some(Column::Done),
+            _ => None,
+        }
+    }
 }
 
 /// A card in the kanban — one feature's worth of work.
@@ -242,5 +269,26 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: MvParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn column_wire_str_round_trips_for_all_variants() {
+        for col in Column::ALL {
+            let wire = col.as_wire_str();
+            assert_eq!(Column::from_wire_str(wire), Some(col));
+            // Wire form must match the serde lowercase representation.
+            assert_eq!(
+                serde_json::to_value(col).unwrap(),
+                serde_json::Value::String(wire.into())
+            );
+        }
+    }
+
+    #[test]
+    fn column_from_wire_str_rejects_unknown() {
+        assert_eq!(Column::from_wire_str("nope"), None);
+        assert_eq!(Column::from_wire_str(""), None);
+        // Wire form is case-sensitive — uppercase is not accepted.
+        assert_eq!(Column::from_wire_str("Backlog"), None);
     }
 }

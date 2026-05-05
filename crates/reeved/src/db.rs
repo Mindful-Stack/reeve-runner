@@ -37,7 +37,7 @@ pub fn insert_card(conn: &Connection, card: &Card) -> Result<()> {
             card.id,
             card.household,
             card.brief,
-            column_as_str(card.column),
+            card.column.as_wire_str(),
             card.created_at,
             card.updated_at,
             card.needs_heavy as i64,
@@ -69,7 +69,7 @@ pub fn get_card(conn: &Connection, id: &str) -> Result<Option<Card>> {
 pub fn update_card_column(conn: &Connection, id: &str, column: Column, now: i64) -> Result<Option<Card>> {
     let updated = conn.execute(
         "UPDATE cards SET column_ = ?1, updated_at = ?2 WHERE id = ?3",
-        params![column_as_str(column), now, id],
+        params![column.as_wire_str(), now, id],
     )?;
     if updated == 0 {
         return Ok(None);
@@ -79,8 +79,12 @@ pub fn update_card_column(conn: &Connection, id: &str, column: Column, now: i64)
 
 fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
     let column_str: String = row.get(3)?;
-    let column = parse_column(&column_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    let column = Column::from_wire_str(&column_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(InvalidColumn(column_str.clone())),
+        )
     })?;
     Ok(Card {
         id: row.get(0)?,
@@ -94,32 +98,9 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
     })
 }
 
-fn column_as_str(column: Column) -> &'static str {
-    match column {
-        Column::Backlog => "backlog",
-        Column::Planning => "planning",
-        Column::Implementing => "implementing",
-        Column::Testing => "testing",
-        Column::Review => "review",
-        Column::Done => "done",
-    }
-}
-
-fn parse_column(s: &str) -> Result<Column, ParseColumnError> {
-    match s {
-        "backlog" => Ok(Column::Backlog),
-        "planning" => Ok(Column::Planning),
-        "implementing" => Ok(Column::Implementing),
-        "testing" => Ok(Column::Testing),
-        "review" => Ok(Column::Review),
-        "done" => Ok(Column::Done),
-        _ => Err(ParseColumnError(s.to_owned())),
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("invalid column value: {0}")]
-struct ParseColumnError(String);
+struct InvalidColumn(String);
 
 #[cfg(test)]
 mod tests {
@@ -182,15 +163,27 @@ mod tests {
     }
 
     #[test]
-    fn column_db_string_matches_serde_for_all_variants() {
-        // Pins the invariant that the DB column string (column_as_str /
-        // parse_column) stays in sync with the JSON wire format from
-        // #[serde(rename_all = "lowercase")] on Column.
-        for col in Column::ALL {
-            let db_str = column_as_str(col);
-            let json_str = serde_json::to_value(col).unwrap();
-            assert_eq!(serde_json::Value::String(db_str.into()), json_str);
-            assert_eq!(parse_column(db_str).unwrap(), col);
+    fn db_round_trips_every_column_variant() {
+        // Every Column variant must survive insert + list. This catches a
+        // typo in either as_wire_str or from_wire_str (and both live in
+        // reeve-protocol now), and exercises the row-decoding error path
+        // by going through the real SQL.
+        let conn = open(":memory:").unwrap();
+        for (i, col) in Column::ALL.into_iter().enumerate() {
+            let card = Card {
+                id: format!("card-{i}"),
+                household: "myarchy".into(),
+                brief: "x".into(),
+                column: col,
+                created_at: 1000,
+                updated_at: 1000,
+                needs_heavy: false,
+                parent_id: None,
+            };
+            insert_card(&conn, &card).unwrap();
         }
+        let cards = list_cards(&conn).unwrap();
+        let columns: Vec<Column> = cards.iter().map(|c| c.column).collect();
+        assert_eq!(columns, Column::ALL.to_vec());
     }
 }
