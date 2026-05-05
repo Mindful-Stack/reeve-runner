@@ -2431,8 +2431,12 @@ use std::thread::sleep;
 use std::time::Duration;
 
 fn target_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR is tests/ — one level below the workspace root.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set under cargo");
-    PathBuf::from(manifest).join("target/debug")
+    PathBuf::from(manifest)
+        .parent()
+        .expect("tests/ has a parent")
+        .join("target/debug")
 }
 
 fn build_workspace() {

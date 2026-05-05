@@ -4,9 +4,25 @@
 //! verifies metadata round-trips correctly, and shuts the daemon down cleanly.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
+
+/// SIGTERMs and waits on the daemon child even if the test panics.
+/// Without this, an `assert!` failure leaks `reeved` and the next test
+/// run finds an orphan owning $XDG_RUNTIME_DIR/reeved.sock.
+struct DaemonGuard(Child);
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(self.0.id() as i32),
+            nix::sys::signal::SIGTERM,
+        );
+        // server.rs has its own 5s shutdown grace; we trust that here.
+        let _ = self.0.wait();
+    }
+}
 
 fn target_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is tests/ — one level below the workspace root.
@@ -51,12 +67,15 @@ fn m1_walking_skeleton_round_trip() {
     let temp = tempfile::tempdir().unwrap();
     let env = isolated_env(temp.path());
 
-    // Start daemon as a child we control directly.
-    let mut daemon = cmd("reeved", &env)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn reeved");
+    // Start daemon as a child we control directly. Wrap in a guard so
+    // an assertion panic still tears the daemon down.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
 
     // Wait for socket.
     let socket = temp.path().join("reeved.sock");
@@ -109,11 +128,5 @@ fn m1_walking_skeleton_round_trip() {
     let stdout = String::from_utf8(out_ls2.stdout).unwrap();
     assert!(stdout.contains("Implementing"), "expected column updated: {stdout}");
 
-    // SIGTERM the daemon and wait briefly.
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(daemon.id() as i32),
-        nix::sys::signal::SIGTERM,
-    )
-    .unwrap();
-    let _ = daemon.wait();
+    // DaemonGuard's Drop handles SIGTERM + wait.
 }
