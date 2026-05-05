@@ -125,6 +125,30 @@ pub struct MvResult {
     pub card: Card,
 }
 
+/// Shared runtime-directory helpers (used by both the daemon and clients).
+pub mod paths {
+    use std::path::PathBuf;
+
+    /// Returns the runtime directory used for sockets and pid files.
+    pub fn runtime_dir() -> PathBuf {
+        if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
+        let uid = nix::unistd::Uid::current().as_raw();
+        PathBuf::from(format!("/tmp/reeve-{uid}"))
+    }
+
+    pub fn socket_path() -> PathBuf {
+        runtime_dir().join("reeved.sock")
+    }
+
+    pub fn pid_path() -> PathBuf {
+        runtime_dir().join("reeved.pid")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

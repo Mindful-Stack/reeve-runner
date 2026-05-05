@@ -4,16 +4,16 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Returns the directory the daemon uses for runtime files.
-/// Prefers `$XDG_RUNTIME_DIR`; falls back to `/tmp` with the user's UID embedded.
 pub fn runtime_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    let uid = nix::unistd::Uid::current().as_raw();
-    PathBuf::from(format!("/tmp/reeve-{uid}"))
+    reeve_protocol::paths::runtime_dir()
+}
+
+pub fn socket_path() -> PathBuf {
+    reeve_protocol::paths::socket_path()
+}
+
+pub fn pid_path() -> PathBuf {
+    reeve_protocol::paths::pid_path()
 }
 
 /// Returns the directory for persistent daemon state (DB, etc.).
@@ -26,14 +26,6 @@ pub fn data_dir() -> Result<PathBuf> {
     }
     let home = std::env::var("HOME").context("$HOME not set")?;
     Ok(PathBuf::from(home).join(".local/share/reeve"))
-}
-
-pub fn socket_path() -> PathBuf {
-    runtime_dir().join("reeved.sock")
-}
-
-pub fn pid_path() -> PathBuf {
-    runtime_dir().join("reeved.pid")
 }
 
 pub fn db_path() -> Result<PathBuf> {

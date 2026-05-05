@@ -1,5 +1,30 @@
+mod cli;
 mod client;
 
-fn main() {
-    println!("reeve placeholder");
+use anyhow::Result;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(name = "reeve", version, about = "Reeve TUI orchestrator")]
+struct Args {
+    #[command(subcommand)]
+    command: Option<cli::Command>,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    match args.command {
+        None => {
+            eprintln!("TUI not implemented yet (M1 task 12)");
+            Ok(())
+        }
+        Some(cli::Command::Daemon(_sub)) => {
+            eprintln!("daemon subcommand not implemented yet (M1 task 11)");
+            Ok(())
+        }
+        Some(cmd) => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(cli::run(cmd))
+        }
+    }
 }
