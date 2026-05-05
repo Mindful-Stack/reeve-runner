@@ -166,11 +166,9 @@ pub fn run_daemon(cmd: DaemonCommand) -> Result<()> {
 
 fn start() -> Result<()> {
     let pid_path = paths::pid_path();
-    if let Ok(content) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = content.trim().parse::<i32>() {
-            if process_running(pid as u32) {
-                anyhow::bail!("daemon already running as PID {pid}");
-            }
+    if let Ok(Some(pid)) = reeve_protocol::lifecycle::read_pid_file(&pid_path) {
+        if reeve_protocol::lifecycle::process_running(pid) {
+            anyhow::bail!("daemon already running as PID {pid}");
         }
     }
 
@@ -182,11 +180,13 @@ fn start() -> Result<()> {
         .spawn()
         .with_context(|| format!("spawn {}", reeved.display()))?;
 
-    // Give the daemon a moment to write its pid file.
+    // Give the daemon a moment to write its pid file. Accept either the
+    // child we just spawned or any other live PID — concurrent `daemon
+    // start` invocations may race, and the survivor is fine to report.
     let started_at = std::time::Instant::now();
     while started_at.elapsed() < std::time::Duration::from_secs(2) {
-        if let Some(pid) = read_pid_from(&pid_path)? {
-            if pid == child.id() {
+        if let Some(pid) = reeve_protocol::lifecycle::read_pid_file(&pid_path)? {
+            if pid == child.id() || reeve_protocol::lifecycle::process_running(pid) {
                 println!("daemon started (PID {pid})");
                 return Ok(());
             }
@@ -198,7 +198,7 @@ fn start() -> Result<()> {
 
 fn stop() -> Result<()> {
     let pid_path = paths::pid_path();
-    let pid = read_pid_from(&pid_path)?
+    let pid = reeve_protocol::lifecycle::read_pid_file(&pid_path)?
         .context("daemon not running (no pid file)")?;
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(pid as i32),
@@ -206,10 +206,10 @@ fn stop() -> Result<()> {
     )
     .with_context(|| format!("send SIGTERM to PID {pid}"))?;
 
-    // Wait up to 5s for the process to exit.
+    // Wait up to 5s for the process to exit (matches server.rs SHUTDOWN_GRACE).
     let started_at = std::time::Instant::now();
     while started_at.elapsed() < std::time::Duration::from_secs(5) {
-        if !process_running(pid) {
+        if !reeve_protocol::lifecycle::process_running(pid) {
             println!("daemon stopped (was PID {pid})");
             return Ok(());
         }
@@ -220,8 +220,8 @@ fn stop() -> Result<()> {
 
 fn status() -> Result<()> {
     let pid_path = paths::pid_path();
-    match read_pid_from(&pid_path)? {
-        Some(pid) if process_running(pid) => {
+    match reeve_protocol::lifecycle::read_pid_file(&pid_path)? {
+        Some(pid) if reeve_protocol::lifecycle::process_running(pid) => {
             println!("running (PID {pid})");
             Ok(())
         }
@@ -234,16 +234,4 @@ fn status() -> Result<()> {
             Ok(())
         }
     }
-}
-
-fn read_pid_from(path: &std::path::Path) -> Result<Option<u32>> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Some(s.trim().parse::<u32>()?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::Error::from(e)),
-    }
-}
-
-fn process_running(pid: u32) -> bool {
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
 }

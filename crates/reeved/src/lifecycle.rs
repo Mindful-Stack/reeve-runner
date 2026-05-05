@@ -1,16 +1,15 @@
-//! Daemon lifecycle helpers: path resolution, PID file management.
+//! Daemon lifecycle helpers: data-dir resolution. PID-file and
+//! process-liveness helpers (and the path resolvers) live in
+//! `reeve_protocol` so the user binary can share them.
 
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn socket_path() -> PathBuf {
-    reeve_protocol::paths::socket_path()
-}
-
-pub fn pid_path() -> PathBuf {
-    reeve_protocol::paths::pid_path()
-}
+pub use reeve_protocol::lifecycle::{
+    process_running, read_pid_file, remove_pid_file, write_pid_file,
+};
+pub use reeve_protocol::paths::{pid_path, socket_path};
 
 /// Returns the directory for persistent daemon state (DB, etc.).
 /// Prefers `$XDG_DATA_HOME/reeve`; falls back to `$HOME/.local/share/reeve`.
@@ -35,80 +34,4 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("create dir {}", parent.display()))?;
     }
     Ok(())
-}
-
-/// Write the current process PID to `path`, truncating any existing file.
-///
-/// This function does NOT enforce single-instance semantics. Callers that
-/// need to refuse to start when another daemon is alive must check for a
-/// running owner via `read_pid_file` + `process_running` before calling this.
-pub fn write_pid_file(path: &Path) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let pid = std::process::id();
-    let content = format!("{pid}\n");
-    fs::write(path, content).with_context(|| format!("write pid file {}", path.display()))?;
-    Ok(())
-}
-
-/// Remove a PID file, ignoring NotFound.
-pub fn remove_pid_file(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(anyhow::Error::from(e).context(format!("remove pid file {}", path.display()))),
-    }
-}
-
-/// Read the PID from a PID file, returning `Ok(None)` if it doesn't exist.
-pub fn read_pid_file(path: &Path) -> Result<Option<u32>> {
-    match fs::read_to_string(path) {
-        Ok(s) => {
-            let trimmed = s.trim();
-            let pid: u32 = trimmed.parse()
-                .with_context(|| format!("parse pid from {}: {trimmed:?}", path.display()))?;
-            Ok(Some(pid))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::Error::from(e).context(format!("read pid file {}", path.display()))),
-    }
-}
-
-/// Returns true if a process with the given PID is running.
-pub fn process_running(pid: u32) -> bool {
-    use nix::sys::signal;
-    use nix::unistd::Pid;
-    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn pid_file_round_trip() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("reeved.pid");
-
-        assert_eq!(read_pid_file(&path).unwrap(), None);
-        write_pid_file(&path).unwrap();
-        let pid = read_pid_file(&path).unwrap().unwrap();
-        assert_eq!(pid, std::process::id());
-        remove_pid_file(&path).unwrap();
-        assert_eq!(read_pid_file(&path).unwrap(), None);
-    }
-
-    #[test]
-    fn remove_pid_file_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("missing.pid");
-        remove_pid_file(&path).unwrap();
-        remove_pid_file(&path).unwrap();
-    }
-
-    #[test]
-    fn process_running_for_self_returns_true() {
-        let pid = std::process::id();
-        assert!(process_running(pid));
-    }
 }

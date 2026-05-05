@@ -176,6 +176,98 @@ pub mod paths {
     }
 }
 
+/// PID-file management and process-liveness checks shared between the
+/// daemon's startup precheck and the user binary's `daemon start/stop/status`.
+///
+/// These return `std::io::Result` rather than `anyhow::Result` to keep the
+/// protocol crate dep-light. Callers that want richer error context wrap
+/// with `anyhow::Context` at the call site.
+pub mod lifecycle {
+    use std::fs;
+    use std::io;
+    use std::path::Path;
+
+    /// Write the current process's PID to `path`, truncating any existing file.
+    /// Creates the parent directory if needed. Does NOT enforce single-instance
+    /// semantics — callers must check `read_pid_file` + `process_running` first.
+    pub fn write_pid_file(path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, format!("{}\n", std::process::id()))
+    }
+
+    /// Remove a PID file, treating NotFound as success.
+    pub fn remove_pid_file(path: &Path) -> io::Result<()> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read the PID from `path`, returning `Ok(None)` if the file doesn't exist.
+    /// Returns an `InvalidData` error if the contents don't parse.
+    pub fn read_pid_file(path: &Path) -> io::Result<Option<u32>> {
+        match fs::read_to_string(path) {
+            Ok(s) => s
+                .trim()
+                .parse::<u32>()
+                .map(Some)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Returns true if a process with the given PID is alive.
+    /// Uses `kill(pid, 0)` — works for the same-uid case Reeve operates in.
+    pub fn process_running(pid: u32) -> bool {
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tempfile::tempdir;
+
+        #[test]
+        fn pid_file_round_trip() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("reeved.pid");
+
+            assert_eq!(read_pid_file(&path).unwrap(), None);
+            write_pid_file(&path).unwrap();
+            let pid = read_pid_file(&path).unwrap().unwrap();
+            assert_eq!(pid, std::process::id());
+            remove_pid_file(&path).unwrap();
+            assert_eq!(read_pid_file(&path).unwrap(), None);
+        }
+
+        #[test]
+        fn remove_pid_file_is_idempotent() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("missing.pid");
+            remove_pid_file(&path).unwrap();
+            remove_pid_file(&path).unwrap();
+        }
+
+        #[test]
+        fn read_pid_file_rejects_garbage() {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("bad.pid");
+            std::fs::write(&path, "not a pid").unwrap();
+            let err = read_pid_file(&path).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
+
+        #[test]
+        fn process_running_for_self_returns_true() {
+            assert!(process_running(std::process::id()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
