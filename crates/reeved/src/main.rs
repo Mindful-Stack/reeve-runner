@@ -4,10 +4,11 @@ mod lifecycle;
 mod server;
 
 use anyhow::{Context, Result};
+use nix::sys::stat::Mode;
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
-use tracing::info;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,6 +18,12 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "reeved=info".into()),
         )
         .init();
+
+    // Mask group/other on every file we create from here on. The Unix socket,
+    // pid file, and runtime/data directories are all per-user; nobody else
+    // should have access. Without this, the /tmp fallback in lifecycle::runtime_dir
+    // would inherit the ambient umask and could leak the socket world-readable.
+    nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
 
     let socket_path = lifecycle::socket_path();
     let pid_path = lifecycle::pid_path();
@@ -49,8 +56,10 @@ async fn main() -> Result<()> {
 
     let result = server::run(&socket_path, db, shutdown_rx, handlers::dispatch).await;
 
-    lifecycle::remove_pid_file(&pid_path)?;
-    info!("reeved stopped");
+    if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
+        warn!("failed to remove pid file on shutdown: {e:#}");
+    }
+    info!(socket = %socket_path.display(), "reeved stopped");
     result
 }
 

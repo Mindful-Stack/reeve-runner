@@ -48,6 +48,14 @@ where
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("bind {}", socket_path.display()))?;
 
+    // Restrict the socket to user-only access regardless of inherited umask
+    // or the host's $XDG_RUNTIME_DIR mode. Combined with the umask(0o077)
+    // call in main.rs, this makes the daemon socket the trust boundary for
+    // in-container `reeve` calls (per the design spec).
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod 0600 {}", socket_path.display()))?;
+
     let mut connections: JoinSet<()> = JoinSet::new();
 
     loop {
@@ -100,9 +108,10 @@ where
 {
     let (read, mut write) = stream.into_split();
     // SECURITY: BufReader::lines() has no per-line size cap. v1 accepts this
-    // because the socket lives under $XDG_RUNTIME_DIR with user-only permissions
-    // (Task 8 sets the mode), so the worst case is the user DoS'ing themselves.
-    // If permissions ever widen, switch to a length-prefixed framing.
+    // because the socket is chmod'd to 0600 by `run()` immediately after bind
+    // (and main.rs sets umask 0077), so only the daemon's user can connect.
+    // Worst case is the user DoS'ing themselves. If socket permissions ever
+    // widen, switch to a length-prefixed framing first.
     let mut lines = BufReader::new(read).lines();
 
     while let Some(line) = lines.next_line().await? {
