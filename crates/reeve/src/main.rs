@@ -18,10 +18,7 @@ fn main() -> Result<()> {
             eprintln!("TUI not implemented yet (M1 task 12)");
             Ok(())
         }
-        Some(cli::Command::Daemon(_sub)) => {
-            eprintln!("daemon subcommand not implemented yet (M1 task 11)");
-            Ok(())
-        }
+        Some(cli::Command::Daemon(sub)) => cli::run_daemon(sub),
         Some(cmd) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(cli::run(cmd))
