@@ -113,6 +113,7 @@ impl RpcError {
     pub const INVALID_PARAMS: i32 = -32602;
     pub const INTERNAL: i32 = -32603;
     pub const NOT_FOUND: i32 = 404;
+    pub const FORBIDDEN: i32 = 403;
 }
 
 /// Parameters for the `ls` method.
@@ -152,6 +153,61 @@ pub struct MvResult {
     pub card: Card,
 }
 
+/// Lifecycle state of a card's container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerStatus {
+    Spawning,
+    Running,
+    Stopped,
+    Failed,
+}
+
+impl ContainerStatus {
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            ContainerStatus::Spawning => "spawning",
+            ContainerStatus::Running => "running",
+            ContainerStatus::Stopped => "stopped",
+            ContainerStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_wire_str(s: &str) -> Option<Self> {
+        match s {
+            "spawning" => Some(ContainerStatus::Spawning),
+            "running" => Some(ContainerStatus::Running),
+            "stopped" => Some(ContainerStatus::Stopped),
+            "failed" => Some(ContainerStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// Parameters for the `mv-self` method. The card-id is implicit
+/// from the per-card socket the request arrives on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MvSelfParams {
+    pub column: Column,
+}
+
+/// Result for the `mv-self` method. Returns the updated card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MvSelfResult {
+    pub card: Card,
+}
+
+/// Parameters for the `status-self` method.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusSelfParams {}
+
+/// Result for the `status-self` method.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusSelfResult {
+    pub card: Card,
+    pub container_status: Option<ContainerStatus>,
+}
+
 /// Shared runtime-directory helpers (used by both the daemon and clients).
 pub mod paths {
     use std::path::PathBuf;
@@ -173,6 +229,32 @@ pub mod paths {
 
     pub fn pid_path() -> PathBuf {
         runtime_dir().join("reeved.pid")
+    }
+
+    /// Directory that holds per-card socket files. One file per active card.
+    pub fn cards_socket_dir() -> PathBuf {
+        runtime_dir().join("reeve/cards")
+    }
+
+    /// Socket path the daemon binds for a given card. The same path is
+    /// bind-mounted into the card's container at /var/run/reeved.sock.
+    pub fn card_socket_path(card_id: &str) -> PathBuf {
+        cards_socket_dir().join(format!("{card_id}.sock"))
+    }
+
+    /// In-container socket the agent's `reeve` CLI sees after mount.
+    pub const IN_CONTAINER_SOCKET: &str = "/var/run/reeved.sock";
+
+    /// Pick the socket path a `reeve` CLI process should connect to.
+    /// In-container processes find the mounted socket at `IN_CONTAINER_SOCKET`;
+    /// host processes fall back to the daemon's host socket.
+    pub fn detect_socket() -> PathBuf {
+        let in_container = std::path::Path::new(IN_CONTAINER_SOCKET);
+        if in_container.exists() {
+            in_container.to_path_buf()
+        } else {
+            socket_path()
+        }
     }
 }
 
@@ -382,5 +464,57 @@ mod tests {
         assert_eq!(Column::from_wire_str(""), None);
         // Wire form is case-sensitive — uppercase is not accepted.
         assert_eq!(Column::from_wire_str("Backlog"), None);
+    }
+
+    #[test]
+    fn mv_self_params_serialize_with_just_column() {
+        let p = MvSelfParams { column: Column::Review };
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(json, "{\"column\":\"review\"}");
+    }
+
+    #[test]
+    fn status_self_result_round_trip() {
+        let card = Card {
+            id: "x".into(),
+            household: "h".into(),
+            brief: "b".into(),
+            column: Column::Implementing,
+            created_at: 1,
+            updated_at: 1,
+            needs_heavy: false,
+            parent_id: None,
+        };
+        let r = StatusSelfResult {
+            card: card.clone(),
+            container_status: Some(ContainerStatus::Running),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: StatusSelfResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn container_status_serializes_to_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ContainerStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ContainerStatus>("\"failed\"").unwrap(),
+            ContainerStatus::Failed
+        );
+    }
+
+    #[test]
+    fn forbidden_code_is_403() {
+        assert_eq!(RpcError::FORBIDDEN, 403);
+    }
+
+    #[test]
+    fn card_socket_path_lives_under_cards_socket_dir() {
+        let p = paths::card_socket_path("abc-123");
+        assert!(p.ends_with("reeve/cards/abc-123.sock"));
+        assert_eq!(p.parent().unwrap(), paths::cards_socket_dir());
     }
 }
