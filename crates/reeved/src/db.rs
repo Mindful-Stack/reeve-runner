@@ -1,7 +1,7 @@
 //! SQLite-backed card storage.
 
 use anyhow::{Context, Result};
-use reeve_protocol::{Card, Column};
+use reeve_protocol::{Card, Column, ContainerStatus};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Open a SQLite connection at `path` and run any pending migrations.
@@ -24,7 +24,18 @@ fn migrate(conn: &Connection) -> Result<()> {
             needs_heavy INTEGER NOT NULL DEFAULT 0,
             parent_id   TEXT
          );
-         CREATE INDEX IF NOT EXISTS idx_cards_column ON cards(column_);",
+         CREATE INDEX IF NOT EXISTS idx_cards_column ON cards(column_);
+
+         CREATE TABLE IF NOT EXISTS containers (
+            card_id        TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+            container_name TEXT NOT NULL,
+            status         TEXT NOT NULL CHECK (status IN ('spawning','running','stopped','failed')),
+            started_at     INTEGER NOT NULL,
+            updated_at     INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_containers_status ON containers(status);
+
+         PRAGMA foreign_keys = ON;",
     )?;
     Ok(())
 }
@@ -76,6 +87,96 @@ pub fn update_card_column(conn: &Connection, id: &str, column: Column, now: i64)
     }
     get_card(conn, id)
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRow {
+    pub card_id: String,
+    pub container_name: String,
+    pub status: ContainerStatus,
+    pub started_at: i64,
+    pub updated_at: i64,
+}
+
+pub fn upsert_container(
+    conn: &Connection,
+    card_id: &str,
+    container_name: &str,
+    status: ContainerStatus,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO containers (card_id, container_name, status, started_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT(card_id) DO UPDATE SET
+            container_name = excluded.container_name,
+            status         = excluded.status,
+            updated_at     = excluded.updated_at",
+        params![card_id, container_name, status.as_wire_str(), now],
+    )?;
+    Ok(())
+}
+
+pub fn update_container_status(
+    conn: &Connection,
+    card_id: &str,
+    status: ContainerStatus,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE containers SET status = ?1, updated_at = ?2 WHERE card_id = ?3",
+        params![status.as_wire_str(), now, card_id],
+    )?;
+    Ok(())
+}
+
+pub fn get_container(conn: &Connection, card_id: &str) -> Result<Option<ContainerRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT card_id, container_name, status, started_at, updated_at
+         FROM containers WHERE card_id = ?1",
+    )?;
+    let row = stmt.query_row(params![card_id], row_to_container).optional()?;
+    Ok(row)
+}
+
+pub fn list_containers_by_status(
+    conn: &Connection,
+    status: ContainerStatus,
+) -> Result<Vec<ContainerRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT card_id, container_name, status, started_at, updated_at
+         FROM containers WHERE status = ?1",
+    )?;
+    let rows = stmt.query_map(params![status.as_wire_str()], row_to_container)?;
+    let result: Result<Vec<_>, _> = rows.collect();
+    Ok(result?)
+}
+
+pub fn remove_container(conn: &Connection, card_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM containers WHERE card_id = ?1", params![card_id])?;
+    Ok(())
+}
+
+fn row_to_container(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerRow> {
+    let status_str: String = row.get(2)?;
+    let status = ContainerStatus::from_wire_str(&status_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(InvalidContainerStatus(status_str.clone())),
+        )
+    })?;
+    Ok(ContainerRow {
+        card_id: row.get(0)?,
+        container_name: row.get(1)?,
+        status,
+        started_at: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid container status: {0}")]
+struct InvalidContainerStatus(String);
 
 fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
     let column_str: String = row.get(3)?;
@@ -185,5 +286,57 @@ mod tests {
         let cards = list_cards(&conn).unwrap();
         let columns: Vec<Column> = cards.iter().map(|c| c.column).collect();
         assert_eq!(columns, Column::ALL.to_vec());
+    }
+
+    #[test]
+    fn upsert_then_get_container_round_trip() {
+        let conn = open(":memory:").unwrap();
+        insert_card(&conn, &sample_card("c1")).unwrap();
+        upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Spawning, 1000).unwrap();
+        let row = get_container(&conn, "c1").unwrap().unwrap();
+        assert_eq!(row.container_name, "reeve-c1");
+        assert_eq!(row.status, ContainerStatus::Spawning);
+        assert_eq!(row.started_at, 1000);
+    }
+
+    #[test]
+    fn update_container_status_changes_status_and_updated_at() {
+        let conn = open(":memory:").unwrap();
+        insert_card(&conn, &sample_card("c1")).unwrap();
+        upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Spawning, 1000).unwrap();
+        update_container_status(&conn, "c1", ContainerStatus::Running, 2000).unwrap();
+        let row = get_container(&conn, "c1").unwrap().unwrap();
+        assert_eq!(row.status, ContainerStatus::Running);
+        assert_eq!(row.updated_at, 2000);
+    }
+
+    #[test]
+    fn list_containers_by_status_filters() {
+        let conn = open(":memory:").unwrap();
+        insert_card(&conn, &sample_card("a")).unwrap();
+        insert_card(&conn, &sample_card("b")).unwrap();
+        upsert_container(&conn, "a", "reeve-a", ContainerStatus::Running, 1).unwrap();
+        upsert_container(&conn, "b", "reeve-b", ContainerStatus::Stopped, 1).unwrap();
+        let running = list_containers_by_status(&conn, ContainerStatus::Running).unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].card_id, "a");
+    }
+
+    #[test]
+    fn remove_container_deletes_row() {
+        let conn = open(":memory:").unwrap();
+        insert_card(&conn, &sample_card("c1")).unwrap();
+        upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Running, 1).unwrap();
+        remove_container(&conn, "c1").unwrap();
+        assert!(get_container(&conn, "c1").unwrap().is_none());
+    }
+
+    #[test]
+    fn cascade_delete_when_card_removed() {
+        let conn = open(":memory:").unwrap();
+        insert_card(&conn, &sample_card("c1")).unwrap();
+        upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Running, 1).unwrap();
+        conn.execute("DELETE FROM cards WHERE id = ?1", params!["c1"]).unwrap();
+        assert!(get_container(&conn, "c1").unwrap().is_none());
     }
 }
