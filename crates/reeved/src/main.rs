@@ -1,5 +1,6 @@
 mod db;
 mod handlers;
+mod household;
 mod lifecycle;
 mod server;
 
