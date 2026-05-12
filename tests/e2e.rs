@@ -111,22 +111,22 @@ fn m1_walking_skeleton_round_trip() {
     assert!(stdout.contains("first"), "expected card brief: {stdout}");
     assert!(stdout.contains("Backlog"), "expected Backlog column: {stdout}");
 
-    // mv should change column.
+    // mv should change column (use Planning to stay container-free in the M1 smoke test).
     let out_mv = cmd("reeve", &env)
-        .args(["mv", &card_id, "implementing"])
+        .args(["mv", &card_id, "planning"])
         .output()
         .expect("run reeve mv");
     assert!(out_mv.status.success());
     let stdout = String::from_utf8(out_mv.stdout).unwrap();
     assert!(
-        stdout.contains("Implementing"),
-        "expected Implementing in mv output: {stdout}"
+        stdout.contains("Planning"),
+        "expected Planning in mv output: {stdout}"
     );
 
-    // ls should now show Implementing.
+    // ls should now show Planning.
     let out_ls2 = cmd("reeve", &env).arg("ls").output().expect("run reeve ls");
     let stdout = String::from_utf8(out_ls2.stdout).unwrap();
-    assert!(stdout.contains("Implementing"), "expected column updated: {stdout}");
+    assert!(stdout.contains("Planning"), "expected column updated: {stdout}");
 
     // DaemonGuard's Drop handles SIGTERM + wait.
 }

@@ -1,5 +1,6 @@
 mod container;
 mod db;
+mod effects;
 mod handlers;
 mod household;
 mod lifecycle;
@@ -9,6 +10,8 @@ mod transitions;
 
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
+use reeve_protocol::RpcRequest;
+use server::{CallerContext, DbHandle};
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
@@ -58,14 +61,47 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     spawn_signal_handler(shutdown_tx);
 
+    let dispatcher_holder: Arc<MainDispatcher> = Arc::new(MainDispatcher {
+        state: std::sync::OnceLock::new(),
+    });
+
+    let households = household::load_all(&lifecycle::households_dir()?)?;
+    let containers: container::ContainerOpsHandle = Arc::new(container::DockerOps);
+    let listeners = listeners::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
+    let claude_dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".claude"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
+    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+
+    let state = effects::DaemonState {
+        db: db.clone(),
+        containers,
+        listeners: listeners.clone(),
+        households,
+        claude_dir,
+        api_key,
+    };
+    dispatcher_holder
+        .state
+        .set(state.clone())
+        .map_err(|_| anyhow::anyhow!("dispatcher state already initialised"))?;
+
+    let state_for_dispatch = state.clone();
+    let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {
+        let state = state_for_dispatch.clone();
+        async move { handlers::dispatch(req, state, caller).await }
+    };
+
     let result = server::run(
         &socket_path,
         db,
         server::CallerContext::host(),
         shutdown_rx,
-        handlers::dispatch,
+        dispatch,
     )
     .await;
+
+    listeners.stop_all().await;
 
     if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
         warn!("failed to remove pid file on shutdown: {e:#}");
@@ -84,4 +120,34 @@ fn spawn_signal_handler(tx: oneshot::Sender<()>) {
         }
         let _ = tx.send(());
     });
+}
+
+struct MainDispatcher {
+    state: std::sync::OnceLock<effects::DaemonState>,
+}
+
+impl listeners::Dispatcher for MainDispatcher {
+    fn dispatch(
+        &self,
+        req: reeve_protocol::RpcRequest,
+        _db: server::DbHandle,
+        caller: server::CallerContext,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<serde_json::Value, reeve_protocol::RpcError>,
+                > + Send,
+        >,
+    > {
+        let state = self.state.get().cloned();
+        Box::pin(async move {
+            match state {
+                Some(state) => handlers::dispatch(req, state, caller).await,
+                None => Err(reeve_protocol::RpcError {
+                    code: reeve_protocol::RpcError::INTERNAL,
+                    message: "dispatcher not initialised".into(),
+                }),
+            }
+        })
+    }
 }
