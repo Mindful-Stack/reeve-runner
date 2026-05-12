@@ -7,7 +7,7 @@ use crate::household::HouseholdMap;
 use crate::listeners::ListenerRegistry;
 use crate::server::DbHandle;
 use crate::transitions::TransitionEffects;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reeve_protocol::{Card, ContainerStatus};
 use std::path::PathBuf;
@@ -63,6 +63,12 @@ impl TransitionEffects for LiveEffects {
             })?;
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
+        let cards_dir = reeve_protocol::paths::cards_socket_dir();
+
+        // Ensure the cards directory exists before the container starts so
+        // Docker bind-mounts it as a directory (not create a new one).
+        std::fs::create_dir_all(&cards_dir)
+            .with_context(|| format!("create cards dir {}", cards_dir.display()))?;
 
         // Already running? Reconcile DB → Running (in case the row is stale
         // Spawning from a prior crash), spawn the listener, and return.
@@ -110,7 +116,7 @@ impl TransitionEffects for LiveEffects {
         let argv = container::spawn_command(
             &card_id,
             &profile,
-            &socket,
+            &cards_dir,
             &self.state.claude_dir,
             self.state.api_key.as_deref(),
         );

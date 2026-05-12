@@ -242,19 +242,26 @@ pub mod paths {
         cards_socket_dir().join(format!("{card_id}.sock"))
     }
 
-    /// In-container socket the agent's `reeve` CLI sees after mount.
-    pub const IN_CONTAINER_SOCKET: &str = "/var/run/reeved.sock";
+    /// Directory inside the container where the daemon bind-mounts the host
+    /// per-card socket directory. The individual socket file lives at
+    /// `<IN_CONTAINER_CARDS_DIR>/<card_id>.sock`.
+    pub const IN_CONTAINER_CARDS_DIR: &str = "/var/run/reeve-cards";
 
     /// Pick the socket path a `reeve` CLI process should connect to.
-    /// In-container processes find the mounted socket at `IN_CONTAINER_SOCKET`;
-    /// host processes fall back to the daemon's host socket.
+    ///
+    /// In-container processes detect themselves via `REEVE_CARD_ID` and
+    /// connect to `<IN_CONTAINER_CARDS_DIR>/<card_id>.sock` (the cards
+    /// directory is bind-mounted so new socket files appear dynamically).
+    /// Host processes fall back to the daemon's main socket.
     pub fn detect_socket() -> PathBuf {
-        let in_container = std::path::Path::new(IN_CONTAINER_SOCKET);
-        if in_container.exists() {
-            in_container.to_path_buf()
-        } else {
-            socket_path()
+        if let Ok(card_id) = std::env::var("REEVE_CARD_ID") {
+            let sock = std::path::Path::new(IN_CONTAINER_CARDS_DIR)
+                .join(format!("{card_id}.sock"));
+            if sock.exists() {
+                return sock;
+            }
         }
+        socket_path()
     }
 }
 

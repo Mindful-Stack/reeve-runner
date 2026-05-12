@@ -13,8 +13,14 @@ pub fn container_name(card_id: &str) -> String {
 /// Build the argv for `docker` (excluding the `docker` binary itself)
 /// that spawns the container for `card_id` under `profile`.
 ///
-/// - `card_socket` is the daemon-side per-card socket path; it's bind-mounted
-///   to /var/run/reeved.sock inside the container.
+/// - `cards_dir` is the host-side directory that holds per-card socket files
+///   (`$XDG_RUNTIME_DIR/reeve/cards/`). It is bind-mounted into the container
+///   at `IN_CONTAINER_CARDS_DIR` so that the in-container `reeve` CLI can
+///   reach `<dir>/<card_id>.sock` after the daemon creates it post-spawn.
+///   Mounting the directory (not the socket file itself) is essential: Docker
+///   tracks file bind-mounts by inode, so a file deleted-and-recreated on the
+///   host is invisible to the container. A directory mount is path-based and
+///   reflects new entries automatically.
 /// - `claude_dir` is the host `~/.claude` whose `skills/`, `settings.json`,
 ///   and `CLAUDE.md` are mounted read-only. Missing children are skipped
 ///   silently (the caller checks existence).
@@ -22,7 +28,7 @@ pub fn container_name(card_id: &str) -> String {
 pub fn spawn_command(
     card_id: &str,
     profile: &HouseholdProfile,
-    card_socket: &Path,
+    cards_dir: &Path,
     claude_dir: &Path,
     api_key: Option<&str>,
 ) -> Vec<String> {
@@ -37,8 +43,8 @@ pub fn spawn_command(
         "-v".into(),
         format!(
             "{}:{}",
-            card_socket.display(),
-            reeve_protocol::paths::IN_CONTAINER_SOCKET
+            cards_dir.display(),
+            reeve_protocol::paths::IN_CONTAINER_CARDS_DIR
         ),
     ];
 
@@ -366,13 +372,13 @@ mod tests {
     #[test]
     fn spawn_command_includes_name_label_socket_image_and_cmd() {
         let dir = tempdir().unwrap();
-        let socket = dir.path().join("c.sock");
+        let cards_dir = dir.path().join("cards");
         let claude = dir.path().join("claude");
-        let argv = spawn_command("abc", &profile(), &socket, &claude, None);
+        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
         assert_eq!(argv[0], "run");
         assert!(argv.iter().any(|s| s == "reeve-abc"));
         assert!(argv.iter().any(|s| s == "reeve.card_id=abc"));
-        assert!(argv.iter().any(|s| s.starts_with(&format!("{}:", socket.display()))));
+        assert!(argv.iter().any(|s| s.starts_with(&format!("{}:", cards_dir.display()))));
         assert_eq!(argv.last().unwrap(), "infinity");
         assert_eq!(argv[argv.len() - 2], "sleep");
         let image_idx = argv.iter().position(|s| s == "alpine:latest").unwrap();
@@ -382,10 +388,10 @@ mod tests {
     #[test]
     fn spawn_command_skips_missing_claude_mounts() {
         let dir = tempdir().unwrap();
-        let socket = dir.path().join("c.sock");
+        let cards_dir = dir.path().join("cards");
         let claude = dir.path().join("claude");
         // claude_dir does not exist
-        let argv = spawn_command("abc", &profile(), &socket, &claude, None);
+        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
         let claude_mounts = argv
             .iter()
             .filter(|s| s.contains("/.claude/"))
@@ -396,13 +402,13 @@ mod tests {
     #[test]
     fn spawn_command_includes_only_existing_claude_mounts() {
         let dir = tempdir().unwrap();
-        let socket = dir.path().join("c.sock");
+        let cards_dir = dir.path().join("cards");
         let claude = dir.path().join("claude");
         std::fs::create_dir_all(claude.join("skills")).unwrap();
         std::fs::write(claude.join("CLAUDE.md"), "x").unwrap();
         // settings.json deliberately missing
 
-        let argv = spawn_command("abc", &profile(), &socket, &claude, None);
+        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
         assert!(argv.iter().any(|s| s.contains("/.claude/skills:")));
         assert!(argv.iter().any(|s| s.contains("/CLAUDE.md:")));
         assert!(!argv.iter().any(|s| s.contains("settings.json")));
@@ -421,13 +427,13 @@ mod tests {
     #[test]
     fn spawn_command_injects_api_key_only_when_some() {
         let dir = tempdir().unwrap();
-        let socket = dir.path().join("c.sock");
+        let cards_dir = dir.path().join("cards");
         let claude = dir.path().join("claude");
 
-        let with = spawn_command("abc", &profile(), &socket, &claude, Some("sk-test"));
+        let with = spawn_command("abc", &profile(), &cards_dir, &claude, Some("sk-test"));
         assert!(with.iter().any(|s| s == "ANTHROPIC_API_KEY=sk-test"));
 
-        let without = spawn_command("abc", &profile(), &socket, &claude, None);
+        let without = spawn_command("abc", &profile(), &cards_dir, &claude, None);
         assert!(!without.iter().any(|s| s.starts_with("ANTHROPIC_API_KEY=")));
     }
 
@@ -437,7 +443,7 @@ mod tests {
         let argv = spawn_command(
             "card-42",
             &profile(),
-            &dir.path().join("s.sock"),
+            &dir.path().join("cards"),
             &dir.path().join("c"),
             None,
         );
