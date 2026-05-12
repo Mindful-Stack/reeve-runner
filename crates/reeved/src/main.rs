@@ -86,6 +86,8 @@ async fn main() -> Result<()> {
         .set(state.clone())
         .map_err(|_| anyhow::anyhow!("dispatcher state already initialised"))?;
 
+    container::reconcile_on_startup(&state).await?;
+
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {
         let state = state_for_dispatch.clone();
