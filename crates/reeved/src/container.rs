@@ -122,10 +122,13 @@ impl ContainerOps for DockerOps {
             .await
             .context("exec docker rm")?;
         if !rm.status.success() {
-            anyhow::bail!(
-                "docker rm -f {container_name} failed: {}",
-                String::from_utf8_lossy(&rm.stderr)
-            );
+            let stderr = String::from_utf8_lossy(&rm.stderr);
+            // Container already gone (manually removed, or this is a defensive
+            // teardown per spec). The desired end-state holds — don't bail.
+            if stderr.to_ascii_lowercase().contains("no such") {
+                return Ok(());
+            }
+            anyhow::bail!("docker rm -f {container_name} failed: {stderr}");
         }
         Ok(())
     }
@@ -191,6 +194,17 @@ mod docker_tests {
         let ops = DockerOps;
         let status = ops.inspect_status("reeve-nonexistent-test").await.unwrap();
         assert!(status.is_none());
+    }
+
+    #[tokio::test]
+    async fn teardown_is_idempotent_on_missing_container() {
+        if !docker_available() {
+            eprintln!("skipping: docker unavailable");
+            return;
+        }
+        let ops = DockerOps;
+        // A name that definitely doesn't exist. Teardown should succeed.
+        ops.teardown("reeve-definitely-not-there-xyz").await.unwrap();
     }
 
     #[tokio::test]
