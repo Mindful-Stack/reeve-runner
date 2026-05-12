@@ -23,21 +23,23 @@ pub async fn on_column_change(
     if old == new {
         return Ok(());
     }
-    match new {
-        Column::Implementing => fx.ensure_running(card).await,
-        Column::Testing | Column::Review => {
-            // Container stays warm if it was already running; otherwise
-            // we don't spawn one. Skipping straight from Backlog to Review
-            // is allowed but the user has nothing to run there yet.
-            Ok(())
-        }
-        Column::Done => fx.ensure_stopped(&card.id).await,
-        Column::Backlog | Column::Planning => {
-            // Defensive: if a container exists from a prior Implementing
-            // run, tear it down. Normal flow doesn't go back here, but
-            // we tolerate it.
-            fx.ensure_stopped(&card.id).await
-        }
+    match (old, new) {
+        (_, Column::Implementing) => fx.ensure_running(card).await,
+        // Container stays warm if it was already running; otherwise we don't
+        // spawn one. Skipping straight from Backlog to Review is allowed but
+        // the user has nothing to run there yet.
+        (_, Column::Testing | Column::Review) => Ok(()),
+        (_, Column::Done) => fx.ensure_stopped(&card.id).await,
+        // Backwards move from a container-having column → tear down defensively
+        // so the container doesn't outlive its card-state.
+        (
+            Column::Implementing | Column::Testing | Column::Review,
+            Column::Backlog | Column::Planning,
+        ) => fx.ensure_stopped(&card.id).await,
+        // True no-op per spec table row 4: Backlog↔Planning never had a
+        // container, and Done→Backlog/Planning's container was already torn
+        // down on the Done transition.
+        (_, Column::Backlog | Column::Planning) => Ok(()),
     }
 }
 
@@ -120,8 +122,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn done_back_to_backlog_defensively_tears_down() {
+    async fn done_to_backlog_is_noop() {
+        // Container was already torn down on the →Done transition.
         let fx = run_one(Column::Done, Column::Backlog).await;
+        assert!(fx.running.lock().await.is_empty());
+        assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backlog_to_planning_is_noop() {
+        // Spec table row 4: Backlog↔Planning is always a no-op.
+        let fx = run_one(Column::Backlog, Column::Planning).await;
+        assert!(fx.running.lock().await.is_empty());
+        assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn implementing_to_backlog_defensively_tears_down() {
+        // Backwards move from a container-having column: defensively tear down
+        // so a stale container doesn't outlive its card-state.
+        let fx = run_one(Column::Implementing, Column::Backlog).await;
+        assert_eq!(*fx.stopped.lock().await, vec!["c1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn review_to_planning_defensively_tears_down() {
+        let fx = run_one(Column::Review, Column::Planning).await;
         assert_eq!(*fx.stopped.lock().await, vec!["c1".to_string()]);
     }
 
