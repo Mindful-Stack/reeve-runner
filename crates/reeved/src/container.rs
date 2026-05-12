@@ -226,17 +226,41 @@ pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
     .await??;
 
     for row in rows {
+        // Propagate inspect errors — silently downgrading them to None would
+        // misclassify a healthy container as orphaned during a transient
+        // docker outage at startup.
         let docker_state = state
             .containers
             .inspect_status(&row.container_name)
             .await
-            .ok()
-            .flatten();
+            .with_context(|| format!("reconcile: inspect {}", row.container_name))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         match reconcile_one(&row, docker_state.as_deref()) {
             ReconcileDecision::Adopt => {
                 let socket = paths::card_socket_path(&row.card_id);
                 ListenerRegistry::unlink_stale(&socket);
                 state.listeners.spawn(&row.card_id, socket).await;
+                // Reconcile Spawning → Running for rows whose write completed
+                // just before a crash that didn't kill the container itself.
+                if row.status == ContainerStatus::Spawning {
+                    let db = state.db.clone();
+                    let id = row.card_id.clone();
+                    let name = row.container_name.clone();
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        let conn = db.blocking_lock();
+                        crate::db::upsert_container(
+                            &conn,
+                            &id,
+                            &name,
+                            ContainerStatus::Running,
+                            now,
+                        )
+                    })
+                    .await??;
+                }
                 tracing::info!(card = %row.card_id, "adopted surviving container");
             }
             ReconcileDecision::Orphan => {
@@ -244,10 +268,6 @@ pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
                 ListenerRegistry::unlink_stale(&socket);
                 let db = state.db.clone();
                 let id = row.card_id.clone();
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
                 tokio::task::spawn_blocking(move || -> Result<()> {
                     let conn = db.blocking_lock();
                     crate::db::update_container_status(
