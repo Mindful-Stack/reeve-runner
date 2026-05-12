@@ -4,6 +4,7 @@ mod handlers;
 mod household;
 mod lifecycle;
 mod server;
+mod transitions;
 
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
