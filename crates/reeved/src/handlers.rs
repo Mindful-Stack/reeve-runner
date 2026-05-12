@@ -283,13 +283,17 @@ mod tests {
     }
 
     fn fresh_state() -> DaemonState {
+        fresh_state_with_households(HashMap::new())
+    }
+
+    fn fresh_state_with_households(map: HashMap<String, crate::household::HouseholdProfile>) -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
         DaemonState {
             db: db.clone(),
             containers: Arc::new(NoopOps) as ContainerOpsHandle,
             listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
-            households: Arc::new(HashMap::new()),
+            households: Arc::new(map),
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
         }
@@ -557,5 +561,53 @@ mod tests {
         .unwrap();
         let ls: LsResult = serde_json::from_value(ls_value).unwrap();
         assert_eq!(ls.cards[0].column, Column::Backlog);
+    }
+
+    #[tokio::test]
+    async fn mv_to_implementing_with_configured_household_succeeds() {
+        use crate::household::HouseholdProfile;
+        let mut households = HashMap::new();
+        households.insert(
+            "h".to_string(),
+            HouseholdProfile {
+                image: "alpine:latest".into(),
+                cmd: vec!["sleep".into(), "infinity".into()],
+            },
+        );
+        let state = fresh_state_with_households(households);
+
+        let new_value = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "new".into(),
+                params: serde_json::json!({
+                    "household": "h",
+                    "brief": "x",
+                    "needs_heavy": false,
+                }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
+
+        // NoopOps reports no container exists; LiveEffects::ensure_running
+        // then writes Spawning, calls NoopOps::spawn (Ok), writes Running,
+        // and spawns the listener.
+        let mv_value = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "mv".into(),
+                params: serde_json::json!({"id": card.id, "column": "implementing"}),
+            },
+            state,
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let result: MvResult = serde_json::from_value(mv_value).unwrap();
+        assert_eq!(result.card.column, Column::Implementing);
     }
 }

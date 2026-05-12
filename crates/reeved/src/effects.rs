@@ -64,15 +64,33 @@ impl TransitionEffects for LiveEffects {
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
 
-        // Already running? Just ensure the listener is up and return.
+        // Already running? Reconcile DB → Running (in case the row is stale
+        // Spawning from a prior crash), spawn the listener, and return.
         if let Some(state) = self.state.containers.inspect_status(&name).await? {
             if state == "running" {
+                let id_for_update = card_id.clone();
+                let name_for_update = name.clone();
+                let db = self.state.db.clone();
+                let now = now_secs();
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let conn = db.blocking_lock();
+                    db::upsert_container(
+                        &conn,
+                        &id_for_update,
+                        &name_for_update,
+                        ContainerStatus::Running,
+                        now,
+                    )
+                })
+                .await??;
                 self.state.listeners.spawn(&card_id, socket).await;
                 return Ok(());
             }
         }
 
-        // Record Spawning before launching docker.
+        // Record Spawning before launching docker. If the daemon crashes
+        // between this write and the docker spawn returning, Task 11's
+        // reconcile will mark this row Failed on next startup.
         let id_for_record = card_id.clone();
         let name_for_record = name.clone();
         let db = self.state.db.clone();
