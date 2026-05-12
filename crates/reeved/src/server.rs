@@ -15,6 +15,24 @@ use tracing::{error, warn};
 /// A request handler shared across connections.
 pub type DbHandle = Arc<Mutex<Connection>>;
 
+/// Caller identity attached to each incoming RPC. The host socket
+/// produces `CallerContext { card_id: None }`; per-card sockets
+/// produce `CallerContext { card_id: Some("<id>") }`.
+#[derive(Debug, Clone)]
+pub struct CallerContext {
+    pub card_id: Option<String>,
+}
+
+impl CallerContext {
+    pub fn host() -> Self {
+        Self { card_id: None }
+    }
+
+    pub fn card(id: impl Into<String>) -> Self {
+        Self { card_id: Some(id.into()) }
+    }
+}
+
 /// Time we'll wait for in-flight connections to finish after `shutdown` fires
 /// before forcibly returning. Prevents a slow client from holding the daemon
 /// open forever.
@@ -29,11 +47,12 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub async fn run<F, Fut>(
     socket_path: &Path,
     db: DbHandle,
+    caller: CallerContext,
     mut shutdown: oneshot::Receiver<()>,
     dispatch: F,
 ) -> Result<()>
 where
-    F: Fn(RpcRequest, DbHandle) -> Fut + Send + Sync + Clone + 'static,
+    F: Fn(RpcRequest, DbHandle, CallerContext) -> Fut + Send + Sync + Clone + 'static,
     Fut: std::future::Future<Output = std::result::Result<serde_json::Value, RpcError>> + Send,
 {
     if socket_path.exists() {
@@ -66,8 +85,9 @@ where
                     Ok((stream, _addr)) => {
                         let db = db.clone();
                         let dispatch = dispatch.clone();
+                        let caller = caller.clone();
                         connections.spawn(async move {
-                            if let Err(e) = handle_connection(stream, db, dispatch).await {
+                            if let Err(e) = handle_connection(stream, db, caller, dispatch).await {
                                 warn!("connection error: {e:#}");
                             }
                         });
@@ -101,9 +121,14 @@ where
     Ok(())
 }
 
-async fn handle_connection<F, Fut>(stream: UnixStream, db: DbHandle, dispatch: F) -> Result<()>
+async fn handle_connection<F, Fut>(
+    stream: UnixStream,
+    db: DbHandle,
+    caller: CallerContext,
+    dispatch: F,
+) -> Result<()>
 where
-    F: Fn(RpcRequest, DbHandle) -> Fut + Send + Sync,
+    F: Fn(RpcRequest, DbHandle, CallerContext) -> Fut + Send + Sync,
     Fut: std::future::Future<Output = std::result::Result<serde_json::Value, RpcError>> + Send,
 {
     let (read, mut write) = stream.into_split();
@@ -121,7 +146,7 @@ where
         let resp = match serde_json::from_str::<RpcRequest>(&line) {
             Ok(req) => {
                 let id = req.id;
-                match dispatch(req, db.clone()).await {
+                match dispatch(req, db.clone(), caller.clone()).await {
                     Ok(value) => RpcResponse {
                         id: Some(id),
                         result: Some(value),
@@ -178,11 +203,13 @@ mod tests {
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
 
-        let dispatch = |req: RpcRequest, _db: DbHandle| async move { Ok(req.params) };
+        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
+            Ok(req.params)
+        };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -214,13 +241,13 @@ mod tests {
         let socket = dir.path().join("bad.sock");
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
-        let dispatch = |_req: RpcRequest, _db: DbHandle| async {
+        let dispatch = |_req: RpcRequest, _db: DbHandle, _caller: CallerContext| async {
             Ok(serde_json::Value::Null)
         };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -247,11 +274,13 @@ mod tests {
         let socket = dir.path().join("multi.sock");
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
-        let dispatch = |req: RpcRequest, _db: DbHandle| async move { Ok(req.params) };
+        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
+            Ok(req.params)
+        };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -286,11 +315,13 @@ mod tests {
         let socket = dir.path().join("idle.sock");
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
-        let dispatch = |req: RpcRequest, _db: DbHandle| async move { Ok(req.params) };
+        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
+            Ok(req.params)
+        };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
         });
 
         // Hold a connection open with no requests. Shutdown should still drain.

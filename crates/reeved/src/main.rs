@@ -55,7 +55,13 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     spawn_signal_handler(shutdown_tx);
 
-    let result = server::run(&socket_path, db, shutdown_rx, handlers::dispatch).await;
+    let result = server::run(
+        &socket_path,
+        db,
+        server::CallerContext::host(),
+        shutdown_rx,
+        handlers::dispatch,
+    ).await;
 
     if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
         warn!("failed to remove pid file on shutdown: {e:#}");

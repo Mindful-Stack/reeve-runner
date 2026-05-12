@@ -1,7 +1,7 @@
 //! Method dispatch and per-method handlers.
 
 use crate::db;
-use crate::server::DbHandle;
+use crate::server::{CallerContext, DbHandle};
 use anyhow::Result;
 use reeve_protocol::{
     Card, Column, LsResult, MvParams, MvResult, NewParams, NewResult, RpcError, RpcRequest,
@@ -9,7 +9,11 @@ use reeve_protocol::{
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub async fn dispatch(req: RpcRequest, db: DbHandle) -> std::result::Result<Value, RpcError> {
+pub async fn dispatch(
+    req: RpcRequest,
+    db: DbHandle,
+    _caller: CallerContext,
+) -> std::result::Result<Value, RpcError> {
     match req.method.as_str() {
         "ls" => handle_ls(db).await,
         "new" => {
@@ -105,6 +109,7 @@ async fn handle_mv(db: DbHandle, params: MvParams) -> std::result::Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::CallerContext;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -121,7 +126,7 @@ mod tests {
             method: "ls".into(),
             params: serde_json::json!({}),
         };
-        let value = dispatch(req, db).await.unwrap();
+        let value = dispatch(req, db, CallerContext::host()).await.unwrap();
         let result: LsResult = serde_json::from_value(value).unwrap();
         assert!(result.cards.is_empty());
     }
@@ -138,7 +143,7 @@ mod tests {
                 "needs_heavy": false,
             }),
         };
-        let new_value = dispatch(req_new, db.clone()).await.unwrap();
+        let new_value = dispatch(req_new, db.clone(), CallerContext::host()).await.unwrap();
         let new_result: NewResult = serde_json::from_value(new_value).unwrap();
         assert_eq!(new_result.card.brief, "first card");
         assert_eq!(new_result.card.column, Column::Backlog);
@@ -148,7 +153,7 @@ mod tests {
             method: "ls".into(),
             params: serde_json::json!({}),
         };
-        let ls_value = dispatch(req_ls, db).await.unwrap();
+        let ls_value = dispatch(req_ls, db, CallerContext::host()).await.unwrap();
         let ls_result: LsResult = serde_json::from_value(ls_value).unwrap();
         assert_eq!(ls_result.cards.len(), 1);
         assert_eq!(ls_result.cards[0], new_result.card);
@@ -168,6 +173,7 @@ mod tests {
                 }),
             },
             db.clone(),
+            CallerContext::host(),
         )
         .await
         .unwrap();
@@ -183,6 +189,7 @@ mod tests {
                 }),
             },
             db,
+            CallerContext::host(),
         )
         .await
         .unwrap();
@@ -203,6 +210,7 @@ mod tests {
                 }),
             },
             db,
+            CallerContext::host(),
         )
         .await
         .unwrap_err();
@@ -219,6 +227,7 @@ mod tests {
                 params: serde_json::json!({}),
             },
             db,
+            CallerContext::host(),
         )
         .await
         .unwrap_err();
