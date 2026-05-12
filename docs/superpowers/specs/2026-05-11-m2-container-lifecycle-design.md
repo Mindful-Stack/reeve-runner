@@ -137,7 +137,7 @@ The full household schema from the parent design (knowledge_base, repos, service
 CREATE TABLE containers (
   card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
   container_name TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('Spawning','Running','Stopped','Failed')),
+  status TEXT NOT NULL CHECK (status IN ('spawning','running','stopped','failed')),
   started_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
