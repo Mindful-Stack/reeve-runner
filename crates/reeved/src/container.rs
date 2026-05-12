@@ -125,6 +125,16 @@ mod tests {
         assert!(argv.iter().any(|s| s.contains("/.claude/skills:")));
         assert!(argv.iter().any(|s| s.contains("/CLAUDE.md:")));
         assert!(!argv.iter().any(|s| s.contains("settings.json")));
+        // Every claude mount must be read-only — this is the security
+        // property that protects the host's CC config from container writes.
+        for arg in &argv {
+            if arg.contains("/.claude/") {
+                assert!(
+                    arg.ends_with(":ro"),
+                    "claude mount not :ro: {arg}",
+                );
+            }
+        }
     }
 
     #[test]
