@@ -174,7 +174,7 @@ async fn status_self() -> Result<()> {
                 r.card.column.label(),
             );
             match r.container_status {
-                Some(s) => println!("container: {:?}", s),
+                Some(s) => println!("container: {}", s.as_wire_str()),
                 None => println!("container: (none)"),
             }
             Ok(())
