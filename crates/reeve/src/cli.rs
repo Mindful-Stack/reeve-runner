@@ -3,7 +3,7 @@
 use crate::client;
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use reeve_protocol::{Card, Column, LsResult, MvResult, NewResult, paths};
+use reeve_protocol::{Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult, paths};
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -42,6 +42,13 @@ pub enum Command {
         #[arg(value_parser = parse_column)]
         column: Column,
     },
+    /// (in-container only) Move the calling card to a different column.
+    MvSelf {
+        #[arg(value_parser = parse_column)]
+        column: Column,
+    },
+    /// (in-container only) Print the calling card and its container status.
+    StatusSelf,
     /// Daemon management subcommands.
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -71,12 +78,14 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Ls => ls().await,
         Command::New { household, brief, needs_heavy } => new(household, brief, needs_heavy).await,
         Command::Mv { id, column } => mv(id, column).await,
+        Command::MvSelf { column } => mv_self(column).await,
+        Command::StatusSelf => status_self().await,
         Command::Daemon(_) => unreachable!("Daemon commands are handled in main"),
     }
 }
 
 async fn ls() -> Result<()> {
-    let socket = paths::socket_path();
+    let socket = paths::detect_socket();
     let result = client::call(&socket, "ls", serde_json::json!({}))
         .await
         .context("calling ls")?;
@@ -91,7 +100,7 @@ async fn ls() -> Result<()> {
 }
 
 async fn new(household: String, brief: String, needs_heavy: bool) -> Result<()> {
-    let socket = paths::socket_path();
+    let socket = paths::detect_socket();
     let result = client::call(
         &socket,
         "new",
@@ -114,7 +123,7 @@ async fn new(household: String, brief: String, needs_heavy: bool) -> Result<()> 
 }
 
 async fn mv(id: String, column: Column) -> Result<()> {
-    let socket = paths::socket_path();
+    let socket = paths::detect_socket();
     let result = client::call(
         &socket,
         "mv",
@@ -126,6 +135,48 @@ async fn mv(id: String, column: Column) -> Result<()> {
         Ok(value) => {
             let MvResult { card } = serde_json::from_value(value)?;
             println!("{} -> {}", card.id, card.column.label());
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn mv_self(column: Column) -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(
+        &socket,
+        "mv-self",
+        serde_json::json!({"column": column}),
+    )
+    .await
+    .context("calling mv-self")?;
+    match result {
+        Ok(value) => {
+            let result: MvSelfResult = serde_json::from_value(value)?;
+            println!("{} -> {}", result.card.id, result.card.column.label());
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn status_self() -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "status-self", serde_json::json!({}))
+        .await
+        .context("calling status-self")?;
+    match result {
+        Ok(value) => {
+            let r: StatusSelfResult = serde_json::from_value(value)?;
+            println!(
+                "{} ({})",
+                r.card.id,
+                r.card.column.label(),
+            );
+            match r.container_status {
+                Some(s) => println!("container: {:?}", s),
+                None => println!("container: (none)"),
+            }
             Ok(())
         }
         Err(e) => anyhow::bail!("daemon error: {e}"),
