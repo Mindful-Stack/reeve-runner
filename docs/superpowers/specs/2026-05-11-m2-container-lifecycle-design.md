@@ -45,9 +45,13 @@ When the user moves a card to `Implementing`, `reeved` runs `docker run -d --nam
 
 ### Per-card socket identity (key design choice)
 
-The daemon already binds the host socket at `$XDG_RUNTIME_DIR/reeved.sock`. For each running card, the daemon binds a second socket at `$XDG_RUNTIME_DIR/reeve/cards/<card-id>.sock` (mode `0600`, parent dir created `0700`). Only that per-card socket is mounted into the card's container, at `/var/run/reeved.sock`. Bind-time unlinks any existing file at the socket path — leftover socket files survive daemon shutdown (since containers do too), so the daemon always claims the path defensively.
+The daemon already binds the host socket at `$XDG_RUNTIME_DIR/reeved.sock`. For each running card, the daemon binds a second socket at `$XDG_RUNTIME_DIR/reeve/cards/<card-id>.sock` (mode `0600`, parent dir created `0700`). The daemon bind-mounts the *cards directory* (not the individual socket file) into the card's container at `/var/run/reeve-cards/`. Bind-time unlinks any existing file at the socket path — leftover socket files survive daemon shutdown (since containers do too), so the daemon always claims the path defensively.
+
+**Why a directory mount, not a file mount.** Docker bind-mounts files by inode. The daemon's bind/unlink/rebind cycle creates a fresh inode each session, so a file-level mount would leave the container seeing the original (now-deleted) inode forever. Mounting the directory is path-based: new files appearing inside it are visible to the container automatically. The in-container `reeve` CLI derives its socket path from `$REEVE_CARD_ID` (injected by the daemon at spawn time) as `/var/run/reeve-cards/<card-id>.sock`.
 
 The daemon resolves caller identity from which listener received the connection. The host socket dispatches with `caller.card_id = None`; a per-card socket dispatches with `caller.card_id = Some("<id>")`. This makes self-scoped calls unambiguous and removes any need for `SO_PEERCRED`, cgroup walking, or container introspection. As a side effect, self-scoped methods do not (and cannot) accept a card-id argument from the caller — the daemon supplies it.
+
+**Cross-card socket reach-through (deferred security).** Because the entire cards directory is mounted into every container, an in-container process that ignores `$REEVE_CARD_ID` could `connect()` to *another card's* socket and the daemon would dispatch the request as that other card. M2 accepts this for three reasons: (a) the daemon already defers cross-card containment to the fork-ops work (see *RPC additions* below), (b) M2 only ships two self-scoped methods (`mv-self`, `status-self`) so the blast radius is bounded, and (c) the daemon socket is `chmod 0600` owned by the daemon user — the real trust boundary is the container's UID/GID, not the file-system layout. Tightening this requires either `--user agent` so the container UID differs from the daemon UID, or server-side peer-credential checks. Both land alongside fork operations.
 
 ### RPC additions
 
@@ -80,7 +84,7 @@ If the daemon encounters an inconsistent state (e.g., transitioning `Backlog →
 docker run -d \
   --name reeve-<card-id> \
   --label reeve.card_id=<card-id> \
-  -v <per-card-socket-path>:/var/run/reeved.sock \
+  -v $XDG_RUNTIME_DIR/reeve/cards:/var/run/reeve-cards \
   -v $HOME/.claude/skills:/home/agent/.claude/skills:ro \
   -v $HOME/.claude/settings.json:/home/agent/.claude/settings.json:ro \
   -v $HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro \
@@ -154,12 +158,12 @@ State transitions written by the daemon:
 
 ### In-container `reeve` CLI
 
-The `reeve` binary, when run with `mv-self` or `status-self`:
+The `reeve` binary's `paths::detect_socket()` chooses the socket as follows:
 
-1. Looks for `/var/run/reeved.sock` first. If present, uses it.
-2. Falls back to `$XDG_RUNTIME_DIR/reeved.sock` (host case — but `mv-self` / `status-self` will then be rejected with `FORBIDDEN`).
+1. If `$REEVE_CARD_ID` is set and `/var/run/reeve-cards/<id>.sock` exists, use it.
+2. Otherwise fall back to the host's `$XDG_RUNTIME_DIR/reeved.sock`.
 
-Host-side `reeve` subcommands (`ls`, `new`, `mv`, `daemon …`) continue to talk to `$XDG_RUNTIME_DIR/reeved.sock`. Self-scoped subcommands run on the host return `FORBIDDEN` — by design, this is what proves the auth boundary holds.
+The daemon injects `REEVE_CARD_ID` into every container at spawn time, so the in-container CLI lands on its own per-card socket. On the host, `REEVE_CARD_ID` is unset and the fallback kicks in. Self-scoped subcommands (`mv-self`, `status-self`) run on the host therefore reach the host socket, where the daemon rejects them with `FORBIDDEN` — by design, this is what proves the auth boundary holds.
 
 ## Lifecycle module note
 
@@ -182,7 +186,7 @@ The existing M1 e2e tests (32 passing) remain untouched. M2 adds tests at three 
 
 ### E2E (Docker-gated)
 
-A new test in `tests/e2e.rs`, gated by `is_docker_available()` (returns false → test prints a skip message and returns). Uses `alpine:latest` + `["sleep", "infinity"]`. Flow:
+A new test in `tests/e2e.rs`, gated by `is_docker_available()` (returns false → test prints a skip message and returns). Uses `debian:trixie-slim` + `["sleep", "infinity"]` — the test copies the host-built `reeve` binary (glibc) into the container at runtime, so the image must ship glibc rather than musl. Flow:
 
 1. Spawn daemon under `tempfile::tempdir()` for `XDG_RUNTIME_DIR` and `XDG_DATA_HOME`.
 2. Write a minimal household TOML into the temp config dir; daemon picks it up.
