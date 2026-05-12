@@ -143,7 +143,9 @@ mod tests {
                 "needs_heavy": false,
             }),
         };
-        let new_value = dispatch(req_new, db.clone(), CallerContext::host()).await.unwrap();
+        let new_value = dispatch(req_new, db.clone(), CallerContext::host())
+            .await
+            .unwrap();
         let new_result: NewResult = serde_json::from_value(new_value).unwrap();
         assert_eq!(new_result.card.brief, "first card");
         assert_eq!(new_result.card.column, Column::Backlog);

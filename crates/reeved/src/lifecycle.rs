@@ -30,8 +30,7 @@ pub fn db_path() -> Result<PathBuf> {
 /// Ensure the parent directory of `path` exists.
 pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create dir {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
     }
     Ok(())
 }

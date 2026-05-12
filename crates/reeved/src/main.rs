@@ -61,7 +61,8 @@ async fn main() -> Result<()> {
         server::CallerContext::host(),
         shutdown_rx,
         handlers::dispatch,
-    ).await;
+    )
+    .await;
 
     if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
         warn!("failed to remove pid file on shutdown: {e:#}");

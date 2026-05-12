@@ -33,8 +33,8 @@ pub fn load_all(dir: &Path) -> Result<HouseholdMap> {
             .and_then(|s| s.to_str())
             .with_context(|| format!("bad filename {}", path.display()))?
             .to_string();
-        let body = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let body =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let profile: HouseholdProfile =
             toml::from_str(&body).with_context(|| format!("parse {}", path.display()))?;
         out.insert(name, profile);

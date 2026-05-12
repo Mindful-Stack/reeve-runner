@@ -77,7 +77,12 @@ pub fn get_card(conn: &Connection, id: &str) -> Result<Option<Card>> {
     Ok(card)
 }
 
-pub fn update_card_column(conn: &Connection, id: &str, column: Column, now: i64) -> Result<Option<Card>> {
+pub fn update_card_column(
+    conn: &Connection,
+    id: &str,
+    column: Column,
+    now: i64,
+) -> Result<Option<Card>> {
     let updated = conn.execute(
         "UPDATE cards SET column_ = ?1, updated_at = ?2 WHERE id = ?3",
         params![column.as_wire_str(), now, id],
@@ -134,7 +139,9 @@ pub fn get_container(conn: &Connection, card_id: &str) -> Result<Option<Containe
         "SELECT card_id, container_name, status, started_at, updated_at
          FROM containers WHERE card_id = ?1",
     )?;
-    let row = stmt.query_row(params![card_id], row_to_container).optional()?;
+    let row = stmt
+        .query_row(params![card_id], row_to_container)
+        .optional()?;
     Ok(row)
 }
 
@@ -152,7 +159,10 @@ pub fn list_containers_by_status(
 }
 
 pub fn remove_container(conn: &Connection, card_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM containers WHERE card_id = ?1", params![card_id])?;
+    conn.execute(
+        "DELETE FROM containers WHERE card_id = ?1",
+        params![card_id],
+    )?;
     Ok(())
 }
 
@@ -336,7 +346,8 @@ mod tests {
         let conn = open(":memory:").unwrap();
         insert_card(&conn, &sample_card("c1")).unwrap();
         upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Running, 1).unwrap();
-        conn.execute("DELETE FROM cards WHERE id = ?1", params!["c1"]).unwrap();
+        conn.execute("DELETE FROM cards WHERE id = ?1", params!["c1"])
+            .unwrap();
         assert!(get_container(&conn, "c1").unwrap().is_none());
     }
 }

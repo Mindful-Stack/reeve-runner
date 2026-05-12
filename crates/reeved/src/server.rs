@@ -29,7 +29,9 @@ impl CallerContext {
     }
 
     pub fn card(id: impl Into<String>) -> Self {
-        Self { card_id: Some(id.into()) }
+        Self {
+            card_id: Some(id.into()),
+        }
     }
 }
 
@@ -103,9 +105,7 @@ where
     drop(listener);
 
     // Drain in-flight connections within the grace period; then move on.
-    let drain = async {
-        while connections.join_next().await.is_some() {}
-    };
+    let drain = async { while connections.join_next().await.is_some() {} };
     if tokio::time::timeout(SHUTDOWN_GRACE, drain).await.is_err() {
         warn!(
             "{} connection(s) still in flight after {:?}; aborting",
@@ -203,13 +203,14 @@ mod tests {
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
 
-        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
-            Ok(req.params)
-        };
+        let dispatch =
+            |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move { Ok(req.params) };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch)
+                .await
+                .unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -247,7 +248,9 @@ mod tests {
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch)
+                .await
+                .unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -274,13 +277,14 @@ mod tests {
         let socket = dir.path().join("multi.sock");
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
-        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
-            Ok(req.params)
-        };
+        let dispatch =
+            |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move { Ok(req.params) };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch)
+                .await
+                .unwrap();
         });
 
         let mut stream = connect_with_retry(&socket).await;
@@ -315,13 +319,14 @@ mod tests {
         let socket = dir.path().join("idle.sock");
         let db = echo_db();
         let (tx, rx) = oneshot::channel();
-        let dispatch = |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move {
-            Ok(req.params)
-        };
+        let dispatch =
+            |req: RpcRequest, _db: DbHandle, _caller: CallerContext| async move { Ok(req.params) };
 
         let socket_clone = socket.clone();
         let server_task = tokio::spawn(async move {
-            run(&socket_clone, db, CallerContext::host(), rx, dispatch).await.unwrap();
+            run(&socket_clone, db, CallerContext::host(), rx, dispatch)
+                .await
+                .unwrap();
         });
 
         // Hold a connection open with no requests. Shutdown should still drain.
