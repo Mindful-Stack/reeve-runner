@@ -4,7 +4,8 @@ use crate::db;
 use crate::server::{CallerContext, DbHandle};
 use anyhow::Result;
 use reeve_protocol::{
-    Card, Column, LsResult, MvParams, MvResult, NewParams, NewResult, RpcError, RpcRequest,
+    Card, Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult,
+    RpcError, RpcRequest, StatusSelfResult,
 };
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub async fn dispatch(
     req: RpcRequest,
     db: DbHandle,
-    _caller: CallerContext,
+    caller: CallerContext,
 ) -> std::result::Result<Value, RpcError> {
     match req.method.as_str() {
         "ls" => handle_ls(db).await,
@@ -24,11 +25,27 @@ pub async fn dispatch(
             let params = parse_params::<MvParams>(req.params)?;
             handle_mv(db, params).await
         }
+        "mv-self" => {
+            let card_id = require_card(&caller)?;
+            let params = parse_params::<MvSelfParams>(req.params)?;
+            handle_mv_self(db, card_id, params).await
+        }
+        "status-self" => {
+            let card_id = require_card(&caller)?;
+            handle_status_self(db, card_id).await
+        }
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
             message: format!("method not found: {other}"),
         }),
     }
+}
+
+fn require_card(caller: &CallerContext) -> std::result::Result<String, RpcError> {
+    caller.card_id.clone().ok_or_else(|| RpcError {
+        code: RpcError::FORBIDDEN,
+        message: "self-scoped methods require per-card socket".into(),
+    })
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -104,6 +121,57 @@ async fn handle_mv(db: DbHandle, params: MvParams) -> std::result::Result<Value,
             message: format!("card not found: {}", params.id),
         }),
     }
+}
+
+async fn handle_mv_self(
+    db: DbHandle,
+    card_id: String,
+    params: MvSelfParams,
+) -> std::result::Result<Value, RpcError> {
+    let column = params.column;
+    let now = now_secs();
+    let id = card_id.clone();
+    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
+        let conn = db.blocking_lock();
+        db::update_card_column(&conn, &id, column, now)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?;
+    match card {
+        Some(card) => serde_json::to_value(MvSelfResult { card }).map_err(to_internal),
+        None => Err(RpcError {
+            code: RpcError::NOT_FOUND,
+            message: format!("card not found: {card_id}"),
+        }),
+    }
+}
+
+async fn handle_status_self(
+    db: DbHandle,
+    card_id: String,
+) -> std::result::Result<Value, RpcError> {
+    let id = card_id.clone();
+    let (card, container) = tokio::task::spawn_blocking(
+        move || -> Result<(Option<Card>, Option<db::ContainerRow>)> {
+            let conn = db.blocking_lock();
+            let card = db::get_card(&conn, &id)?;
+            let container = db::get_container(&conn, &id)?;
+            Ok((card, container))
+        },
+    )
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?;
+    let card = card.ok_or_else(|| RpcError {
+        code: RpcError::NOT_FOUND,
+        message: format!("card not found: {card_id}"),
+    })?;
+    serde_json::to_value(StatusSelfResult {
+        card,
+        container_status: container.map(|c| c.status),
+    })
+    .map_err(to_internal)
 }
 
 #[cfg(test)]
@@ -234,5 +302,101 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, RpcError::METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mv_self_on_host_socket_returns_forbidden() {
+        let db = fresh_db();
+        let req = RpcRequest {
+            id: 1,
+            method: "mv-self".into(),
+            params: serde_json::json!({"column": "review"}),
+        };
+        let err = dispatch(req, db, CallerContext::host()).await.unwrap_err();
+        assert_eq!(err.code, RpcError::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn mv_self_on_card_socket_moves_card() {
+        let db = fresh_db();
+        let new_value = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "new".into(),
+                params: serde_json::json!({
+                    "household": "h",
+                    "brief": "b",
+                    "needs_heavy": false,
+                }),
+            },
+            db.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
+
+        let mv_value = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "mv-self".into(),
+                params: serde_json::json!({"column": "review"}),
+            },
+            db,
+            CallerContext::card(&card.id),
+        )
+        .await
+        .unwrap();
+        let result: MvSelfResult = serde_json::from_value(mv_value).unwrap();
+        assert_eq!(result.card.column, Column::Review);
+        assert_eq!(result.card.id, card.id);
+    }
+
+    #[tokio::test]
+    async fn status_self_on_host_socket_returns_forbidden() {
+        let db = fresh_db();
+        let req = RpcRequest {
+            id: 1,
+            method: "status-self".into(),
+            params: serde_json::json!({}),
+        };
+        let err = dispatch(req, db, CallerContext::host()).await.unwrap_err();
+        assert_eq!(err.code, RpcError::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn status_self_on_card_socket_returns_card_no_container() {
+        let db = fresh_db();
+        let new_value = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "new".into(),
+                params: serde_json::json!({
+                    "household": "h",
+                    "brief": "b",
+                    "needs_heavy": false,
+                }),
+            },
+            db.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
+
+        let value = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "status-self".into(),
+                params: serde_json::json!({}),
+            },
+            db,
+            CallerContext::card(&card.id),
+        )
+        .await
+        .unwrap();
+        let result: StatusSelfResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.card.id, card.id);
+        assert!(result.container_status.is_none());
     }
 }
