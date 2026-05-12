@@ -111,6 +111,8 @@ impl ListenerRegistry {
         }
     }
 
+    /// Test-only: check whether a listener is registered for `card_id`.
+    #[cfg(test)]
     pub async fn contains(&self, card_id: &str) -> bool {
         self.inner.lock().await.contains_key(card_id)
     }
@@ -141,9 +143,8 @@ mod tests {
             caller: CallerContext,
         ) -> Pin<
             Box<
-                dyn std::future::Future<
-                        Output = std::result::Result<serde_json::Value, RpcError>,
-                    > + Send,
+                dyn std::future::Future<Output = std::result::Result<serde_json::Value, RpcError>>
+                    + Send,
             >,
         > {
             Box::pin(async move { Ok(json!({ "card_id": caller.card_id })) })
@@ -216,7 +217,9 @@ mod tests {
 
         reg.spawn("c", socket.clone()).await;
         for _ in 0..50 {
-            if socket.exists() { break; }
+            if socket.exists() {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(socket.exists());

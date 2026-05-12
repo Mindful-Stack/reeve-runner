@@ -43,8 +43,14 @@ fn build_workspace() {
 
 fn isolated_env(temp: &std::path::Path) -> Vec<(String, String)> {
     vec![
-        ("XDG_RUNTIME_DIR".into(), temp.to_string_lossy().into_owned()),
-        ("XDG_DATA_HOME".into(), temp.join("data").to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR".into(),
+            temp.to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".into(),
+            temp.join("data").to_string_lossy().into_owned(),
+        ),
     ]
 }
 
@@ -88,9 +94,18 @@ impl Drop for ContainerGuard {
 
 fn isolated_env_with_config(temp: &std::path::Path) -> Vec<(String, String)> {
     vec![
-        ("XDG_RUNTIME_DIR".into(), temp.to_string_lossy().into_owned()),
-        ("XDG_DATA_HOME".into(), temp.join("data").to_string_lossy().into_owned()),
-        ("XDG_CONFIG_HOME".into(), temp.join("config").to_string_lossy().into_owned()),
+        (
+            "XDG_RUNTIME_DIR".into(),
+            temp.to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".into(),
+            temp.join("data").to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_CONFIG_HOME".into(),
+            temp.join("config").to_string_lossy().into_owned(),
+        ),
     ]
 }
 
@@ -190,7 +205,10 @@ fn m1_walking_skeleton_round_trip() {
     let out_ls = cmd("reeve", &env).arg("ls").output().expect("run reeve ls");
     let stdout = String::from_utf8(out_ls.stdout).unwrap();
     assert!(stdout.contains("first"), "expected card brief: {stdout}");
-    assert!(stdout.contains("Backlog"), "expected Backlog column: {stdout}");
+    assert!(
+        stdout.contains("Backlog"),
+        "expected Backlog column: {stdout}"
+    );
 
     // mv should change column (use Planning to stay container-free in the M1 smoke test).
     let out_mv = cmd("reeve", &env)
@@ -207,7 +225,10 @@ fn m1_walking_skeleton_round_trip() {
     // ls should now show Planning.
     let out_ls2 = cmd("reeve", &env).arg("ls").output().expect("run reeve ls");
     let stdout = String::from_utf8(out_ls2.stdout).unwrap();
-    assert!(stdout.contains("Planning"), "expected column updated: {stdout}");
+    assert!(
+        stdout.contains("Planning"),
+        "expected column updated: {stdout}"
+    );
 
     // DaemonGuard's Drop handles SIGTERM + wait.
 }
@@ -246,7 +267,11 @@ fn m2_container_lifecycle_happy_path() {
         .args(["new", "--household", "test", "--brief", "smoke"])
         .output()
         .expect("reeve new");
-    assert!(out.status.success(), "{:?}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let card_id = parse_card_id_from_new_output(&String::from_utf8(out.stdout).unwrap());
     let _guard = ContainerGuard(card_id.clone());
 
@@ -255,7 +280,11 @@ fn m2_container_lifecycle_happy_path() {
         .args(["mv", &card_id, "implementing"])
         .output()
         .expect("reeve mv");
-    assert!(out.status.success(), "{:?}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let container = format!("reeve-{card_id}");
     assert!(
@@ -268,7 +297,11 @@ fn m2_container_lifecycle_happy_path() {
         .path()
         .join("reeve/cards")
         .join(format!("{card_id}.sock"));
-    assert!(card_socket.exists(), "per-card socket missing: {}", card_socket.display());
+    assert!(
+        card_socket.exists(),
+        "per-card socket missing: {}",
+        card_socket.display()
+    );
 
     // Copy the reeve binary into the container so the in-container CLI exists.
     let reeve_bin = target_dir().join("reeve");
@@ -300,20 +333,30 @@ fn m2_container_lifecycle_happy_path() {
     );
 
     // Container should still be running (Review keeps the container warm).
-    assert_eq!(docker_inspect_status(&container).as_deref(), Some("running"));
+    assert_eq!(
+        docker_inspect_status(&container).as_deref(),
+        Some("running")
+    );
 
     // mv → done tears it down.
     let out = cmd("reeve", &env)
         .args(["mv", &card_id, "done"])
         .output()
         .expect("reeve mv done");
-    assert!(out.status.success(), "{:?}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     assert!(
         wait_for_container(&container, false, Duration::from_secs(10)),
         "container {container} still present after Done",
     );
-    assert!(!card_socket.exists(), "per-card socket lingered after teardown");
+    assert!(
+        !card_socket.exists(),
+        "per-card socket lingered after teardown"
+    );
 }
 
 #[test]
@@ -356,7 +399,11 @@ fn m2_reconcile_after_daemon_sigkill() {
         .expect("reeve mv");
 
     let container = format!("reeve-{card_id}");
-    assert!(wait_for_container(&container, true, Duration::from_secs(10)));
+    assert!(wait_for_container(
+        &container,
+        true,
+        Duration::from_secs(10)
+    ));
 
     let reeve_bin = target_dir().join("reeve");
     Command::new("docker")
@@ -375,7 +422,10 @@ fn m2_reconcile_after_daemon_sigkill() {
     )
     .unwrap();
     let _ = daemon.wait();
-    assert_eq!(docker_inspect_status(&container).as_deref(), Some("running"));
+    assert_eq!(
+        docker_inspect_status(&container).as_deref(),
+        Some("running")
+    );
 
     // Restart daemon — reconcile should re-bind the per-card socket.
     let _daemon2 = DaemonGuard(
@@ -401,7 +451,10 @@ fn m2_reconcile_after_daemon_sigkill() {
         sleep(Duration::from_millis(50));
         waited += Duration::from_millis(50);
     }
-    assert!(card_socket.exists(), "per-card socket not re-bound after restart");
+    assert!(
+        card_socket.exists(),
+        "per-card socket not re-bound after restart"
+    );
 
     // In-container mv-self should now work again.
     let out = Command::new("docker")

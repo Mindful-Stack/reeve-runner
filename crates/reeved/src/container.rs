@@ -50,8 +50,14 @@ pub fn spawn_command(
 
     let mounts: [(PathBuf, &str); 3] = [
         (claude_dir.join("skills"), "/home/agent/.claude/skills"),
-        (claude_dir.join("settings.json"), "/home/agent/.claude/settings.json"),
-        (claude_dir.join("CLAUDE.md"), "/home/agent/.claude/CLAUDE.md"),
+        (
+            claude_dir.join("settings.json"),
+            "/home/agent/.claude/settings.json",
+        ),
+        (
+            claude_dir.join("CLAUDE.md"),
+            "/home/agent/.claude/CLAUDE.md",
+        ),
     ];
     for (host, container) in mounts {
         if host.exists() {
@@ -141,12 +147,7 @@ impl ContainerOps for DockerOps {
 
     async fn inspect_status(&self, container_name: &str) -> Result<Option<String>> {
         let output = Command::new("docker")
-            .args([
-                "inspect",
-                "--format",
-                "{{.State.Status}}",
-                container_name,
-            ])
+            .args(["inspect", "--format", "{{.State.Status}}", container_name])
             .output()
             .await
             .context("exec docker inspect")?;
@@ -165,6 +166,12 @@ impl ContainerOps for DockerOps {
 }
 
 /// Maps a `docker inspect` `.State.Status` string to our `ContainerStatus`.
+///
+/// Not currently called from production code — `reconcile_one` only
+/// distinguishes `"running"` from everything else. Kept around (with the
+/// allow) because the more granular mapping will be needed once `status-self`
+/// reports something richer than "is the container alive". See follow-up M2-F1.
+#[allow(dead_code)]
 pub fn map_docker_state(s: &str) -> ContainerStatus {
     match s {
         "running" => ContainerStatus::Running,
@@ -276,12 +283,7 @@ pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
                 let id = row.card_id.clone();
                 tokio::task::spawn_blocking(move || -> Result<()> {
                     let conn = db.blocking_lock();
-                    crate::db::update_container_status(
-                        &conn,
-                        &id,
-                        ContainerStatus::Failed,
-                        now,
-                    )
+                    crate::db::update_container_status(&conn, &id, ContainerStatus::Failed, now)
                 })
                 .await??;
                 tracing::warn!(card = %row.card_id, "orphaned container row → Failed");
@@ -314,7 +316,9 @@ mod docker_tests {
         }
         let ops = DockerOps;
         // A name that definitely doesn't exist. Teardown should succeed.
-        ops.teardown("reeve-definitely-not-there-xyz").await.unwrap();
+        ops.teardown("reeve-definitely-not-there-xyz")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -329,8 +333,13 @@ mod docker_tests {
         let _ = ops.teardown(name).await;
 
         let argv = vec![
-            "run".into(), "-d".into(), "--name".into(), name.into(),
-            "alpine:latest".into(), "sleep".into(), "60".into(),
+            "run".into(),
+            "-d".into(),
+            "--name".into(),
+            name.into(),
+            "alpine:latest".into(),
+            "sleep".into(),
+            "60".into(),
         ];
         ops.spawn(argv).await.unwrap();
 
@@ -378,7 +387,10 @@ mod tests {
         assert_eq!(argv[0], "run");
         assert!(argv.iter().any(|s| s == "reeve-abc"));
         assert!(argv.iter().any(|s| s == "reeve.card_id=abc"));
-        assert!(argv.iter().any(|s| s.starts_with(&format!("{}:", cards_dir.display()))));
+        assert!(
+            argv.iter()
+                .any(|s| s.starts_with(&format!("{}:", cards_dir.display())))
+        );
         assert_eq!(argv.last().unwrap(), "infinity");
         assert_eq!(argv[argv.len() - 2], "sleep");
         let image_idx = argv.iter().position(|s| s == "alpine:latest").unwrap();
@@ -392,10 +404,7 @@ mod tests {
         let claude = dir.path().join("claude");
         // claude_dir does not exist
         let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
-        let claude_mounts = argv
-            .iter()
-            .filter(|s| s.contains("/.claude/"))
-            .count();
+        let claude_mounts = argv.iter().filter(|s| s.contains("/.claude/")).count();
         assert_eq!(claude_mounts, 0);
     }
 
@@ -416,10 +425,7 @@ mod tests {
         // property that protects the host's CC config from container writes.
         for arg in &argv {
             if arg.contains("/.claude/") {
-                assert!(
-                    arg.ends_with(":ro"),
-                    "claude mount not :ro: {arg}",
-                );
+                assert!(arg.ends_with(":ro"), "claude mount not :ro: {arg}",);
             }
         }
     }

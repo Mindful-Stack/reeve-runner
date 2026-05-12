@@ -127,10 +127,7 @@ fn render_columns(f: &mut ratatui::Frame<'_>, area: Rect, cards: &[Card]) {
 fn card_to_listitem(card: &Card) -> ListItem<'_> {
     let id_short = card.id.get(..8).unwrap_or(&card.id);
     let line = Line::from(vec![
-        Span::styled(
-            format!("{id_short} "),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("{id_short} "), Style::default().fg(Color::DarkGray)),
         Span::raw(card.brief.as_str()),
     ]);
     ListItem::new(line)

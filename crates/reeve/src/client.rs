@@ -115,7 +115,9 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let result = call(&socket, "anything", serde_json::json!({})).await.unwrap();
+        let result = call(&socket, "anything", serde_json::json!({}))
+            .await
+            .unwrap();
         let err = result.unwrap_err();
         assert_eq!(err.code, 404);
         assert_eq!(err.message, "nope");

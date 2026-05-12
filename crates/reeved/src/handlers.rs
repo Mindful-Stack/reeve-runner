@@ -207,10 +207,7 @@ async fn handle_mv_self(
     serde_json::to_value(MvSelfResult { card }).map_err(to_internal)
 }
 
-async fn handle_status_self(
-    db: DbHandle,
-    card_id: String,
-) -> std::result::Result<Value, RpcError> {
+async fn handle_status_self(db: DbHandle, card_id: String) -> std::result::Result<Value, RpcError> {
     let id = card_id.clone();
     let (card, container) = tokio::task::spawn_blocking(
         move || -> Result<(Option<Card>, Option<db::ContainerRow>)> {
@@ -273,9 +270,8 @@ mod tests {
             _c: CallerContext,
         ) -> Pin<
             Box<
-                dyn std::future::Future<
-                        Output = std::result::Result<serde_json::Value, RpcError>,
-                    > + Send,
+                dyn std::future::Future<Output = std::result::Result<serde_json::Value, RpcError>>
+                    + Send,
             >,
         > {
             Box::pin(async { Ok(serde_json::Value::Null) })
@@ -286,7 +282,9 @@ mod tests {
         fresh_state_with_households(HashMap::new())
     }
 
-    fn fresh_state_with_households(map: HashMap<String, crate::household::HouseholdProfile>) -> DaemonState {
+    fn fresh_state_with_households(
+        map: HashMap<String, crate::household::HouseholdProfile>,
+    ) -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
         DaemonState {
@@ -336,7 +334,9 @@ mod tests {
             method: "ls".into(),
             params: serde_json::json!({}),
         };
-        let ls_value = dispatch(req_ls, state, CallerContext::host()).await.unwrap();
+        let ls_value = dispatch(req_ls, state, CallerContext::host())
+            .await
+            .unwrap();
         let ls_result: LsResult = serde_json::from_value(ls_value).unwrap();
         assert_eq!(ls_result.cards.len(), 1);
         assert_eq!(ls_result.cards[0], new_result.card);
@@ -425,7 +425,9 @@ mod tests {
             method: "mv-self".into(),
             params: serde_json::json!({"column": "review"}),
         };
-        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::FORBIDDEN);
     }
 
@@ -473,7 +475,9 @@ mod tests {
             method: "status-self".into(),
             params: serde_json::json!({}),
         };
-        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::FORBIDDEN);
     }
 

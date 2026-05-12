@@ -255,8 +255,7 @@ pub mod paths {
     /// Host processes fall back to the daemon's main socket.
     pub fn detect_socket() -> PathBuf {
         if let Ok(card_id) = std::env::var("REEVE_CARD_ID") {
-            let sock = std::path::Path::new(IN_CONTAINER_CARDS_DIR)
-                .join(format!("{card_id}.sock"));
+            let sock = std::path::Path::new(IN_CONTAINER_CARDS_DIR).join(format!("{card_id}.sock"));
             if sock.exists() {
                 return sock;
             }
@@ -475,7 +474,9 @@ mod tests {
 
     #[test]
     fn mv_self_params_serialize_with_just_column() {
-        let p = MvSelfParams { column: Column::Review };
+        let p = MvSelfParams {
+            column: Column::Review,
+        };
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(json, "{\"column\":\"review\"}");
     }

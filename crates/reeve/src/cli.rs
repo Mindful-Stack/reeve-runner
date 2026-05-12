@@ -3,7 +3,9 @@
 use crate::client;
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use reeve_protocol::{Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult, paths};
+use reeve_protocol::{
+    Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult, paths,
+};
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -76,7 +78,11 @@ fn parse_column(s: &str) -> Result<Column, String> {
 pub async fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Ls => ls().await,
-        Command::New { household, brief, needs_heavy } => new(household, brief, needs_heavy).await,
+        Command::New {
+            household,
+            brief,
+            needs_heavy,
+        } => new(household, brief, needs_heavy).await,
         Command::Mv { id, column } => mv(id, column).await,
         Command::MvSelf { column } => mv_self(column).await,
         Command::StatusSelf => status_self().await,
@@ -143,13 +149,9 @@ async fn mv(id: String, column: Column) -> Result<()> {
 
 async fn mv_self(column: Column) -> Result<()> {
     let socket = paths::detect_socket();
-    let result = client::call(
-        &socket,
-        "mv-self",
-        serde_json::json!({"column": column}),
-    )
-    .await
-    .context("calling mv-self")?;
+    let result = client::call(&socket, "mv-self", serde_json::json!({"column": column}))
+        .await
+        .context("calling mv-self")?;
     match result {
         Ok(value) => {
             let result: MvSelfResult = serde_json::from_value(value)?;
@@ -168,11 +170,7 @@ async fn status_self() -> Result<()> {
     match result {
         Ok(value) => {
             let r: StatusSelfResult = serde_json::from_value(value)?;
-            println!(
-                "{} ({})",
-                r.card.id,
-                r.card.column.label(),
-            );
+            println!("{} ({})", r.card.id, r.card.column.label(),);
             match r.container_status {
                 Some(s) => println!("container: {}", s.as_wire_str()),
                 None => println!("container: (none)"),
