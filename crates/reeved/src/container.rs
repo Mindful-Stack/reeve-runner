@@ -92,6 +92,10 @@ pub trait ContainerOps: Send + Sync {
     async fn teardown(&self, container_name: &str) -> Result<()>;
     /// Returns the docker-side state of the container, or `None` if it doesn't exist.
     async fn inspect_status(&self, container_name: &str) -> Result<Option<String>>;
+    /// Returns the docker-assigned container name for the card tagged
+    /// `reeve.card_id=<card-id>`. `Ok(None)` when no container is found yet
+    /// (caller polls). `Err` when the query itself fails.
+    async fn discover_container_name(&self, card_id: &str) -> Result<Option<String>>;
 }
 
 /// Real Docker implementation. Shells out to `docker` via tokio.
@@ -163,6 +167,22 @@ impl ContainerOps for DockerOps {
         let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(Some(status))
     }
+
+    async fn discover_container_name(&self, card_id: &str) -> Result<Option<String>> {
+        let label = format!("label=reeve.card_id={card_id}");
+        let output = Command::new("docker")
+            .args(["ps", "--filter", &label, "--format", "{{.Names}}"])
+            .output()
+            .await
+            .context("exec docker ps for container discovery")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "docker ps failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        parse_discovered_name(&String::from_utf8_lossy(&output.stdout))
+    }
 }
 
 /// Maps a `docker inspect` `.State.Status` string to our `ContainerStatus`.
@@ -182,6 +202,90 @@ pub fn map_docker_state(s: &str) -> ContainerStatus {
 
 /// Convenience handle used by the rest of the daemon.
 pub type ContainerOpsHandle = Arc<dyn ContainerOps>;
+
+/// Build the argv for `devcontainer` (excluding the `devcontainer` binary
+/// itself) that brings up the container for `card_id`.
+///
+/// - `workspace` is the host-side card workspace (per-card root containing
+///   one subdir per cloned repo). Devcontainer CLI bind-mounts it to
+///   `/workspaces/<basename>/` by convention.
+/// - `devcontainer_json` is the absolute path to the household's
+///   devcontainer.json (declares image, runArgs, remoteUser, postCreate, etc).
+/// - `cards_socket_dir` is bind-mounted at `IN_CONTAINER_CARDS_DIR`, matching
+///   the M2 contract so in-container `reeve mv-self` keeps working.
+/// - `claude_dir` mounts are read-only and skipped if absent.
+/// - `api_key` is injected as `ANTHROPIC_API_KEY` when `Some`.
+///
+/// Container is tagged with `--id-label reeve.card_id=<card-id>` so the
+/// post-spawn discovery query can find its actual docker-assigned name.
+pub fn devcontainer_up_command(
+    card_id: &str,
+    workspace: &std::path::Path,
+    devcontainer_json: &std::path::Path,
+    cards_socket_dir: &std::path::Path,
+    claude_dir: &std::path::Path,
+    api_key: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "up".into(),
+        "--workspace-folder".into(),
+        workspace.display().to_string(),
+        "--config".into(),
+        devcontainer_json.display().to_string(),
+        "--id-label".into(),
+        format!("reeve.card_id={card_id}"),
+        "--mount".into(),
+        format!(
+            "type=bind,source={},target={}",
+            cards_socket_dir.display(),
+            reeve_protocol::paths::IN_CONTAINER_CARDS_DIR
+        ),
+    ];
+
+    let ro_mounts: [(std::path::PathBuf, &str); 3] = [
+        (claude_dir.join("skills"), "/home/agent/.claude/skills"),
+        (claude_dir.join("settings.json"), "/home/agent/.claude/settings.json"),
+        (claude_dir.join("CLAUDE.md"), "/home/agent/.claude/CLAUDE.md"),
+    ];
+    for (host, container_target) in ro_mounts {
+        if host.exists() {
+            args.push("--mount".into());
+            args.push(format!(
+                "type=bind,source={},target={},readonly",
+                host.display(),
+                container_target,
+            ));
+        } else {
+            tracing::warn!(
+                "skipping claude mount; not present on host: {}",
+                host.display()
+            );
+        }
+    }
+
+    if let Some(key) = api_key {
+        args.push("--remote-env".into());
+        args.push(format!("ANTHROPIC_API_KEY={key}"));
+    }
+    args.push("--remote-env".into());
+    args.push(format!("REEVE_CARD_ID={card_id}"));
+
+    args
+}
+
+/// Parse the stdout of `docker ps --filter label=reeve.card_id=<id>
+/// --format '{{.Names}}'` into a single container name. Returns:
+/// - `Ok(Some(name))` when exactly one match is found.
+/// - `Ok(None)` when no match is found (caller polls + retries).
+/// - `Err(...)` when more than one match is found (shouldn't happen).
+pub fn parse_discovered_name(stdout: &str) -> Result<Option<String>> {
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    match lines.as_slice() {
+        [] => Ok(None),
+        [name] => Ok(Some(name.trim().to_string())),
+        many => anyhow::bail!("expected one container, got {}: {many:?}", many.len()),
+    }
+}
 
 #[cfg(test)]
 fn docker_available() -> bool {
@@ -454,6 +558,102 @@ mod tests {
             None,
         );
         assert!(argv.iter().any(|s| s == "REEVE_CARD_ID=card-42"));
+    }
+
+    #[test]
+    fn devcontainer_up_command_includes_workspace_config_label_and_mount() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("card-1");
+        let dc = dir.path().join("devcontainer.json");
+        let cards_socket = dir.path().join("sockets");
+        let claude = dir.path().join("claude");
+
+        let argv = devcontainer_up_command(
+            "card-1",
+            &workspace,
+            &dc,
+            &cards_socket,
+            &claude,
+            None,
+        );
+
+        assert_eq!(argv[0], "up");
+        assert!(argv.iter().any(|s| s == "--workspace-folder"));
+        assert!(argv.iter().any(|s| s == "--config"));
+        assert!(argv.iter().any(|s| s == "reeve.card_id=card-1"));
+        assert!(argv.iter().any(|s| s.starts_with("type=bind,source=") && s.contains("/var/run/reeve-cards")));
+        assert!(argv.iter().any(|s| s == "REEVE_CARD_ID=card-1"));
+    }
+
+    #[test]
+    fn devcontainer_up_command_skips_missing_claude_mounts() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let claude = dir.path().join("claude"); // does not exist
+
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        let claude_mounts = argv.iter().filter(|s| s.contains("/.claude/")).count();
+        assert_eq!(claude_mounts, 0);
+    }
+
+    #[test]
+    fn devcontainer_up_command_only_includes_existing_claude_mounts() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let claude = dir.path().join("claude");
+        std::fs::create_dir_all(claude.join("skills")).unwrap();
+        std::fs::write(claude.join("CLAUDE.md"), "x").unwrap();
+        // settings.json deliberately missing
+
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        assert!(argv.iter().any(|s| s.contains("/.claude/skills,")));
+        assert!(argv.iter().any(|s| s.contains("/CLAUDE.md,")));
+        assert!(!argv.iter().any(|s| s.contains("settings.json")));
+        // Every claude mount must be readonly.
+        for arg in &argv {
+            if arg.contains("/.claude/") {
+                assert!(arg.contains(",readonly"), "not readonly: {arg}");
+            }
+        }
+    }
+
+    #[test]
+    fn devcontainer_up_command_injects_api_key_only_when_some() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let claude = dir.path().join("claude");
+
+        let with = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, Some("sk-x"));
+        assert!(with.iter().any(|s| s == "ANTHROPIC_API_KEY=sk-x"));
+
+        let without = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        assert!(!without.iter().any(|s| s.starts_with("ANTHROPIC_API_KEY=")));
+    }
+
+    #[test]
+    fn parse_discovered_name_single_line() {
+        let r = parse_discovered_name("vibrant_curie\n").unwrap();
+        assert_eq!(r, Some("vibrant_curie".to_string()));
+    }
+
+    #[test]
+    fn parse_discovered_name_empty_returns_none() {
+        let r = parse_discovered_name("").unwrap();
+        assert_eq!(r, None);
+        let r = parse_discovered_name("\n\n").unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn parse_discovered_name_multi_line_is_error() {
+        let r = parse_discovered_name("a\nb\n");
+        assert!(r.is_err());
     }
 }
 

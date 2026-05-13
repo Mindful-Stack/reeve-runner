@@ -258,6 +258,9 @@ mod tests {
         async fn inspect_status(&self, _name: &str) -> Result<Option<String>> {
             Ok(None)
         }
+        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
+            Ok(Some("test-container".to_string()))
+        }
     }
 
     /// Dispatcher stub; transitions don't need to call back here in tests.
