@@ -206,3 +206,98 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    //! Real-git tests. Require `git` in $PATH. Hit the filesystem.
+    use super::*;
+    use tempfile::tempdir;
+
+    fn git(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invoke");
+        assert!(status.success(), "git {args:?} failed in {}", repo.display());
+    }
+
+    /// Initialise a host repo with one commit. Returns the repo path.
+    fn host_repo(dir: &Path, name: &str) -> PathBuf {
+        let repo = dir.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "test"]);
+        std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "--quiet", "-m", "initial"]);
+        repo
+    }
+
+    #[tokio::test]
+    async fn real_clone_produces_dissociated_clone() {
+        let dir = tempdir().unwrap();
+        let source = host_repo(dir.path(), "host");
+        let dest = dir.path().join("dest");
+
+        let ops = RealGitOps;
+        ops.clone(&source, &dest).await.unwrap();
+
+        // Dest exists and has a .git directory.
+        assert!(dest.join(".git").exists());
+        // `objects/info/alternates` must NOT exist — that's the file
+        // --dissociate is supposed to remove. Its absence is the proof
+        // the dependency on the host repo was severed.
+        let alternates = dest.join(".git/objects/info/alternates");
+        assert!(
+            !alternates.exists(),
+            "alternates file present — clone was not dissociated",
+        );
+        // git log should show the commit we created in the host.
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&dest)
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        let stdout = String::from_utf8_lossy(&log.stdout);
+        assert!(stdout.contains("initial"), "unexpected log: {stdout}");
+    }
+
+    #[tokio::test]
+    async fn real_clone_two_repos_via_clone_all_repos() {
+        let dir = tempdir().unwrap();
+        let a = host_repo(dir.path(), "host-a");
+        let b = host_repo(dir.path(), "host-b");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let ops = RealGitOps;
+        clone_all_repos(
+            &ops,
+            &workspace,
+            &[
+                RepoSpec { name: "a".into(), path: a },
+                RepoSpec { name: "b".into(), path: b },
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert!(workspace.join("a/.git").exists());
+        assert!(workspace.join("b/.git").exists());
+    }
+
+    #[tokio::test]
+    async fn real_clone_fails_when_source_is_not_a_repo() {
+        let dir = tempdir().unwrap();
+        let not_a_repo = dir.path().join("garbage");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+        let dest = dir.path().join("dest");
+
+        let ops = RealGitOps;
+        let result = ops.clone(&not_a_repo, &dest).await;
+        assert!(result.is_err(), "clone of non-repo should fail");
+    }
+}
