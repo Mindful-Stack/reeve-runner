@@ -35,6 +35,9 @@ pub struct RealGitOps;
 #[async_trait]
 impl GitOps for RealGitOps {
     async fn clone(&self, source: &Path, dest: &Path) -> Result<()> {
+        // `--reference X --dissociate X` is by design: `--reference` borrows
+        // objects from X (cheap clone), trailing X is the clone source URL.
+        // Both point at the host repo; `--dissociate` then severs the borrow.
         let output = Command::new("git")
             .args([
                 "clone",
