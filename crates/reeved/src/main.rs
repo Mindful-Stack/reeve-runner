@@ -74,9 +74,11 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
+    let git: clones::GitOpsHandle = Arc::new(clones::RealGitOps);
     let state = effects::DaemonState {
         db: db.clone(),
         containers,
+        git,
         listeners: listeners.clone(),
         households,
         claude_dir,

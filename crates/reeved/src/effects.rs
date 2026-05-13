@@ -1,6 +1,7 @@
 //! Live wiring of `TransitionEffects` for the running daemon.
 //! Bundled with the `DaemonState` that the dispatcher closure captures.
 
+use crate::clones::GitOpsHandle;
 use crate::container::{self, ContainerOpsHandle};
 use crate::db;
 use crate::household::HouseholdMap;
@@ -18,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct DaemonState {
     pub db: DbHandle,
     pub containers: ContainerOpsHandle,
+    pub git: GitOpsHandle,
     pub listeners: ListenerRegistry,
     pub households: HouseholdMap,
     pub claude_dir: PathBuf,
@@ -45,11 +47,7 @@ fn now_secs() -> i64 {
 impl TransitionEffects for LiveEffects {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         let card_id = card.id.clone();
-        let name = container::container_name(&card_id);
 
-        // Precheck on the host-side (handlers::handle_mv) already verified
-        // the household exists. We re-look-up here because TransitionEffects
-        // is the boundary the trait gives us.
         let profile = self
             .state
             .households
@@ -63,42 +61,61 @@ impl TransitionEffects for LiveEffects {
             })?;
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
-        let cards_dir = reeve_protocol::paths::cards_socket_dir();
+        let cards_socket_dir = reeve_protocol::paths::cards_socket_dir();
+        let workspace = reeve_protocol::paths::card_workspace_path(&card_id);
 
-        // Ensure the cards directory exists before the container starts so
-        // Docker bind-mounts it as a directory (not create a new one).
-        std::fs::create_dir_all(&cards_dir)
-            .with_context(|| format!("create cards dir {}", cards_dir.display()))?;
+        // Ensure the cards SOCKET directory exists so docker bind-mounts the
+        // dir (not a fresh empty one). M2 contract.
+        std::fs::create_dir_all(&cards_socket_dir)
+            .with_context(|| format!("create cards socket dir {}", cards_socket_dir.display()))?;
 
-        // Already running? Reconcile DB → Running (in case the row is stale
-        // Spawning from a prior crash), spawn the listener, and return.
-        if let Some(state) = self.state.containers.inspect_status(&name).await? {
-            if state == "running" {
-                let id_for_update = card_id.clone();
-                let name_for_update = name.clone();
-                let db = self.state.db.clone();
-                let now = now_secs();
-                tokio::task::spawn_blocking(move || -> Result<()> {
-                    let conn = db.blocking_lock();
-                    db::upsert_container(
-                        &conn,
-                        &id_for_update,
-                        &name_for_update,
-                        ContainerStatus::Running,
-                        now,
-                    )
-                })
-                .await??;
-                self.state.listeners.spawn(&card_id, socket).await;
-                return Ok(());
+        // If a container with our label is already running, adopt it and exit.
+        // Discovery: the label is unique per card.
+        if let Ok(Some(existing)) = self
+            .state
+            .containers
+            .discover_container_name(&card_id)
+            .await
+        {
+            if let Some(state) = self.state.containers.inspect_status(&existing).await? {
+                if state == "running" {
+                    let id_for_update = card_id.clone();
+                    let name_for_update = existing.clone();
+                    let db = self.state.db.clone();
+                    let now = now_secs();
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        let conn = db.blocking_lock();
+                        db::upsert_container(
+                            &conn,
+                            &id_for_update,
+                            &name_for_update,
+                            ContainerStatus::Running,
+                            now,
+                        )
+                    })
+                    .await??;
+                    self.state.listeners.spawn(&card_id, socket).await;
+                    return Ok(());
+                }
             }
         }
 
-        // Record Spawning before launching docker. If the daemon crashes
-        // between this write and the docker spawn returning, Task 11's
-        // reconcile will mark this row Failed on next startup.
+        // Create workspace dir + clone repos. Failures bubble up; caller
+        // (handle_mv) has already mutated the column, so partial failure
+        // leaves the card as Implementing+no-container (M2 documented gap).
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("create workspace {}", workspace.display()))?;
+        crate::clones::clone_all_repos(&*self.state.git, &workspace, &profile.repos)
+            .await
+            .context("clone repos into card workspace")?;
+
+        // Record Spawning before launching devcontainer. If we crash between
+        // here and discovery, the row stays Spawning; reconcile marks Failed.
+        // Use a synthetic name until discovery succeeds; reconcile only ever
+        // queries by inspect/ps so a stale name doesn't break anything.
+        let pending_name = format!("pending-{card_id}");
         let id_for_record = card_id.clone();
-        let name_for_record = name.clone();
+        let name_for_record = pending_name.clone();
         let db = self.state.db.clone();
         let now = now_secs();
         tokio::task::spawn_blocking(move || -> Result<()> {
@@ -113,30 +130,50 @@ impl TransitionEffects for LiveEffects {
         })
         .await??;
 
-        let argv = container::spawn_command(
+        let argv = container::devcontainer_up_command(
             &card_id,
-            &profile,
-            &cards_dir,
+            &workspace,
+            &profile.devcontainer,
+            &cards_socket_dir,
             &self.state.claude_dir,
             self.state.api_key.as_deref(),
         );
         let spawn_result = self.state.containers.spawn(argv).await;
 
-        let new_status = match &spawn_result {
-            Ok(()) => ContainerStatus::Running,
-            Err(_) => ContainerStatus::Failed,
-        };
+        if spawn_result.is_err() {
+            let id_for_update = card_id.clone();
+            let db = self.state.db.clone();
+            let now = now_secs();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let conn = db.blocking_lock();
+                db::update_container_status(&conn, &id_for_update, ContainerStatus::Failed, now)
+            })
+            .await??;
+            return spawn_result;
+        }
+
+        // Discover the actual container name (devcontainer CLI picks it).
+        // Poll briefly — devcontainer up may return success a moment before
+        // the container is visible in docker ps.
+        let discovered = discover_with_deadline(&self.state, &card_id).await?;
+
+        // Upsert with the real name now.
         let id_for_update = card_id.clone();
+        let name_for_update = discovered.clone();
         let db = self.state.db.clone();
         let now = now_secs();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = db.blocking_lock();
-            db::update_container_status(&conn, &id_for_update, new_status, now)
+            db::upsert_container(
+                &conn,
+                &id_for_update,
+                &name_for_update,
+                ContainerStatus::Running,
+                now,
+            )
         })
         .await??;
-        spawn_result?;
 
-        // Bring up the per-card listener so the agent can call back.
         self.state.listeners.spawn(&card_id, socket).await;
         Ok(())
     }
@@ -145,9 +182,28 @@ impl TransitionEffects for LiveEffects {
         // Tear down listener first so the agent can't issue more calls.
         self.state.listeners.stop(card_id).await?;
 
-        let name = container::container_name(card_id);
-        // Container may not exist (card moved Backlog → Done with no prior
-        // Implementing). That's fine — just remove the row if present.
+        // Look up the container name from the containers row (the name was
+        // recorded post-discovery in ensure_running).
+        let id_for_lookup = card_id.to_string();
+        let db = self.state.db.clone();
+        let row = tokio::task::spawn_blocking(move || -> Result<Option<db::ContainerRow>> {
+            let conn = db.blocking_lock();
+            db::get_container(&conn, &id_for_lookup)
+        })
+        .await??;
+
+        let name = match row {
+            Some(r) => r.container_name,
+            None => {
+                // Card moved Backlog → Done with no prior Implementing.
+                // No container ever existed; nothing to do.
+                return Ok(());
+            }
+        };
+
+        // Container may not actually exist (e.g., daemon crashed mid-spawn
+        // and the row is Spawning with a "pending-..." name). Treat absence
+        // as "already done".
         if self.state.containers.inspect_status(&name).await?.is_none() {
             let id_for_remove = card_id.to_string();
             let db = self.state.db.clone();
@@ -168,5 +224,27 @@ impl TransitionEffects for LiveEffects {
         })
         .await??;
         Ok(())
+    }
+}
+
+/// Poll `containers.discover_container_name` until it returns a name, with a
+/// 2-second deadline. Returns `Err` if the deadline expires without a result.
+/// `devcontainer up` may return success a moment before docker registers the
+/// container, so this poll absorbs the race.
+async fn discover_with_deadline(state: &DaemonState, card_id: &str) -> Result<String> {
+    let start = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(2);
+    let mut backoff = std::time::Duration::from_millis(100);
+    loop {
+        if let Some(name) = state.containers.discover_container_name(card_id).await? {
+            return Ok(name);
+        }
+        if start.elapsed() >= deadline {
+            anyhow::bail!("container not discoverable after devcontainer up");
+        }
+        tokio::time::sleep(backoff).await;
+        if backoff < std::time::Duration::from_millis(400) {
+            backoff *= 2;
+        }
     }
 }

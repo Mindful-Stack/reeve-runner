@@ -1,4 +1,4 @@
-//! End-to-end smoke test for the M1 walking skeleton.
+//! End-to-end smoke tests for Reeve.
 //!
 //! Spawns `reeved` as a child process, drives it through the `reeve` CLI,
 //! verifies metadata round-trips correctly, and shuts the daemon down cleanly.
@@ -64,6 +64,16 @@ fn is_docker_available() -> bool {
         .unwrap_or(false)
 }
 
+fn is_devcontainer_cli_available() -> bool {
+    std::process::Command::new("devcontainer")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn docker_inspect_status(name: &str) -> Option<String> {
     let out = std::process::Command::new("docker")
         .args(["inspect", "--format", "{{.State.Status}}", name])
@@ -84,11 +94,30 @@ fn docker_rm_force(name: &str) {
         .status();
 }
 
-/// Removes `reeve-<card_id>` on drop, even if the test panics.
-struct ContainerGuard(String);
-impl Drop for ContainerGuard {
+fn discover_container_by_label(card_id: &str) -> Option<String> {
+    let out = std::process::Command::new("docker")
+        .args([
+            "ps",
+            "--filter",
+            &format!("label=reeve.card_id={card_id}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+struct DockerCleanup(Option<String>);
+impl Drop for DockerCleanup {
     fn drop(&mut self) {
-        docker_rm_force(&format!("reeve-{}", self.0));
+        if let Some(name) = &self.0 {
+            docker_rm_force(name);
+        }
     }
 }
 
@@ -106,33 +135,53 @@ fn isolated_env_with_config(temp: &std::path::Path) -> Vec<(String, String)> {
             "XDG_CONFIG_HOME".into(),
             temp.join("config").to_string_lossy().into_owned(),
         ),
+        (
+            "REEVE_CARDS_DIR".into(),
+            temp.join("cards").to_string_lossy().into_owned(),
+        ),
     ]
 }
 
 fn write_test_household(temp: &std::path::Path) {
-    let dir = temp.join("config/reeve/households");
-    std::fs::create_dir_all(&dir).unwrap();
-    // Use a glibc-based image whose glibc version is >= the host's so the
-    // host-built reeve binary can be docker-cp'd in and executed inside the
-    // container for the in-container mv-self tests.
+    // Generate a minimal devcontainer.json the test household will reference.
+    let dc_dir = temp.join(".devcontainer");
+    std::fs::create_dir_all(&dc_dir).unwrap();
     std::fs::write(
-        dir.join("test.toml"),
-        "image = \"debian:trixie-slim\"\ncmd = [\"sleep\", \"infinity\"]\n",
+        dc_dir.join("devcontainer.json"),
+        r#"{"image":"debian:trixie-slim","remoteUser":"root","overrideCommand":true}"#,
+    )
+    .unwrap();
+
+    let households = temp.join("config/reeve/households");
+    std::fs::create_dir_all(&households).unwrap();
+    std::fs::write(
+        households.join("test.toml"),
+        format!(
+            "devcontainer = \"{}\"\n[[repos]]\nname = \"sample\"\npath = \"{}\"\n",
+            dc_dir.join("devcontainer.json").display(),
+            temp.join("host-repo").display(),
+        ),
     )
     .unwrap();
 }
 
-fn wait_for_container(name: &str, expect_running: bool, deadline: Duration) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < deadline {
-        match docker_inspect_status(name) {
-            Some(s) if s == "running" && expect_running => return true,
-            None if !expect_running => return true,
-            _ => {}
-        }
-        sleep(Duration::from_millis(100));
+fn init_host_repo(temp: &std::path::Path) {
+    let repo = temp.join("host-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    fn git(repo: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invoke");
+        assert!(status.success(), "git {args:?} failed");
     }
-    false
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "test"]);
+    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "initial"]);
 }
 
 fn parse_card_id_from_new_output(stdout: &str) -> String {
@@ -234,15 +283,20 @@ fn m1_walking_skeleton_round_trip() {
 }
 
 #[test]
-fn m2_container_lifecycle_happy_path() {
+fn m3_clone_and_devcontainer_happy_path() {
     if !is_docker_available() {
-        eprintln!("skipping m2_container_lifecycle_happy_path: docker unavailable");
+        eprintln!("skipping m3_clone_and_devcontainer_happy_path: docker unavailable");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skipping m3_clone_and_devcontainer_happy_path: devcontainer CLI unavailable");
         return;
     }
     build_workspace();
 
     let temp = tempfile::tempdir().unwrap();
     let env = isolated_env_with_config(temp.path());
+    init_host_repo(temp.path());
     write_test_household(temp.path());
 
     let _daemon = DaemonGuard(
@@ -253,7 +307,6 @@ fn m2_container_lifecycle_happy_path() {
             .expect("spawn reeved"),
     );
 
-    // Wait for socket.
     let socket = temp.path().join("reeved.sock");
     let mut waited = Duration::ZERO;
     while !socket.exists() && waited < Duration::from_secs(2) {
@@ -262,7 +315,6 @@ fn m2_container_lifecycle_happy_path() {
     }
     assert!(socket.exists());
 
-    // new card
     let out = cmd("reeve", &env)
         .args(["new", "--household", "test", "--brief", "smoke"])
         .output()
@@ -273,9 +325,9 @@ fn m2_container_lifecycle_happy_path() {
         String::from_utf8_lossy(&out.stderr)
     );
     let card_id = parse_card_id_from_new_output(&String::from_utf8(out.stdout).unwrap());
-    let _guard = ContainerGuard(card_id.clone());
 
-    // mv → implementing
+    let mut cleanup = DockerCleanup(None);
+
     let out = cmd("reeve", &env)
         .args(["mv", &card_id, "implementing"])
         .output()
@@ -286,24 +338,37 @@ fn m2_container_lifecycle_happy_path() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let container = format!("reeve-{card_id}");
-    assert!(
-        wait_for_container(&container, true, Duration::from_secs(10)),
-        "container {container} did not reach running within 10s",
-    );
+    // Discover the actual container name via label.
+    let mut container = None;
+    let start = std::time::Instant::now();
+    while container.is_none() && start.elapsed() < Duration::from_secs(10) {
+        container = discover_container_by_label(&card_id);
+        if container.is_none() {
+            sleep(Duration::from_millis(200));
+        }
+    }
+    let container = container.expect("container not discoverable within 10s");
+    cleanup.0 = Some(container.clone());
 
-    // Per-card socket should now exist.
+    // Clone landed on disk and the dissociation severed.
+    let workspace = temp.path().join("cards").join(&card_id);
+    let clone_path = workspace.join("sample");
+    assert!(
+        clone_path.join(".git").exists(),
+        "clone not at {}",
+        clone_path.display()
+    );
+    let alternates = clone_path.join(".git/objects/info/alternates");
+    assert!(!alternates.exists(), "clone not dissociated");
+
+    // Per-card socket up.
     let card_socket = temp
         .path()
         .join("reeve/cards")
         .join(format!("{card_id}.sock"));
-    assert!(
-        card_socket.exists(),
-        "per-card socket missing: {}",
-        card_socket.display()
-    );
+    assert!(card_socket.exists());
 
-    // Copy the reeve binary into the container so the in-container CLI exists.
+    // Copy reeve binary into container, run mv-self review.
     let reeve_bin = target_dir().join("reeve");
     let status = Command::new("docker")
         .args([
@@ -313,9 +378,8 @@ fn m2_container_lifecycle_happy_path() {
         ])
         .status()
         .expect("docker cp reeve");
-    assert!(status.success(), "docker cp failed");
+    assert!(status.success());
 
-    // From inside the container: mv-self review.
     let out = Command::new("docker")
         .args([
             "exec",
@@ -328,11 +392,11 @@ fn m2_container_lifecycle_happy_path() {
         .expect("docker exec mv-self");
     assert!(
         out.status.success(),
-        "docker exec mv-self failed: {}",
+        "{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Container should still be running (Review keeps the container warm).
+    // Container still running (Review keeps warm).
     assert_eq!(
         docker_inspect_status(&container).as_deref(),
         Some("running")
@@ -343,35 +407,37 @@ fn m2_container_lifecycle_happy_path() {
         .args(["mv", &card_id, "done"])
         .output()
         .expect("reeve mv done");
-    assert!(
-        out.status.success(),
-        "{:?}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success());
 
+    let start = std::time::Instant::now();
+    while docker_inspect_status(&container).is_some() && start.elapsed() < Duration::from_secs(10) {
+        sleep(Duration::from_millis(100));
+    }
+    assert!(docker_inspect_status(&container).is_none());
+    assert!(!card_socket.exists());
+
+    // Workspace persists.
     assert!(
-        wait_for_container(&container, false, Duration::from_secs(10)),
-        "container {container} still present after Done",
-    );
-    assert!(
-        !card_socket.exists(),
-        "per-card socket lingered after teardown"
+        workspace.exists(),
+        "workspace removed after Done — should persist for inspection"
     );
 }
 
 #[test]
-fn m2_reconcile_after_daemon_sigkill() {
-    if !is_docker_available() {
-        eprintln!("skipping m2_reconcile_after_daemon_sigkill: docker unavailable");
+fn m3_reconcile_after_daemon_sigkill() {
+    if !is_docker_available() || !is_devcontainer_cli_available() {
+        eprintln!(
+            "skipping m3_reconcile_after_daemon_sigkill: docker or devcontainer CLI unavailable"
+        );
         return;
     }
     build_workspace();
 
     let temp = tempfile::tempdir().unwrap();
     let env = isolated_env_with_config(temp.path());
+    init_host_repo(temp.path());
     write_test_household(temp.path());
 
-    // First daemon session: create card, move to Implementing.
     let mut daemon = cmd("reeved", &env)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -391,19 +457,24 @@ fn m2_reconcile_after_daemon_sigkill() {
         .output()
         .expect("reeve new");
     let card_id = parse_card_id_from_new_output(&String::from_utf8(out.stdout).unwrap());
-    let _guard = ContainerGuard(card_id.clone());
+
+    let mut cleanup = DockerCleanup(None);
 
     cmd("reeve", &env)
         .args(["mv", &card_id, "implementing"])
         .status()
         .expect("reeve mv");
 
-    let container = format!("reeve-{card_id}");
-    assert!(wait_for_container(
-        &container,
-        true,
-        Duration::from_secs(10)
-    ));
+    let mut container = None;
+    let start = std::time::Instant::now();
+    while container.is_none() && start.elapsed() < Duration::from_secs(10) {
+        container = discover_container_by_label(&card_id);
+        if container.is_none() {
+            sleep(Duration::from_millis(200));
+        }
+    }
+    let container = container.expect("container not discoverable");
+    cleanup.0 = Some(container.clone());
 
     let reeve_bin = target_dir().join("reeve");
     Command::new("docker")
@@ -415,7 +486,7 @@ fn m2_reconcile_after_daemon_sigkill() {
         .status()
         .expect("docker cp");
 
-    // SIGKILL bypasses graceful shutdown. Container should survive.
+    // SIGKILL bypasses graceful shutdown. Container survives.
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(daemon.id() as i32),
         nix::sys::signal::SIGKILL,
@@ -451,12 +522,8 @@ fn m2_reconcile_after_daemon_sigkill() {
         sleep(Duration::from_millis(50));
         waited += Duration::from_millis(50);
     }
-    assert!(
-        card_socket.exists(),
-        "per-card socket not re-bound after restart"
-    );
+    assert!(card_socket.exists(), "per-card socket not re-bound");
 
-    // In-container mv-self should now work again.
     let out = Command::new("docker")
         .args([
             "exec",
@@ -469,7 +536,7 @@ fn m2_reconcile_after_daemon_sigkill() {
         .expect("docker exec");
     assert!(
         out.status.success(),
-        "in-container mv-self after restart: {}",
+        "{}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

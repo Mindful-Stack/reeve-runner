@@ -1,82 +1,7 @@
 //! Docker subprocess wrapper. The pure parts (argv building) live here;
 //! the impure parts (shelling out, parsing output) are in `DockerOps`.
 
-use crate::household::HouseholdProfile;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-/// Container name for a card. Derived deterministically from card-id.
-pub fn container_name(card_id: &str) -> String {
-    format!("reeve-{card_id}")
-}
-
-/// Build the argv for `docker` (excluding the `docker` binary itself)
-/// that spawns the container for `card_id` under `profile`.
-///
-/// - `cards_dir` is the host-side directory that holds per-card socket files
-///   (`$XDG_RUNTIME_DIR/reeve/cards/`). It is bind-mounted into the container
-///   at `IN_CONTAINER_CARDS_DIR` so that the in-container `reeve` CLI can
-///   reach `<dir>/<card_id>.sock` after the daemon creates it post-spawn.
-///   Mounting the directory (not the socket file itself) is essential: Docker
-///   tracks file bind-mounts by inode, so a file deleted-and-recreated on the
-///   host is invisible to the container. A directory mount is path-based and
-///   reflects new entries automatically.
-/// - `claude_dir` is the host `~/.claude` whose `skills/`, `settings.json`,
-///   and `CLAUDE.md` are mounted read-only. Missing children are skipped
-///   silently (the caller checks existence).
-/// - `api_key` is injected as `ANTHROPIC_API_KEY` when `Some`.
-pub fn spawn_command(
-    card_id: &str,
-    profile: &HouseholdProfile,
-    cards_dir: &Path,
-    claude_dir: &Path,
-    api_key: Option<&str>,
-) -> Vec<String> {
-    let name = container_name(card_id);
-    let mut args = vec![
-        "run".into(),
-        "-d".into(),
-        "--name".into(),
-        name.clone(),
-        "--label".into(),
-        format!("reeve.card_id={card_id}"),
-        "-v".into(),
-        format!(
-            "{}:{}",
-            cards_dir.display(),
-            reeve_protocol::paths::IN_CONTAINER_CARDS_DIR
-        ),
-    ];
-
-    let mounts: [(PathBuf, &str); 3] = [
-        (claude_dir.join("skills"), "/home/agent/.claude/skills"),
-        (
-            claude_dir.join("settings.json"),
-            "/home/agent/.claude/settings.json",
-        ),
-        (
-            claude_dir.join("CLAUDE.md"),
-            "/home/agent/.claude/CLAUDE.md",
-        ),
-    ];
-    for (host, container) in mounts {
-        if host.exists() {
-            args.push("-v".into());
-            args.push(format!("{}:{}:ro", host.display(), container));
-        }
-    }
-
-    if let Some(key) = api_key {
-        args.push("-e".into());
-        args.push(format!("ANTHROPIC_API_KEY={key}"));
-    }
-    args.push("-e".into());
-    args.push(format!("REEVE_CARD_ID={card_id}"));
-
-    args.push(profile.image.clone());
-    args.extend(profile.cmd.iter().cloned());
-    args
-}
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -244,8 +169,14 @@ pub fn devcontainer_up_command(
 
     let ro_mounts: [(std::path::PathBuf, &str); 3] = [
         (claude_dir.join("skills"), "/home/agent/.claude/skills"),
-        (claude_dir.join("settings.json"), "/home/agent/.claude/settings.json"),
-        (claude_dir.join("CLAUDE.md"), "/home/agent/.claude/CLAUDE.md"),
+        (
+            claude_dir.join("settings.json"),
+            "/home/agent/.claude/settings.json",
+        ),
+        (
+            claude_dir.join("CLAUDE.md"),
+            "/home/agent/.claude/CLAUDE.md",
+        ),
     ];
     for (host, container_target) in ro_mounts {
         if host.exists() {
@@ -470,96 +401,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn profile() -> HouseholdProfile {
-        HouseholdProfile {
-            image: "alpine:latest".into(),
-            cmd: vec!["sleep".into(), "infinity".into()],
-        }
-    }
-
-    #[test]
-    fn container_name_prefixes_with_reeve() {
-        assert_eq!(container_name("abc-123"), "reeve-abc-123");
-    }
-
-    #[test]
-    fn spawn_command_includes_name_label_socket_image_and_cmd() {
-        let dir = tempdir().unwrap();
-        let cards_dir = dir.path().join("cards");
-        let claude = dir.path().join("claude");
-        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
-        assert_eq!(argv[0], "run");
-        assert!(argv.iter().any(|s| s == "reeve-abc"));
-        assert!(argv.iter().any(|s| s == "reeve.card_id=abc"));
-        assert!(
-            argv.iter()
-                .any(|s| s.starts_with(&format!("{}:", cards_dir.display())))
-        );
-        assert_eq!(argv.last().unwrap(), "infinity");
-        assert_eq!(argv[argv.len() - 2], "sleep");
-        let image_idx = argv.iter().position(|s| s == "alpine:latest").unwrap();
-        assert!(image_idx < argv.len() - 1, "image precedes cmd");
-    }
-
-    #[test]
-    fn spawn_command_skips_missing_claude_mounts() {
-        let dir = tempdir().unwrap();
-        let cards_dir = dir.path().join("cards");
-        let claude = dir.path().join("claude");
-        // claude_dir does not exist
-        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
-        let claude_mounts = argv.iter().filter(|s| s.contains("/.claude/")).count();
-        assert_eq!(claude_mounts, 0);
-    }
-
-    #[test]
-    fn spawn_command_includes_only_existing_claude_mounts() {
-        let dir = tempdir().unwrap();
-        let cards_dir = dir.path().join("cards");
-        let claude = dir.path().join("claude");
-        std::fs::create_dir_all(claude.join("skills")).unwrap();
-        std::fs::write(claude.join("CLAUDE.md"), "x").unwrap();
-        // settings.json deliberately missing
-
-        let argv = spawn_command("abc", &profile(), &cards_dir, &claude, None);
-        assert!(argv.iter().any(|s| s.contains("/.claude/skills:")));
-        assert!(argv.iter().any(|s| s.contains("/CLAUDE.md:")));
-        assert!(!argv.iter().any(|s| s.contains("settings.json")));
-        // Every claude mount must be read-only — this is the security
-        // property that protects the host's CC config from container writes.
-        for arg in &argv {
-            if arg.contains("/.claude/") {
-                assert!(arg.ends_with(":ro"), "claude mount not :ro: {arg}",);
-            }
-        }
-    }
-
-    #[test]
-    fn spawn_command_injects_api_key_only_when_some() {
-        let dir = tempdir().unwrap();
-        let cards_dir = dir.path().join("cards");
-        let claude = dir.path().join("claude");
-
-        let with = spawn_command("abc", &profile(), &cards_dir, &claude, Some("sk-test"));
-        assert!(with.iter().any(|s| s == "ANTHROPIC_API_KEY=sk-test"));
-
-        let without = spawn_command("abc", &profile(), &cards_dir, &claude, None);
-        assert!(!without.iter().any(|s| s.starts_with("ANTHROPIC_API_KEY=")));
-    }
-
-    #[test]
-    fn spawn_command_always_sets_card_id_env() {
-        let dir = tempdir().unwrap();
-        let argv = spawn_command(
-            "card-42",
-            &profile(),
-            &dir.path().join("cards"),
-            &dir.path().join("c"),
-            None,
-        );
-        assert!(argv.iter().any(|s| s == "REEVE_CARD_ID=card-42"));
-    }
-
     #[test]
     fn devcontainer_up_command_includes_workspace_config_label_and_mount() {
         let dir = tempdir().unwrap();
@@ -568,20 +409,16 @@ mod tests {
         let cards_socket = dir.path().join("sockets");
         let claude = dir.path().join("claude");
 
-        let argv = devcontainer_up_command(
-            "card-1",
-            &workspace,
-            &dc,
-            &cards_socket,
-            &claude,
-            None,
-        );
+        let argv = devcontainer_up_command("card-1", &workspace, &dc, &cards_socket, &claude, None);
 
         assert_eq!(argv[0], "up");
         assert!(argv.iter().any(|s| s == "--workspace-folder"));
         assert!(argv.iter().any(|s| s == "--config"));
         assert!(argv.iter().any(|s| s == "reeve.card_id=card-1"));
-        assert!(argv.iter().any(|s| s.starts_with("type=bind,source=") && s.contains("/var/run/reeve-cards")));
+        assert!(
+            argv.iter()
+                .any(|s| s.starts_with("type=bind,source=") && s.contains("/var/run/reeve-cards"))
+        );
         assert!(argv.iter().any(|s| s == "REEVE_CARD_ID=card-1"));
     }
 
@@ -666,7 +503,7 @@ mod reconcile_tests {
     fn row(card_id: &str, status: ContainerStatus) -> ContainerRow {
         ContainerRow {
             card_id: card_id.into(),
-            container_name: container_name(card_id),
+            container_name: format!("reeve-{card_id}"),
             status,
             started_at: 0,
             updated_at: 0,

@@ -12,7 +12,7 @@ use tokio::process::Command;
 use tracing::warn;
 
 /// Spec for one repo to clone into a card workspace.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct RepoSpec {
     pub name: String,
     pub path: PathBuf,
@@ -64,11 +64,7 @@ impl GitOps for RealGitOps {
 /// Clone every repo in `repos` into `<workspace>/<repo.name>/` serially.
 /// On any clone failure, removes the partial workspace and returns the error.
 /// Caller is responsible for creating the workspace dir before this call.
-pub async fn clone_all_repos(
-    ops: &dyn GitOps,
-    workspace: &Path,
-    repos: &[RepoSpec],
-) -> Result<()> {
+pub async fn clone_all_repos(ops: &dyn GitOps, workspace: &Path, repos: &[RepoSpec]) -> Result<()> {
     for repo in repos {
         let dest = workspace.join(&repo.name);
         if let Err(e) = ops.clone(&repo.path, &dest).await {
@@ -99,11 +95,17 @@ mod tests {
 
     impl MockGitOps {
         fn new() -> Self {
-            Self { calls: Mutex::new(vec![]), fail_after: None }
+            Self {
+                calls: Mutex::new(vec![]),
+                fail_after: None,
+            }
         }
 
         fn failing_after(n: usize) -> Self {
-            Self { calls: Mutex::new(vec![]), fail_after: Some(n) }
+            Self {
+                calls: Mutex::new(vec![]),
+                fail_after: Some(n),
+            }
         }
     }
 
@@ -124,7 +126,10 @@ mod tests {
     }
 
     fn repo(name: &str, path: &Path) -> RepoSpec {
-        RepoSpec { name: name.into(), path: path.to_path_buf() }
+        RepoSpec {
+            name: name.into(),
+            path: path.to_path_buf(),
+        }
     }
 
     #[tokio::test]
@@ -135,13 +140,9 @@ mod tests {
         let ops = MockGitOps::new();
         let host_a = dir.path().join("host-a");
         let host_b = dir.path().join("host-b");
-        clone_all_repos(
-            &ops,
-            &workspace,
-            &[repo("a", &host_a), repo("b", &host_b)],
-        )
-        .await
-        .unwrap();
+        clone_all_repos(&ops, &workspace, &[repo("a", &host_a), repo("b", &host_b)])
+            .await
+            .unwrap();
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0, host_a);
@@ -168,12 +169,8 @@ mod tests {
         let ops = MockGitOps::failing_after(1);
         let host_a = dir.path().join("host-a");
         let host_b = dir.path().join("host-b");
-        let result = clone_all_repos(
-            &ops,
-            &workspace,
-            &[repo("a", &host_a), repo("b", &host_b)],
-        )
-        .await;
+        let result =
+            clone_all_repos(&ops, &workspace, &[repo("a", &host_a), repo("b", &host_b)]).await;
         assert!(result.is_err());
         assert!(
             !workspace.exists(),
@@ -193,16 +190,15 @@ mod tests {
         clone_all_repos(
             &ops,
             &workspace,
-            &[
-                repo("a", &host_a),
-                repo("b", &host_b),
-                repo("c", &host_c),
-            ],
+            &[repo("a", &host_a), repo("b", &host_b), repo("c", &host_c)],
         )
         .await
         .unwrap();
         let calls = ops.calls.lock().unwrap();
-        let names: Vec<&str> = calls.iter().map(|(s, _)| s.file_name().unwrap().to_str().unwrap()).collect();
+        let names: Vec<&str> = calls
+            .iter()
+            .map(|(s, _)| s.file_name().unwrap().to_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 }
@@ -219,7 +215,11 @@ mod integration_tests {
             .current_dir(repo)
             .status()
             .expect("git invoke");
-        assert!(status.success(), "git {args:?} failed in {}", repo.display());
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
     }
 
     /// Initialise a host repo with one commit. Returns the repo path.
@@ -278,8 +278,14 @@ mod integration_tests {
             &ops,
             &workspace,
             &[
-                RepoSpec { name: "a".into(), path: a },
-                RepoSpec { name: "b".into(), path: b },
+                RepoSpec {
+                    name: "a".into(),
+                    path: a,
+                },
+                RepoSpec {
+                    name: "b".into(),
+                    path: b,
+                },
             ],
         )
         .await
