@@ -551,8 +551,16 @@ mod tests {
         assert_eq!(p.parent().unwrap(), paths::cards_socket_dir());
     }
 
+    /// Serial gate for tests that mutate REEVE_CARDS_DIR. cargo runs tests
+    /// in parallel by default; without this they race on the process-global
+    /// env var (one set/remove can sneak between another's set and read).
+    static REEVE_CARDS_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn cards_workspace_dir_uses_reeve_cards_dir_env() {
+        let _guard = REEVE_CARDS_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("REEVE_CARDS_DIR").ok();
         unsafe { std::env::set_var("REEVE_CARDS_DIR", "/tmp/test-cards") };
         let dir = paths::cards_workspace_dir();
@@ -565,6 +573,9 @@ mod tests {
 
     #[test]
     fn cards_workspace_dir_falls_back_to_home_reeve_cards() {
+        let _guard = REEVE_CARDS_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("REEVE_CARDS_DIR").ok();
         unsafe { std::env::remove_var("REEVE_CARDS_DIR") };
         let home = std::env::var("HOME").expect("HOME set in tests");
@@ -577,6 +588,9 @@ mod tests {
 
     #[test]
     fn card_workspace_path_lives_under_cards_workspace_dir() {
+        let _guard = REEVE_CARDS_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let p = paths::card_workspace_path("abc-123");
         assert!(p.ends_with("abc-123"));
         assert_eq!(p.parent().unwrap(), paths::cards_workspace_dir());
