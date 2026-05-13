@@ -242,6 +242,31 @@ pub mod paths {
         cards_socket_dir().join(format!("{card_id}.sock"))
     }
 
+    /// Env var that overrides the default cards workspace location.
+    /// Used by tests to redirect clones into a temp dir.
+    pub const REEVE_CARDS_DIR_ENV: &str = "REEVE_CARDS_DIR";
+
+    /// Returns the directory holding per-card workspaces (one subdir per card).
+    /// Prefers `$REEVE_CARDS_DIR`; falls back to `$HOME/reeve/cards`.
+    ///
+    /// User-visible by intent — external git tools (GitKraken, lazygit) point
+    /// at this directory to inspect agent work. Not under `~/.local/share/`.
+    pub fn cards_workspace_dir() -> PathBuf {
+        if let Ok(dir) = std::env::var(REEVE_CARDS_DIR_ENV) {
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join("reeve/cards")
+    }
+
+    /// Workspace root for a card — contains one subdir per declared repo.
+    /// `devcontainer up --workspace-folder` targets this path.
+    pub fn card_workspace_path(card_id: &str) -> PathBuf {
+        cards_workspace_dir().join(card_id)
+    }
+
     /// Directory inside the container where the daemon bind-mounts the host
     /// per-card socket directory. The individual socket file lives at
     /// `<IN_CONTAINER_CARDS_DIR>/<card_id>.sock`.
@@ -524,5 +549,36 @@ mod tests {
         let p = paths::card_socket_path("abc-123");
         assert!(p.ends_with("reeve/cards/abc-123.sock"));
         assert_eq!(p.parent().unwrap(), paths::cards_socket_dir());
+    }
+
+    #[test]
+    fn cards_workspace_dir_uses_reeve_cards_dir_env() {
+        let prev = std::env::var("REEVE_CARDS_DIR").ok();
+        unsafe { std::env::set_var("REEVE_CARDS_DIR", "/tmp/test-cards") };
+        let dir = paths::cards_workspace_dir();
+        assert_eq!(dir, std::path::PathBuf::from("/tmp/test-cards"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("REEVE_CARDS_DIR", v) },
+            None => unsafe { std::env::remove_var("REEVE_CARDS_DIR") },
+        }
+    }
+
+    #[test]
+    fn cards_workspace_dir_falls_back_to_home_reeve_cards() {
+        let prev = std::env::var("REEVE_CARDS_DIR").ok();
+        unsafe { std::env::remove_var("REEVE_CARDS_DIR") };
+        let home = std::env::var("HOME").expect("HOME set in tests");
+        let dir = paths::cards_workspace_dir();
+        assert_eq!(dir, std::path::PathBuf::from(home).join("reeve/cards"));
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("REEVE_CARDS_DIR", v) };
+        }
+    }
+
+    #[test]
+    fn card_workspace_path_lives_under_cards_workspace_dir() {
+        let p = paths::card_workspace_path("abc-123");
+        assert!(p.ends_with("abc-123"));
+        assert_eq!(p.parent().unwrap(), paths::cards_workspace_dir());
     }
 }
