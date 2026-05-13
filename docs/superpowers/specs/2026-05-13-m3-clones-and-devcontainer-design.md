@@ -124,7 +124,7 @@ docker ps --filter label=reeve.card_id=<card-id> --format '{{.Names}}'
 
 The single-line stdout is the container name. The daemon stores it in `containers.container_name`. All M2 callers (`DockerOps::teardown`, `DockerOps::inspect_status`, reconcile) keep working unchanged — they take an opaque name.
 
-`devcontainer up` may return success a beat before the container appears in `docker ps` (the CLI awaits the dial-tone, not docker's metadata commit). The discovery routine polls with a 2-second deadline at 100ms intervals; if the query is still empty at the deadline, the daemon marks the row `Failed` and returns `INTERNAL "container not discoverable after devcontainer up"`. Multiple matches are impossible in practice (the label is unique per spawn).
+`devcontainer up` may return success a beat before the container appears in `docker ps` (the CLI awaits the dial-tone, not docker's metadata commit). The discovery routine polls with a 2-second deadline using exponential backoff (100ms, 200ms, 400ms, 400ms, …) — typically 4-5 poll attempts within the window. If the query is still empty at the deadline, the daemon marks the row `Failed` and returns `INTERNAL "container not discoverable after devcontainer up"`. Multiple matches are impossible in practice (the label is unique per spawn).
 
 The alternative — parsing `devcontainer up --log-format json`'s stdout for `containerId`, then running `docker inspect --format '{{.Name}}' <id>` — is left as a writing-plans-phase consideration. The `docker ps` filter approach is simpler and equally robust given the 2-second poll.
 

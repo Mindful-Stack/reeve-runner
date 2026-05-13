@@ -51,6 +51,14 @@ fn isolated_env(temp: &std::path::Path) -> Vec<(String, String)> {
             "XDG_DATA_HOME".into(),
             temp.join("data").to_string_lossy().into_owned(),
         ),
+        // Symmetry with isolated_env_with_config — even though the M1 smoke
+        // test never reaches Implementing, point REEVE_CARDS_DIR at the temp
+        // dir so any incidental workspace touch doesn't write to the user's
+        // real `~/reeve/cards`.
+        (
+            "REEVE_CARDS_DIR".into(),
+            temp.join("cards").to_string_lossy().into_owned(),
+        ),
     ]
 }
 

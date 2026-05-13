@@ -154,8 +154,23 @@ impl TransitionEffects for LiveEffects {
 
         // Discover the actual container name (devcontainer CLI picks it).
         // Poll briefly — devcontainer up may return success a moment before
-        // the container is visible in docker ps.
-        let discovered = discover_with_deadline(&self.state, &card_id).await?;
+        // the container is visible in docker ps. On timeout, mark the row
+        // Failed (per spec) so a long-running daemon doesn't leave a stale
+        // Spawning row indefinitely.
+        let discovered = match discover_with_deadline(&self.state, &card_id).await {
+            Ok(name) => name,
+            Err(e) => {
+                let id_for_update = card_id.clone();
+                let db = self.state.db.clone();
+                let now = now_secs();
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let conn = db.blocking_lock();
+                    db::update_container_status(&conn, &id_for_update, ContainerStatus::Failed, now)
+                })
+                .await??;
+                return Err(e);
+            }
+        };
 
         // Upsert with the real name now.
         let id_for_update = card_id.clone();
