@@ -62,24 +62,43 @@ fn isolated_env(temp: &std::path::Path) -> Vec<(String, String)> {
     ]
 }
 
+/// When `REEVE_TESTS_STRICT=1` is set, tool-gated tests treat a missing
+/// tool as a hard failure instead of silently skip-passing. Implementers
+/// and any future CI should set it; casual contributors who don't have
+/// the full toolchain can leave it unset and get the legacy skip-pass.
+fn require_or_skip(tool: &str, available: bool) -> bool {
+    if available {
+        return true;
+    }
+    if std::env::var("REEVE_TESTS_STRICT").is_ok() {
+        panic!(
+            "REEVE_TESTS_STRICT set but `{tool}` is not available — \
+             install it or unset REEVE_TESTS_STRICT to skip"
+        );
+    }
+    false
+}
+
 fn is_docker_available() -> bool {
-    std::process::Command::new("docker")
+    let ok = std::process::Command::new("docker")
         .arg("info")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    require_or_skip("docker", ok)
 }
 
 fn is_devcontainer_cli_available() -> bool {
-    std::process::Command::new("devcontainer")
+    let ok = std::process::Command::new("devcontainer")
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    require_or_skip("devcontainer", ok)
 }
 
 fn docker_inspect_status(name: &str) -> Option<String> {
