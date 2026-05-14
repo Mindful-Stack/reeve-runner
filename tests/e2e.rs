@@ -207,6 +207,14 @@ fn cmd(bin: &str, env: &[(String, String)]) -> Command {
     if let Ok(home) = std::env::var("HOME") {
         c.env("HOME", home);
     }
+    // Carry PATH so the daemon can find `docker`, `devcontainer`, and `git`.
+    // POSIX execvp falls back to /usr/bin:/bin when PATH is unset (which is
+    // why M2's docker tests worked at all under env_clear), but devcontainer
+    // CLI is typically under a node toolchain prefix (mise, nvm, asdf) that
+    // is not in the default fallback.
+    if let Ok(path) = std::env::var("PATH") {
+        c.env("PATH", path);
+    }
     for (k, v) in env {
         c.env(k, v);
     }
@@ -388,9 +396,16 @@ fn m3_clone_and_devcontainer_happy_path() {
         .expect("docker cp reeve");
     assert!(status.success());
 
+    // `docker exec -e REEVE_CARD_ID=…` is a workaround: devcontainer CLI's
+    // `--remote-env` at up-time doesn't propagate to subsequent exec sessions.
+    // The proper fix (M3-F5) is to inject `containerEnv` via a synthesized
+    // --override-config devcontainer.json so the env var is set on the
+    // container itself. Until then, tests + manual smokes set it at exec.
     let out = Command::new("docker")
         .args([
             "exec",
+            "-e",
+            &format!("REEVE_CARD_ID={card_id}"),
             &container,
             "/usr/local/bin/reeve",
             "mv-self",
@@ -532,9 +547,12 @@ fn m3_reconcile_after_daemon_sigkill() {
     }
     assert!(card_socket.exists(), "per-card socket not re-bound");
 
+    // See note on the happy-path test about REEVE_CARD_ID + M3-F5.
     let out = Command::new("docker")
         .args([
             "exec",
+            "-e",
+            &format!("REEVE_CARD_ID={card_id}"),
             &container,
             "/usr/local/bin/reeve",
             "mv-self",
