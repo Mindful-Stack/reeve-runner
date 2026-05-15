@@ -359,6 +359,7 @@ The two systems share user-facing conventions (naming, terminology, configuratio
 - git-town integration for stacked PRs
 - Firejail/bwrap-enforced sandbox for Planning column
 - Per-repo devcontainers (v1 uses one container per card spanning all repos)
+- **Cross-household unified view** — the v1 TUI scopes the kanban board to a single household at a time. A future view layer should let the user see cards across *all* registered households in one kanban (or split-by-household sub-boards on one screen), so a user working on multiple unrelated projects in parallel can manage them without flipping context. Daemon already returns cards regardless of household; this is primarily a TUI presentation change with a possible `reeve ls --all-households` CLI addition.
 
 ## Open implementation questions
 

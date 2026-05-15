@@ -1,27 +1,22 @@
-# Reeve M4 — Namespaced refs + `reeve push` + Lorekeeper KB
+# Reeve M4 — Namespaced refs + `reeve push`
 
-**Status:** Design (2026-05-14)
-**Predecessor:** M3 clones + `devcontainer up` (merged to `main` as `3f3aeaa`, 2026-05-13/14)
+**Status:** Design (2026-05-14, trimmed 2026-05-15)
+**Predecessor:** M3.5 households-as-meta-repos (`2026-05-15-m3-5-households-as-meta-repos-design.md`)
 **Parent design:** `docs/superpowers/specs/2026-04-29-reeve-design.md`
+
+> **Trim note (2026-05-15):** This spec was originally titled "Namespaced refs + `reeve push` + Lorekeeper KB" and folded the KB-clone integration into M4. Brainstorming on 2026-05-15 split that integration into M3.5 (households-as-meta-repos), where the KB became a peer of code repos in a unified manifest. M4 is now refs + push only — the KB participates as just another repo, no special case, no `[knowledge_base]` schema, no Lorekeeper-presence warning. The original framing is preserved in git history.
 
 ## Context
 
-M3 wired the agent-can-see-code half of the kanban loop: when a card moves to `Implementing`, the daemon clones the household's declared repos into `~/reeve/cards/<id>/<repo>/`, spawns the container via `devcontainer up`, and the agent works inside `/workspaces/<id>/`. But the host side has no view of the agent's commits — the only place they exist is in the per-card clone, invisible to the user's git tools.
+M3.5 unified the household schema: a household is a user-cloned (or Reeve-scaffolded) meta-repo, with siblings as gitignored subdirs and the KB as a sibling named by the manifest's `knowledge_base` field. Cards clone the meta-repo + every sibling declared in its manifest into `~/reeve/cards/<id>/`, mounting that as the container workspace. M3.5 wired the agent-can-see-code half of the kanban loop.
 
 M4 closes the user-can-review-code half:
 
-1. **Continuous fetch** — the daemon periodically `git fetch`es each card's clones back into the host repo, into a private `refs/reeve/<card-id>/*` namespace. GitKraken/lazygit/sublime-merge pick the refs up automatically.
+1. **Continuous fetch** — the daemon periodically `git fetch`es each card's clones back into the host repos, into a private `refs/reeve/<card-id>/*` namespace. GitKraken/lazygit/sublime-merge pick the refs up automatically.
 2. **`reeve push <id>`** — explicit promotion. Fast-forwards `refs/heads/<branch>` from the namespaced ref, then `git push origin <branch>`. Nothing reaches GitHub until the user runs it.
-3. **Knowledge-base clone** — households gain an optional `[knowledge_base]` entry; on `→ Implementing` the KB is cloned alongside code repos using the same `--reference --dissociate` mechanism. The KB participates in fetch and push.
+3. **Meta-repo as repo zero** — the meta-repo itself participates in fetch + push. Agent commits to `repos.json`, `.devcontainer/devcontainer.json`, `CLAUDE.md` flow back via the same mechanism. No special code path; the meta-repo is just another git repo in the iteration.
 
-The fetch + push pair is what lets the user actually use the cards as a kanban: the agent writes code, the user reviews via their normal git workflow, the user promotes when satisfied. Without this, M3's containers are just a sandbox with no integration point back to the user's repo.
-
-**Lorekeeper, plugin vs. KB:** The parent design (line 321 onward) frames Lorekeeper as a single thing reeve hard-requires. M4 treats it as two separable concerns:
-
-- The **knowledge-base repo** (markdown / structured-knowledge files the agent reads and writes) is reeve's responsibility, provisioned via `[knowledge_base]` and cloned per-card.
-- The **CC plugin** (the in-container `/lore` commands and supporting code) is the household's responsibility, provisioned via the household's devcontainer.json — base image with Lorekeeper baked in, a `postCreateCommand`, or a devcontainer feature.
-
-Reeve never reads CC's plugin registry, never bind-mounts `~/.claude/plugins/`, and never gates startup on plugin presence. This decouples reeve from CC internals (plugin paths, `installed_plugins.json` shape, marketplace conventions) and preserves the M2 sandbox property that nothing under `~/.claude/` except the explicit allowlist (`skills/`, `settings.json`, `CLAUDE.md`) reaches the container.
+The fetch + push pair is what lets the user actually use the cards as a kanban: the agent writes code, the user reviews via their normal git workflow, the user promotes when satisfied. Without this, M3/M3.5's containers are just a sandbox with no integration point back to the user's repos.
 
 M4 deliberately does *not* yet:
 
@@ -32,18 +27,15 @@ M4 deliberately does *not* yet:
 - Implement service categories (`shared` / `shared-exclusive`).
 - Implement the heavy-slot scheduler.
 - TUI mutations or fork operations.
-- Address the M2/M3 deferred follow-ups (`--user agent`, M3-F1 reconcile-pending, M3-F5 override-config, etc.).
-- Provision the Lorekeeper CC plugin (delegated to the household's devcontainer.json — see *Context*).
+- Address the M2/M3/M3.5 deferred follow-ups (`--user agent`, M3-F1 reconcile-pending, M3-F5 override-config, M3.5 household-update, etc.).
 
 ## Summary
 
-The daemon spawns a single background `FetchWorker` task at startup. Every 5 seconds the worker queries the `containers` table for `Running`/`Spawning` rows, and for each card it iterates the household's declared repos + KB, running `git fetch <card-clone> '+refs/heads/*:refs/reeve/<card-id>/*'` in the host repo's working directory. Failures log at `warn`; the loop never panics.
+The daemon spawns a single background `FetchWorker` task at startup. Every 5 seconds the worker queries the `containers` table for `Running`/`Spawning` rows, and for each card it iterates the meta-repo + every repo declared in the household's manifest, running `git fetch <card-clone> '+refs/heads/*:refs/reeve/<card-id>/*'` in the host repo's working directory. Failures log at `warn`; the loop never panics.
 
-When the user runs `reeve push <card-id>`, the daemon iterates the same set of host repos. For each, it lists `refs/reeve/<card-id>/*`, fast-forwards `refs/heads/<branch>` from each namespaced ref (failing-soft per-branch on non-FF), then runs `git push origin <branch>`. Output is a per-branch result table.
+When the user runs `reeve push <card-id>`, the daemon iterates the same set of host repos (meta-repo + manifest repos). For each, it lists `refs/reeve/<card-id>/*`, fast-forwards `refs/heads/<branch>` from each namespaced ref (failing-soft per-branch on non-FF), then runs `git push origin <branch>`. Output is a per-branch result table.
 
-The `HouseholdProfile` schema gains a top-level optional `[knowledge_base]` table with one field, `path`. The KB clones into `<workspace>/<basename-of-path>/` alongside the code repos. The agent has read+write access; updates flow back to the host via the same namespaced-fetch mechanism.
-
-Lorekeeper plugin provisioning is out of reeve's scope — see *Context*.
+There is **no KB-specific code path**. The repo identified by the manifest's `knowledge_base` field is fetched and pushed identically to every other repo. If the user has wired the KB to a remote (likely), `reeve push` pushes lore-edits to that remote alongside code commits. If they have not, the per-branch result reports the push failure and exits non-zero.
 
 ## Architecture
 
@@ -61,25 +53,13 @@ Lorekeeper plugin provisioning is out of reeve's scope — see *Context*.
 
   `RealGitOps` implements all four. `MockGitOps` records calls and supports configurable per-method failure for tests.
 
-- `crates/reeved/src/household.rs` — `HouseholdProfile` gains `knowledge_base: Option<KbSpec>`. New `KbSpec { path: PathBuf }`. Tilde-expanded at load time alongside repo paths. Schema:
-  ```toml
-  devcontainer = "~/Source/myarchy-ops/.devcontainer/devcontainer.json"
-
-  [[repos]]
-  name = "backend"
-  path = "~/Source/myarchy-backend"
-
-  [knowledge_base]
-  path = "~/Source/myarchy-kb"
-  ```
-
-- `crates/reeved/src/effects.rs::ensure_running` — `clone_all_repos` is extended (or paired with a `clone_kb` call) so the KB lands at `<workspace>/<basename-of-kb-path>/` alongside the code repos. The basename derivation strips trailing slashes; `~/Source/myarchy-kb` → `myarchy-kb`.
-
 - `crates/reeved/src/main.rs` — at startup, after daemon state is built:
   1. Spawn `FetchWorker` via `tokio::spawn`, retaining a oneshot sender for shutdown.
   2. On shutdown (after `server::run` returns), send on the worker's shutdown channel and await its join handle.
 
-- `crates/reeved/src/handlers.rs` — new `handle_push(state, params: PushParams) -> Result<Value, RpcError>`. Dispatched on `"push"`. Builds the per-branch result by walking the household's repos + KB, calling `list_namespace_refs` then `fast_forward` then `push` for each branch.
+  *No Lorekeeper-presence check.* (Removed during 2026-05-15 trim — host-side Lorekeeper detection was the wrong layer; the plugin is a container-side concern owned by the user's devcontainer.json.)
+
+- `crates/reeved/src/handlers.rs` — new `handle_push(state, params: PushParams) -> Result<Value, RpcError>`. Dispatched on `"push"`. Builds the per-branch result by walking the meta-repo + manifest repos, calling `list_namespace_refs` then `fast_forward` then `push` for each branch.
 
 - `crates/reeve-protocol/src/lib.rs` — new types:
   - `PushParams { id: String }`
@@ -89,15 +69,34 @@ Lorekeeper plugin provisioning is out of reeve's scope — see *Context*.
 
 - `crates/reeve/src/cli.rs` — new `Push { id: String }` subcommand. Calls the `push` RPC, prints a per-branch table, exits non-zero if any branch is not `Pushed`.
 
+### Repo iteration helper
+
+A small helper in `manifest.rs` (or `household.rs`):
+
+```rust
+/// Yields (repo_name, host_path) for every repo participating in a card:
+/// the meta-repo itself (workspace-named, returned first), then each
+/// entry in the manifest's `repos` array. Used by fetch + push.
+pub fn iter_card_repos<'a>(
+    household: &'a Household,
+    manifest: &'a Manifest,
+) -> impl Iterator<Item = (&'a str, PathBuf)> + 'a;
+```
+
+The meta-repo's "name" for fetch/push purposes is `manifest.name` (the workspace name) — that's what shows up in `BranchPushResult.repo` for commits to the meta-repo. Code-repo and KB-repo names come from `repos[].name`.
+
 ### Refspec topology
 
 ```
-~/Source/myarchy-backend/.git/refs/reeve/<card-id>/
+~/Source/myarchy-workspace/.git/refs/reeve/<card-id>/        ← meta-repo itself (repo zero)
+                                       └── feat-update-manifest
+
+~/Source/myarchy-workspace/backend/.git/refs/reeve/<card-id>/
                                        ├── feat-auth
                                        └── main
 
-~/Source/myarchy-kb/.git/refs/reeve/<card-id>/
-                                       └── main
+~/Source/myarchy-workspace/lore/.git/refs/reeve/<card-id>/   ← KB; no special case
+                                       └── feat-document-auth-flow
 ```
 
 The user's `refs/heads/` namespace is untouched until `reeve push` runs. Card branches survive `→ Done` (we don't auto-prune the namespace).
@@ -112,9 +111,11 @@ FetchWorker
 │           _ = tokio::time::sleep(Duration::from_secs(5)) => {},
 │       }
 │       for each Running/Spawning card:
-│           for each host repo (code + KB):
-│               state.git.fetch(host_repo, card_clone_path, card_id).await
-│                 .unwrap_or_else(|e| warn!("fetch {card}/{repo}: {e:#}"))
+│           let manifest = load_manifest(card.household.meta_repo_path)?;
+│           for (repo_name, host_path) in iter_card_repos(&card.household, &manifest):
+│               let card_clone = card_workspace.join_or_workspace_root(repo_name);
+│               state.git.fetch(host_path, card_clone, card_id).await
+│                 .unwrap_or_else(|e| warn!("fetch {card}/{repo_name}: {e:#}"))
 │   })
 ```
 
@@ -127,25 +128,23 @@ The fetch interval (5s) is hardcoded as `const FETCH_INTERVAL: Duration = Durati
 Pseudocode for `handle_push`:
 
 ```
-let household = state.households.get(card.household)?;
-let host_repos = household.repos.iter().map(|r| (&r.name, &r.path))
-    .chain(household.knowledge_base.iter().map(|kb| (basename(&kb.path), &kb.path)))
-    .collect();
-
+let household = state.households.get(&card.household_name)?;
+let manifest = load_manifest(&household.meta_repo_path)?;
 let mut results = Vec::new();
-for (repo_name, host_repo_path) in host_repos {
-    let branches = git.list_namespace_refs(host_repo_path, &card.id).await?;
+
+for (repo_name, host_repo_path) in iter_card_repos(&household, &manifest) {
+    let branches = git.list_namespace_refs(&host_repo_path, &card.id).await?;
     for branch in branches {
         let target = format!("refs/heads/{branch}");
         let source = format!("refs/reeve/{}/{}", card.id, branch);
-        let ff = git.fast_forward(host_repo_path, &target, &source).await;
+        let ff = git.fast_forward(&host_repo_path, &target, &source).await;
         match ff {
-            Ok(FfOutcome::Updated) => match git.push(host_repo_path, &branch).await {
-                Ok(()) => results.push(BranchPushResult { repo, branch, status: Pushed }),
-                Err(e) => results.push(BranchPushResult { repo, branch, status: PushFailed { message: e.to_string() } }),
+            Ok(FfOutcome::Updated) => match git.push(&host_repo_path, &branch).await {
+                Ok(()) => results.push(BranchPushResult { repo: repo_name.into(), branch, status: Pushed }),
+                Err(e) => results.push(BranchPushResult { repo: repo_name.into(), branch, status: PushFailed { message: e.to_string() } }),
             },
-            Ok(FfOutcome::NotFastForward) => results.push(BranchPushResult { repo, branch, status: NotFastForward }),
-            Err(e) => results.push(BranchPushResult { repo, branch, status: PushFailed { message: e.to_string() } }),
+            Ok(FfOutcome::NotFastForward) => results.push(BranchPushResult { repo: repo_name.into(), branch, status: NotFastForward }),
+            Err(e) => results.push(BranchPushResult { repo: repo_name.into(), branch, status: PushFailed { message: e.to_string() } }),
         }
     }
 }
@@ -156,19 +155,9 @@ The handler returns a successful RPC result even when individual branches failed
 
 If the card has zero branches across all repos in its namespace (no work done yet, or fetch worker hasn't run), `results` is empty. CLI prints "(no branches in `refs/reeve/<id>/*` — has the agent committed anything yet?)" and exits 0.
 
-### Lorekeeper plugin provisioning (not implemented by reeve)
-
-The household's devcontainer.json is responsible for getting the Lorekeeper CC plugin into the container. Three workable patterns; reeve takes no opinion:
-
-1. **Base image.** The household uses an image that has Lorekeeper baked in.
-2. **`postCreateCommand`.** The household's devcontainer.json runs an install step on first creation (e.g., `curl … | sh`, `npm install -g @witan/lorekeeper`, or whatever the canonical installer is).
-3. **Devcontainer feature.** If Lorekeeper publishes a devcontainer feature, the household's devcontainer.json includes it.
-
-The KB content side IS reeve's responsibility (the `[knowledge_base]` field on `HouseholdProfile`, cloned by `effects::ensure_running` alongside code repos) — the agent inside the container reads and writes `/workspaces/<id>/<kb-name>/` regardless of whether the Lorekeeper plugin is installed; the plugin is just the CC-side UX for navigating that content.
-
 ### Continuous-fetch interaction with the M3 directory mount
 
-The cards-socket directory is mounted into containers at `/var/run/reeve-cards/` (M2/M3). The card workspace (`$REEVE_CARDS_DIR/<card-id>/`) is mounted via devcontainer's `--workspace-folder` to `/workspaces/<card-id>/`. The fetch worker doesn't interact with the container — it reads from `<card-clone-path>/.git/` on the host, which is the same directory the agent commits into via the container's bind-mount. Git's locking (`.git/index.lock`, etc.) handles concurrent reads safely; the agent writing while the daemon fetches is a normal git-from-two-processes case.
+The cards-socket directory is mounted into containers at `/var/run/reeve-cards/` (M2/M3). The card workspace (`$REEVE_CARDS_DIR/<card-id>/`) is mounted via devcontainer's `--workspace-folder` to `/workspaces/<card-id>/`. The fetch worker doesn't interact with the container — it reads from `<card-workspace>/<repo-or-empty>/.git/` on the host, which is the same directory the agent commits into via the container's bind-mount. Git's locking (`.git/index.lock`, etc.) handles concurrent reads safely; the agent writing while the daemon fetches is a normal git-from-two-processes case.
 
 ### Error semantics
 
@@ -176,7 +165,8 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 - **Push error (per-branch)**: captured in `BranchPushResult` with the git stderr; CLI prints it.
 - **Push error (per-repo)**: e.g., `list_namespace_refs` fails because the host repo path is gone. Returned to the CLI as an `INTERNAL` RpcError; the CLI exits non-zero with the message.
 - **Card not found**: `NOT_FOUND` RpcError; CLI prints "card X not found" and exits non-zero.
-- **Household no longer in the loaded map** (renamed config since daemon start): `INTERNAL "household '<name>' not configured"`. User restarts daemon to re-load.
+- **Household no longer in the loaded map** (renamed since daemon start): `INTERNAL "household '<name>' not configured"`. User restarts daemon to re-load.
+- **Manifest re-read fails mid-fetch** (user broke `repos.json` while the daemon is running): warn-log per fetch tick; worker skips the affected card until the manifest parses again.
 
 ## Testing
 
@@ -194,32 +184,31 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 
 ### Unit (fetch.rs)
 
-- `FetchWorker::tick(state)` extracted as a non-looping function that runs one iteration. Test with a mock `GitOps` and a hand-rolled containers/cards/household state. Assert: one fetch per (running card × declared repo).
+- `FetchWorker::tick(state)` extracted as a non-looping function that runs one iteration. Test with a mock `GitOps` and a hand-rolled containers/cards/household state. Assert: one fetch per (running card × (meta-repo + each manifest repo)). The meta-repo participates equivalently — no skip, no special case.
 
 ### Unit (handlers.rs)
 
-- New `mv_to_implementing_then_push_with_no_branches_returns_empty_result`. Uses NoopGit recording no branches; push returns empty.
-- New `push_records_per_branch_status`. Mock returns Updated for one branch and NotFastForward for another; push response distinguishes.
+- `mv_to_implementing_then_push_with_no_branches_returns_empty_result`. Uses NoopGit recording no branches; push returns empty.
+- `push_records_per_branch_status`. Mock returns Updated for one branch and NotFastForward for another; push response distinguishes.
+- `push_iterates_meta_repo_then_manifest_repos_in_order`. Asserts the meta-repo (repo zero) is the first entry in the result table.
 
 ### E2E (Docker-gated, in tests/e2e.rs)
 
 - `m4_fetch_and_push_round_trip` (REEVE_TESTS_STRICT-respecting):
-  1. Set up temp host repo (with a bare-repo "origin" remote at a second temp path).
-  2. Write devcontainer.json + household TOML (one `[[repos]]` pointing at the host repo).
-  3. `reeve mv <id> implementing`.
-  4. `docker exec` into the container, set git config user.email/name, switch to a new branch `feat-m4-smoke`, write a file, commit.
-  5. Wait for the fetch worker tick (up to 6s).
-  6. Assert host repo has `refs/reeve/<id>/feat-m4-smoke` pointing at the new commit.
-  7. `reeve push <id>` from the host.
-  8. Assert `refs/heads/feat-m4-smoke` exists on the host AND on the bare remote.
-  9. `reeve mv <id> done` (container teardown but refs persist).
-  10. Assert `refs/reeve/<id>/feat-m4-smoke` still on the host post-Done.
+  1. Set up temp host meta-repo (with bare-repo "origin" remotes for both the meta-repo and one declared sibling at additional temp paths).
+  2. Populate the sibling under `<meta_repo>/<sibling>/`.
+  3. `reeve household add` the meta-repo.
+  4. `reeve new --household ... --brief "smoke"` → `<id>`.
+  5. `reeve mv <id> implementing`.
+  6. `docker exec` into the container, set git config user.email/name, switch to a new branch `feat-m4-smoke` in the sibling repo, write a file, commit. Also make a commit on the meta-repo (`echo // note >> CLAUDE.md && git commit`) to exercise repo-zero participation.
+  7. Wait for the fetch worker tick (up to 6s).
+  8. Assert both host meta-repo and host sibling have `refs/reeve/<id>/feat-m4-smoke` (or the relevant branch name) pointing at the new commits.
+  9. `reeve push <id>` from the host.
+  10. Assert `refs/heads/feat-m4-smoke` exists on both the host AND the bare remote, for both repos.
+  11. `reeve mv <id> done` (container teardown but refs persist).
+  12. Assert `refs/reeve/<id>/feat-m4-smoke` still on the host post-Done.
 
-### KB-specific tests
-
-- Unit (household): `load_profile_with_knowledge_base_parses_kb_path`, `kb_path_tilde_expands`, `kb_path_optional_when_absent`.
-- Integration (clones): `clone_all_with_kb_lands_kb_alongside_repos` (verifies the `<basename>` subdir gets the KB clone).
-- E2E gets a follow-up case in the round-trip that adds a `[knowledge_base]` entry, asserts the KB lands inside the workspace and the agent can read+write it (via `docker exec`).
+- `m4_kb_repo_participates_as_peer`: extension of the round-trip with a `knowledge_base: "lore"` entry in the manifest. Agent commits to `<workspace>/lore/`, fetch picks it up under `refs/reeve/<id>/*` in the host `lore/` repo, push (against a bare remote for the lore repo) succeeds. Asserts no KB-specific code path executed.
 
 ## Open items deferred to writing-plans
 
@@ -227,6 +216,7 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 - How `BranchPushStatus::PushFailed` carries the git stderr — likely a `String`, but could be more structured if useful for the CLI's output rendering.
 - Whether to parallelize the per-repo fetches inside one iteration. Default to serial for predictability (mirrors M3's `clone_all_repos` choice).
 - Whether the fetch worker should hold the `DaemonState` directly or just the fields it needs (DB handle + GitOps handle + households map). Hold the full state; smaller surface to plumb.
+- Whether `iter_card_repos` lives in `manifest.rs` or `household.rs`. Lean: `household.rs` (it's a card-level concern that needs both the household record and the manifest).
 
 ## Out of scope (do not implement in M4)
 
@@ -236,24 +226,25 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 - `reeve push <id> --branch <name>`.
 - Auto-cleanup of `refs/reeve/<id>/*` after `→ Done`.
 - Auto-archive of card workspaces.
-- M2/M3 deferred follow-ups (M3-F1, M3-F5, etc.).
+- M2/M3/M3.5 deferred follow-ups (M3-F1, M3-F5, M3.5 household-update, etc.).
 - Service categories and the heavy-slot scheduler.
 - Replacing M3's `--config <user-path>` with `--override-config <synthesized>` (M3-F5).
+- Lorekeeper-presence check on the host (removed during 2026-05-15 trim; not Reeve's layer).
 
 ## Verification
 
 A merged M4 must:
 
-1. Pass all M1+M2+M3 tests untouched.
+1. Pass all M1+M2+M3+M3.5 tests untouched.
 2. Pass the new unit, integration, and Docker-gated e2e tests.
-3. `cargo test --workspace` clean; `cargo fmt --check` clean; `cargo clippy` clean.
+3. `cargo test --workspace` clean (with `REEVE_TESTS_STRICT=1`); `cargo fmt --check` clean; `cargo clippy` clean.
 4. Manually (with `REEVE_TESTS_STRICT=1` exported during development):
-   1. Add a `[knowledge_base]` entry to the `reeve-self` household pointing at any local git repo.
+   1. Pick or scaffold a household with a `knowledge_base: "lore"` manifest and a populated `lore/` sibling (e.g., reuse the M3.5 smoke setup).
    2. `reeve daemon start`.
    3. `reeve new --household reeve-self --brief "m4 smoke"` → `<id>`.
-   4. `reeve mv <id> implementing` → both the code repo AND the KB clone land in `~/reeve/cards/<id>/`.
-   5. `docker exec -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`.
+   4. `reeve mv <id> implementing` → meta-repo + every sibling lands in `~/reeve/cards/<id>/`.
+   5. `docker exec -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`. Also a `cd /workspaces/<id>/lore && ... && git commit -m doc` and a meta-repo commit (`cd /workspaces/<id> && echo // note >> CLAUDE.md && git commit -am note`).
    6. Wait 6 seconds.
-   7. `git -C ~/Source/reeve log refs/reeve/<id>/feat-m4-smoke -1 --oneline` → shows the commit.
-   8. `reeve push <id>` → per-branch result table. With no `origin` remote on the test repo, the push will fail and that's the expected output; reporting matches.
-   9. `reeve mv <id> done` → container down; `refs/reeve/<id>/feat-m4-smoke` still on disk; workspace still on disk.
+   7. `git -C ~/Source/reeve-household log refs/reeve/<id>/feat-m4-smoke -1 --oneline` shows the meta-repo commit; same for `~/Source/reeve-household/reeve/` and `~/Source/reeve-household/lore/`.
+   8. `reeve push <id>` → per-branch result table covering all three repos. With no `origin` remotes on the test repos, the pushes fail and that's the expected output; reporting matches.
+   9. `reeve mv <id> done` → container down; all three `refs/reeve/<id>/feat-m4-smoke` still on disk; workspace still on disk.
