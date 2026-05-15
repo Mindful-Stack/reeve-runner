@@ -12,9 +12,16 @@ M4 closes the user-can-review-code half:
 
 1. **Continuous fetch** — the daemon periodically `git fetch`es each card's clones back into the host repo, into a private `refs/reeve/<card-id>/*` namespace. GitKraken/lazygit/sublime-merge pick the refs up automatically.
 2. **`reeve push <id>`** — explicit promotion. Fast-forwards `refs/heads/<branch>` from the namespaced ref, then `git push origin <branch>`. Nothing reaches GitHub until the user runs it.
-3. **Lorekeeper KB clone** — households gain an optional `[knowledge_base]` entry; on `→ Implementing` the KB is cloned alongside code repos using the same `--reference --dissociate` mechanism. The KB participates in fetch and push.
+3. **Knowledge-base clone** — households gain an optional `[knowledge_base]` entry; on `→ Implementing` the KB is cloned alongside code repos using the same `--reference --dissociate` mechanism. The KB participates in fetch and push.
 
 The fetch + push pair is what lets the user actually use the cards as a kanban: the agent writes code, the user reviews via their normal git workflow, the user promotes when satisfied. Without this, M3's containers are just a sandbox with no integration point back to the user's repo.
+
+**Lorekeeper, plugin vs. KB:** The parent design (line 321 onward) frames Lorekeeper as a single thing reeve hard-requires. M4 treats it as two separable concerns:
+
+- The **knowledge-base repo** (markdown / structured-knowledge files the agent reads and writes) is reeve's responsibility, provisioned via `[knowledge_base]` and cloned per-card.
+- The **CC plugin** (the in-container `/lore` commands and supporting code) is the household's responsibility, provisioned via the household's devcontainer.json — base image with Lorekeeper baked in, a `postCreateCommand`, or a devcontainer feature.
+
+Reeve never reads CC's plugin registry, never bind-mounts `~/.claude/plugins/`, and never gates startup on plugin presence. This decouples reeve from CC internals (plugin paths, `installed_plugins.json` shape, marketplace conventions) and preserves the M2 sandbox property that nothing under `~/.claude/` except the explicit allowlist (`skills/`, `settings.json`, `CLAUDE.md`) reaches the container.
 
 M4 deliberately does *not* yet:
 
@@ -26,7 +33,7 @@ M4 deliberately does *not* yet:
 - Implement the heavy-slot scheduler.
 - TUI mutations or fork operations.
 - Address the M2/M3 deferred follow-ups (`--user agent`, M3-F1 reconcile-pending, M3-F5 override-config, etc.).
-- Refuse to start when Lorekeeper is missing (parent design says "refuse"; M4 warns instead — see *Lorekeeper presence*).
+- Provision the Lorekeeper CC plugin (delegated to the household's devcontainer.json — see *Context*).
 
 ## Summary
 
@@ -36,7 +43,7 @@ When the user runs `reeve push <card-id>`, the daemon iterates the same set of h
 
 The `HouseholdProfile` schema gains a top-level optional `[knowledge_base]` table with one field, `path`. The KB clones into `<workspace>/<basename-of-path>/` alongside the code repos. The agent has read+write access; updates flow back to the host via the same namespaced-fetch mechanism.
 
-At daemon startup, the absence of `~/.claude/skills/lorekeeper/` (the canonical Lorekeeper-skill location; exact path confirmed at writing-plans phase) logs at `warn` but does not block startup. Households without `[knowledge_base]` are unaffected.
+Lorekeeper plugin provisioning is out of reeve's scope — see *Context*.
 
 ## Architecture
 
@@ -69,9 +76,8 @@ At daemon startup, the absence of `~/.claude/skills/lorekeeper/` (the canonical 
 - `crates/reeved/src/effects.rs::ensure_running` — `clone_all_repos` is extended (or paired with a `clone_kb` call) so the KB lands at `<workspace>/<basename-of-kb-path>/` alongside the code repos. The basename derivation strips trailing slashes; `~/Source/myarchy-kb` → `myarchy-kb`.
 
 - `crates/reeved/src/main.rs` — at startup, after daemon state is built:
-  1. Check `~/.claude/skills/lorekeeper/`. If missing, `tracing::warn!` per the wording in *Lorekeeper presence*.
-  2. Spawn `FetchWorker` via `tokio::spawn`, retaining a oneshot sender for shutdown.
-  3. On shutdown (after `server::run` returns), send on the worker's shutdown channel and await its join handle.
+  1. Spawn `FetchWorker` via `tokio::spawn`, retaining a oneshot sender for shutdown.
+  2. On shutdown (after `server::run` returns), send on the worker's shutdown channel and await its join handle.
 
 - `crates/reeved/src/handlers.rs` — new `handle_push(state, params: PushParams) -> Result<Value, RpcError>`. Dispatched on `"push"`. Builds the per-branch result by walking the household's repos + KB, calling `list_namespace_refs` then `fast_forward` then `push` for each branch.
 
@@ -150,30 +156,15 @@ The handler returns a successful RPC result even when individual branches failed
 
 If the card has zero branches across all repos in its namespace (no work done yet, or fetch worker hasn't run), `results` is empty. CLI prints "(no branches in `refs/reeve/<id>/*` — has the agent committed anything yet?)" and exits 0.
 
-### Lorekeeper presence
+### Lorekeeper plugin provisioning (not implemented by reeve)
 
-Detection mechanism: `~/.claude/skills/lorekeeper/` exists as a directory.
+The household's devcontainer.json is responsible for getting the Lorekeeper CC plugin into the container. Three workable patterns; reeve takes no opinion:
 
-At daemon startup:
+1. **Base image.** The household uses an image that has Lorekeeper baked in.
+2. **`postCreateCommand`.** The household's devcontainer.json runs an install step on first creation (e.g., `curl … | sh`, `npm install -g @witan/lorekeeper`, or whatever the canonical installer is).
+3. **Devcontainer feature.** If Lorekeeper publishes a devcontainer feature, the household's devcontainer.json includes it.
 
-```rust
-let lorekeeper = std::env::var("HOME")
-    .map(|h| PathBuf::from(h).join(".claude/skills/lorekeeper"))
-    .ok();
-let installed = lorekeeper.as_ref().map(|p| p.is_dir()).unwrap_or(false);
-if !installed {
-    tracing::warn!(
-        "Lorekeeper skill not found at ~/.claude/skills/lorekeeper/ — \
-         households with [knowledge_base] will still clone the KB but \
-         the agent won't have the Lorekeeper plugin loaded inside the \
-         container."
-    );
-}
-```
-
-The startup check is informational only. Households without `[knowledge_base]` are unaffected. Households with `[knowledge_base]` still clone the KB and the agent has full read/write — only the Lorekeeper-shaped CC commands are missing.
-
-The exact path (`~/.claude/skills/lorekeeper/` vs. a different convention Lorekeeper itself uses) is confirmed at writing-plans phase. If Lorekeeper ships as a single file (e.g., `lorekeeper.md`) rather than a directory, adjust the check.
+The KB content side IS reeve's responsibility (the `[knowledge_base]` field on `HouseholdProfile`, cloned by `effects::ensure_running` alongside code repos) — the agent inside the container reads and writes `/workspaces/<id>/<kb-name>/` regardless of whether the Lorekeeper plugin is installed; the plugin is just the CC-side UX for navigating that content.
 
 ### Continuous-fetch interaction with the M3 directory mount
 
@@ -232,7 +223,6 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 
 ## Open items deferred to writing-plans
 
-- Exact path/file the Lorekeeper detection should look for. Probably `~/.claude/skills/lorekeeper/` (directory) but confirm with the actual Lorekeeper layout.
 - Whether `fast_forward` should be a single trait method or split into `is_ancestor` + `update_ref`. Affects mockability; pick at implementation.
 - How `BranchPushStatus::PushFailed` carries the git stderr — likely a `String`, but could be more structured if useful for the CLI's output rendering.
 - Whether to parallelize the per-repo fetches inside one iteration. Default to serial for predictability (mirrors M3's `clone_all_repos` choice).
@@ -259,7 +249,7 @@ A merged M4 must:
 3. `cargo test --workspace` clean; `cargo fmt --check` clean; `cargo clippy` clean.
 4. Manually (with `REEVE_TESTS_STRICT=1` exported during development):
    1. Add a `[knowledge_base]` entry to the `reeve-self` household pointing at any local git repo.
-   2. `reeve daemon start` — observe warn-log if Lorekeeper not installed.
+   2. `reeve daemon start`.
    3. `reeve new --household reeve-self --brief "m4 smoke"` → `<id>`.
    4. `reeve mv <id> implementing` → both the code repo AND the KB clone land in `~/reeve/cards/<id>/`.
    5. `docker exec -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`.
