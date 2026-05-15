@@ -40,6 +40,7 @@ The Lorekeeper plugin gains `./lore` and `./docs/lore` in its sibling-fallback r
 ```json
 {
   "name": "myarchy-workspace",
+  "url": "git@github.com:Mindful-Stack/myarchy-workspace.git",
   "knowledge_base": "lore",
   "repos": [
     { "name": "backend",  "url": "git@github.com:Mindful-Stack/myarchy-backend.git",  "tags": ["backend", "core"] },
@@ -52,6 +53,7 @@ The Lorekeeper plugin gains `./lore` and `./docs/lore` in its sibling-fallback r
 Fields:
 
 - `name` (string, optional) — workspace friendly name. Defaults to meta-repo directory basename. Used in logs, `reeve household ls`, commit messages.
+- `url` (string, optional) — canonical git URL of the meta-repo itself. Documents where the workspace lives; surfaced in `reeve household show`. If absent, `reeve household show` falls back to `git remote get-url origin` in the meta-repo. NOT consulted by Reeve at card-spawn time (the meta-repo is already cloned locally; `--reference` uses the on-disk path).
 - `knowledge_base` (string, optional) — references one of `repos[].name`. Cardinality-one by type. If set, the named entry MUST exist in `repos` (validated at load). If absent, no KB is wired; Lorekeeper inside the container falls through to its other resolution paths or reports no KB configured.
 - `repos` (array) — sibling repos. Each entry:
   - `name` (string, required) — directory name on disk relative to the meta-repo root; also the manifest identifier.
@@ -121,7 +123,7 @@ Users who want to override (e.g., a KB named other than `lore`) set `containerEn
 
 #### New modules
 
-- `crates/reeved/src/manifest.rs` — `Manifest` struct (`name`, `knowledge_base`, `repos: Vec<RepoEntry>`), `RepoEntry { name, url, tags, description }`, `load_manifest(meta_repo_path: &Path) -> Result<Manifest>`. Performs JSON parse + validation rules above. Tilde-expansion is not needed here (manifest is inside the meta-repo, paths are relative).
+- `crates/reeved/src/manifest.rs` — `Manifest` struct (`name`, `url`, `knowledge_base`, `repos: Vec<RepoEntry>`), `RepoEntry { name, url, tags, description }`, `load_manifest(meta_repo_path: &Path) -> Result<Manifest>`. Performs JSON parse + validation rules above. Tilde-expansion is not needed here (manifest is inside the meta-repo, paths are relative).
 
 #### Modified modules
 
@@ -155,7 +157,7 @@ Users who want to override (e.g., a KB named other than `lore`) set `containerEn
   - `HouseholdAddParams { name: String, source: HouseholdSource }`, `HouseholdSource { Path(PathBuf), Url(String) }`
   - `HouseholdNewParams { name: String, path: Option<PathBuf>, template: Option<String> }`
   - `HouseholdSummary { name: String, meta_repo_path: PathBuf, workspace_name: String, knowledge_base: Option<String>, repo_count: usize }`
-  - `HouseholdDetail { summary: HouseholdSummary, repos: Vec<RepoDetail>, cards: Vec<CardReference> }`, `RepoDetail { name, url, tags, description, populated_on_host: bool }`, `CardReference { id, brief, column }`
+  - `HouseholdDetail { summary: HouseholdSummary, workspace_url: Option<String>, repos: Vec<RepoDetail>, cards: Vec<CardReference> }`, `RepoDetail { name, url, tags, description, populated_on_host: bool }`, `CardReference { id, brief, column }`. `workspace_url` comes from the manifest's top-level `url` field, falling back to `git remote get-url origin` if absent.
 
 - `crates/reeve/src/cli.rs` — new `household` subcommand tree:
   ```
