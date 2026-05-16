@@ -350,13 +350,18 @@ async fn handle_household_add(
 }
 
 async fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let status = tokio::process::Command::new("git")
+    let output = tokio::process::Command::new("git")
         .args(args)
         .current_dir(dir)
-        .status()
+        .output()
         .await?;
-    if !status.success() {
-        anyhow::bail!("git {:?} failed in {}", args, dir.display());
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {args:?} failed in {} (exit {}): {}",
+            dir.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
     Ok(())
 }
@@ -370,7 +375,7 @@ async fn handle_household_new(
         .clone()
         .unwrap_or_else(|| default_source_dir().join(&params.name));
 
-    if dest.exists() && dest.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+    if dest.exists() && dest.read_dir().map(|mut i| i.next().is_some()).unwrap_or(true) {
         return Err(RpcError {
             code: RpcError::CONFLICT,
             message: format!("target directory {} exists and is non-empty", dest.display()),
@@ -388,6 +393,10 @@ async fn handle_household_new(
             code: RpcError::INTERNAL,
             message: format!("clone template {template}: {e:#}"),
         })?;
+
+    // TODO: from here on, any failure leaves `dest` orphaned (re-init aborted,
+    // manifest rewrite failed, git commit failed, or DB insert failed). Mirror
+    // the cleanup decision from handle_household_add's URL branch in a follow-up.
 
     // 2. Detach from the template's history: rm .git, re-init, single commit.
     std::fs::remove_dir_all(dest.join(".git")).map_err(|e| RpcError {
@@ -891,7 +900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn household_new_uses_default_template_path_when_provided() {
+    async fn household_new_with_explicit_template() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let template = dir.path().join("template");
@@ -958,6 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn household_new_refuses_non_empty_target() {
+        // `template` is deliberately a bad URL; the guard returns before we touch git.
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let dest = dir.path().join("occupied");
