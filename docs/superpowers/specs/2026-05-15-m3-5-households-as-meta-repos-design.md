@@ -141,10 +141,10 @@ Users who want to override (e.g., a KB named other than `lore`) set `containerEn
 
 - `crates/reeved/src/clones.rs` — `clone_all_repos` is rewritten:
   1. Load manifest from `<meta_repo_path>/repos.json`.
-  2. Clone the meta-repo itself: `git clone --reference <meta_repo_path>/.git --dissociate <meta_repo_path> <card_workspace>/`. Uses the same `--reference --dissociate` mechanism as siblings.
+  2. Clone the meta-repo itself: `git clone --reference <meta_repo_path>/.git --dissociate <meta_repo_path> <card_workspace>/`. The card workspace dir is **created by `git clone`**, not pre-created by the daemon — `git clone` refuses to write into a non-empty directory, so the caller must NOT `create_dir_all(<card_workspace>)` before this step. Uses the same `--reference --dissociate` mechanism as siblings. Note that the parent (`$REEVE_CARDS_DIR`) IS pre-created.
   3. For each `repo` in `manifest.repos`: `git clone --reference <meta_repo_path>/<repo.name>/.git --dissociate <meta_repo_path>/<repo.name> <card_workspace>/<repo.name>/`. If `<meta_repo_path>/<repo.name>/` is missing on the host, return an error with a clear message ("sibling `<name>` declared in repos.json but not cloned at `<path>` — run your workspace's bootstrap").
 
-- `crates/reeved/src/effects.rs::ensure_running` — `clone_all_repos` invocation point unchanged. The `devcontainer` path passed to `devcontainer up` becomes `<card_workspace>/.devcontainer/devcontainer.json` (which was just cloned in as part of the meta-repo).
+- `crates/reeved/src/effects.rs::ensure_running` — `clone_all_repos` invocation point unchanged. **Remove the pre-existing `std::fs::create_dir_all(&workspace)` call** that M3 added before clones — step 2 above now handles workspace creation. The `$REEVE_CARDS_DIR` parent dir is still pre-created (M3 also does this implicitly when binding the cards socket dir). The `devcontainer` path passed to `devcontainer up` becomes `<card_workspace>/.devcontainer/devcontainer.json` (which was just cloned in as part of the meta-repo).
 
 - `crates/reeved/src/handlers.rs` — new household-management handlers:
   - `handle_household_add { name, path | url } -> AddResult` — `path` registers an existing local clone; `url` clones to a default location (configurable via flag, default `~/Source/<name>/`) and registers. Validates the manifest before inserting into sqlite.
