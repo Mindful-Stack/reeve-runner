@@ -133,7 +133,7 @@ impl TransitionEffects for LiveEffects {
         let container_name = discover_with_deadline(&self.state, &card_id).await?;
 
         let id_for_update = card_id.clone();
-        let name_for_update = container_name.clone();
+        let name_for_update = container_name;
         let db = self.state.db.clone();
         let now = now_secs();
         tokio::task::spawn_blocking(move || -> Result<()> {
