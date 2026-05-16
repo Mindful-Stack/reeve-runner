@@ -275,9 +275,15 @@ async fn handle_household_add(
                     message: "--clone-into is only valid for URL sources".into(),
                 });
             }
-            if !path.exists() || !path.join(".git").exists() {
+            if !path.exists() {
                 return Err(RpcError {
                     code: RpcError::NOT_FOUND,
+                    message: format!("path {} does not exist", path.display()),
+                });
+            }
+            if !path.join(".git").exists() {
+                return Err(RpcError {
+                    code: RpcError::INVALID_ARGUMENT,
                     message: format!("path {} is not a git repository", path.display()),
                 });
             }
@@ -302,6 +308,9 @@ async fn handle_household_add(
                     code: RpcError::INTERNAL,
                     message: format!("clone {url}: {e:#}"),
                 })?;
+            // TODO: on manifest or DB-insert failure below, the cloned directory at
+            // `dest` is left orphaned (no DB row, no cleanup). Acceptable for M3.5;
+            // follow-up issue should add best-effort dest removal on error paths.
             dest
         }
     };
