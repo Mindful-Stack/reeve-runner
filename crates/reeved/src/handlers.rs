@@ -2,14 +2,17 @@
 
 use crate::db;
 use crate::effects::{DaemonState, LiveEffects};
+use crate::manifest;
 use crate::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
-    Card, Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult,
-    RpcError, RpcRequest, StatusSelfResult,
+    Card, Column, HouseholdAddParams, HouseholdSource, HouseholdSummary, LsResult, MvParams,
+    MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, RpcError, RpcRequest,
+    StatusSelfResult,
 };
 use serde_json::Value;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub async fn dispatch(
@@ -35,6 +38,10 @@ pub async fn dispatch(
         "status-self" => {
             let card_id = require_card(&caller)?;
             handle_status_self(state.db, card_id).await
+        }
+        "household.add" => {
+            let params = parse_params::<HouseholdAddParams>(req.params)?;
+            handle_household_add(&state, params).await
         }
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
@@ -240,6 +247,93 @@ async fn handle_status_self(db: DbHandle, card_id: String) -> std::result::Resul
     .map_err(to_internal)
 }
 
+fn default_source_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join("Source"))
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn summary_from(row: &db::HouseholdRow, m: &manifest::Manifest) -> HouseholdSummary {
+    HouseholdSummary {
+        name: row.name.clone(),
+        meta_repo_path: row.meta_repo_path.clone(),
+        workspace_name: m.workspace.clone(),
+        knowledge_base: m.knowledge_base.clone(),
+        repo_count: m.repos.len(),
+    }
+}
+
+async fn handle_household_add(
+    state: &DaemonState,
+    params: HouseholdAddParams,
+) -> std::result::Result<Value, RpcError> {
+    let meta_repo_path = match &params.source {
+        HouseholdSource::Path { path } => {
+            if params.clone_into.is_some() {
+                return Err(RpcError {
+                    code: RpcError::INVALID_PARAMS,
+                    message: "--clone-into is only valid for URL sources".into(),
+                });
+            }
+            if !path.exists() || !path.join(".git").exists() {
+                return Err(RpcError {
+                    code: RpcError::NOT_FOUND,
+                    message: format!("path {} is not a git repository", path.display()),
+                });
+            }
+            path.clone()
+        }
+        HouseholdSource::Url { url } => {
+            let dest = params
+                .clone_into
+                .clone()
+                .unwrap_or_else(|| default_source_dir().join(&params.name));
+            if dest.exists() {
+                return Err(RpcError {
+                    code: RpcError::CONFLICT,
+                    message: format!("target directory {} already exists", dest.display()),
+                });
+            }
+            state
+                .git
+                .clone_url(url, &dest)
+                .await
+                .map_err(|e| RpcError {
+                    code: RpcError::INTERNAL,
+                    message: format!("clone {url}: {e:#}"),
+                })?;
+            dest
+        }
+    };
+
+    // Validate the manifest BEFORE inserting into sqlite.
+    let m = manifest::load_manifest(&meta_repo_path).map_err(|e| RpcError {
+        code: RpcError::INVALID_ARGUMENT,
+        message: format!("manifest invalid: {e:#}"),
+    })?;
+
+    let added_at = now_secs();
+    let row = db::HouseholdRow {
+        name: params.name.clone(),
+        meta_repo_path: meta_repo_path.clone(),
+        added_at,
+    };
+    let db = state.db.clone();
+    let row_clone = row.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let conn = db.blocking_lock();
+        db::insert_household(&conn, &row_clone)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(|e| RpcError {
+        code: RpcError::CONFLICT,
+        message: format!("insert household: {e:#}"),
+    })?;
+
+    serde_json::to_value(summary_from(&row, &m)).map_err(to_internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +354,10 @@ mod tests {
     #[async_trait]
     impl GitOps for NoopGit {
         async fn clone(&self, _source: &std::path::Path, _dest: &std::path::Path) -> Result<()> {
+            std::fs::create_dir_all(_dest).ok();
+            Ok(())
+        }
+        async fn clone_url(&self, _url: &str, _dest: &std::path::Path) -> Result<()> {
             std::fs::create_dir_all(_dest).ok();
             Ok(())
         }
@@ -589,6 +687,58 @@ mod tests {
         .unwrap();
         let ls: LsResult = serde_json::from_value(ls_value).unwrap();
         assert_eq!(ls.cards[0].column, Column::Backlog);
+    }
+
+    #[tokio::test]
+    async fn household_add_via_path_succeeds() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
+        )
+        .unwrap();
+        let state = fresh_state();
+        let result = handle_household_add(
+            &state,
+            HouseholdAddParams {
+                name: "test".into(),
+                source: HouseholdSource::Path { path: meta.clone() },
+                clone_into: None,
+            },
+        )
+        .await
+        .unwrap();
+        let summary: HouseholdSummary = serde_json::from_value(result).unwrap();
+        assert_eq!(summary.name, "test");
+        assert_eq!(summary.meta_repo_path, meta);
+    }
+
+    #[tokio::test]
+    async fn household_add_rejects_invalid_manifest() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
+        )
+        .unwrap();
+        let state = fresh_state();
+        let err = handle_household_add(
+            &state,
+            HouseholdAddParams {
+                name: "test".into(),
+                source: HouseholdSource::Path { path: meta },
+                clone_into: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.message.contains("manifest invalid"));
     }
 
 }

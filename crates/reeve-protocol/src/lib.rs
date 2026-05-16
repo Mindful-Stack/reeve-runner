@@ -115,6 +115,8 @@ impl RpcError {
     pub const INTERNAL: i32 = -32603;
     pub const NOT_FOUND: i32 = 404;
     pub const FORBIDDEN: i32 = 403;
+    pub const CONFLICT: i32 = 409;
+    pub const INVALID_ARGUMENT: i32 = 400;
 }
 
 /// Parameters for the `ls` method.

@@ -20,6 +20,9 @@ use crate::manifest::Manifest;
 pub trait GitOps: Send + Sync {
     /// Run `git clone --reference <source> --dissociate <source> <dest>`.
     async fn clone(&self, source: &Path, dest: &Path) -> Result<()>;
+    /// Run `git clone <url> <dest>` — no --reference, no --dissociate.
+    /// For adding a remote household whose meta-repo lives off-host.
+    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()>;
 }
 
 /// Convenience handle used by the rest of the daemon.
@@ -41,6 +44,26 @@ impl GitOps for RealGitOps {
                 source.to_str().context("source path not utf-8")?,
                 "--dissociate",
                 source.to_str().context("source path not utf-8")?,
+                dest.to_str().context("dest path not utf-8")?,
+            ])
+            .output()
+            .await
+            .context("exec git clone")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git clone failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args([
+                "clone",
+                url,
                 dest.to_str().context("dest path not utf-8")?,
             ])
             .output()
@@ -168,6 +191,13 @@ mod tests {
             std::fs::create_dir_all(dest).unwrap();
             Ok(())
         }
+
+        async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push((PathBuf::from(url), dest.to_path_buf()));
+            std::fs::create_dir_all(dest).unwrap();
+            Ok(())
+        }
     }
 
     /// Build a host meta-repo with workspace `.git/` + each named sibling.
@@ -268,6 +298,10 @@ mod tests {
                     }
                 }
                 Ok(())
+            }
+
+            async fn clone_url(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
+                self.inner.clone_url(url, dest).await
             }
         }
         let ops = InlineSimulatingOps {
