@@ -484,3 +484,122 @@ fn m3_5_household_new_then_implementing() {
 
     // cleanup is dropped here, removing the container.
 }
+
+// ---------------------------------------------------------------------------
+// M3.5 Task 13 — e2e: missing sibling blocks → Implementing with clear error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m3_5_missing_sibling_blocks_implementing() {
+    if !is_docker_available() {
+        eprintln!("skip: docker not available");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skip: devcontainer CLI not available");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    build_workspace();
+    let mut env = isolated_env_with_config(temp.path());
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    let template_src = temp.path().join("template-source");
+    build_test_template(&template_src);
+
+    let dest = temp.path().join("incomplete");
+
+    // Spawn daemon.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+
+    // Wait for socket.
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "daemon socket not created within 2s");
+
+    // Scaffold the household from our local template.
+    let out = cmd("reeve", &env)
+        .args([
+            "household",
+            "new",
+            "incomplete",
+            "--path",
+            &dest.to_string_lossy(),
+            "--template",
+            &format!("file://{}", template_src.display()),
+        ])
+        .output()
+        .expect("run reeve household new");
+    assert!(
+        out.status.success(),
+        "household new failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // Declare a "phantom" sibling in the manifest but do NOT create its repo.
+    // "lore" is properly initialised; "phantom" is intentionally missing.
+    init_sibling(&dest.join("lore"));
+    write_manifest(
+        &dest.join("repos.json"),
+        r#"{
+          "workspace": "incomplete",
+          "knowledge_base": "lore",
+          "repos": [
+            { "name": "incomplete" },
+            { "name": "lore" },
+            { "name": "phantom" }
+          ]
+        }"#,
+    );
+    // do NOT call init_sibling(&dest.join("phantom"))
+    commit_meta_changes(&dest);
+
+    // Create a card tied to the household.
+    let out_new = cmd("reeve", &env)
+        .args(["new", "--household", "incomplete", "--brief", "smoke"])
+        .output()
+        .expect("run reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new failed: {}",
+        String::from_utf8_lossy(&out_new.stderr),
+    );
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+
+    // Attempt to move to Implementing — expect FAILURE due to missing phantom.
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "implementing"])
+        .output()
+        .expect("run reeve mv");
+    assert!(
+        !out_mv.status.success(),
+        "mv should have failed for missing sibling",
+    );
+    let stderr = String::from_utf8_lossy(&out_mv.stderr);
+    let stdout = String::from_utf8_lossy(&out_mv.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("phantom") && combined.contains("not cloned"),
+        "expected error mentioning phantom and 'not cloned', got: stdout={stdout:?} stderr={stderr:?}",
+    );
+
+    // Verify no container was spawned for the failed mv.
+    assert!(
+        discover_container_by_label(&card_id).is_none(),
+        "container should NOT exist for failed mv",
+    );
+}
