@@ -375,6 +375,18 @@ async fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn git_remote_url(meta_repo: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(meta_repo)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 #[derive(serde::Deserialize)]
 pub struct NameParam {
     pub name: String,
@@ -424,17 +436,21 @@ async fn handle_household_show(
     state: &DaemonState,
     params: NameParam,
 ) -> std::result::Result<Value, RpcError> {
-    let conn = state.db.lock().await;
-    let row = db::get_household(&conn, &params.name)
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("get household: {e:#}"),
-        })?
-        .ok_or_else(|| RpcError {
-            code: RpcError::NOT_FOUND,
-            message: format!("household '{}' not found", params.name),
-        })?;
+    // First locked section: fetch the row.
+    let row = {
+        let conn = state.db.lock().await;
+        db::get_household(&conn, &params.name)
+            .map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
+                message: format!("get household: {e:#}"),
+            })?
+            .ok_or_else(|| RpcError {
+                code: RpcError::NOT_FOUND,
+                message: format!("household '{}' not found", params.name),
+            })?
+    };
 
+    // Unlocked: file I/O and subprocess work.
     let m = manifest::load_manifest(&row.meta_repo_path)
         .map_err(|e| RpcError {
             code: RpcError::INTERNAL,
@@ -477,15 +493,18 @@ async fn handle_household_show(
         })
         .collect();
 
-    let cards: Vec<CardReference> = db::cards_for_household(&conn, &params.name)
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("list cards: {e:#}"),
-        })?
-        .into_iter()
-        .map(|(id, brief, column)| CardReference { id, brief, column })
-        .collect();
-    drop(conn);
+    // Second locked section: fetch referencing cards.
+    let cards = {
+        let conn = state.db.lock().await;
+        db::cards_for_household(&conn, &params.name)
+            .map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
+                message: format!("list cards: {e:#}"),
+            })?
+    }
+    .into_iter()
+    .map(|(id, brief, column)| CardReference { id, brief, column })
+    .collect();
 
     let detail = HouseholdDetail {
         summary: summary_from(&row, &m),
@@ -494,18 +513,6 @@ async fn handle_household_show(
         cards,
     };
     serde_json::to_value(detail).map_err(to_internal)
-}
-
-fn git_remote_url(meta_repo: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(meta_repo)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 async fn handle_household_new(
