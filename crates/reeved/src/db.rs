@@ -194,9 +194,8 @@ pub fn remove_household(conn: &Connection, name: &str) -> Result<bool> {
 }
 
 pub fn list_households(conn: &Connection) -> Result<Vec<HouseholdRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT name, meta_repo_path, added_at FROM households ORDER BY name",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name, meta_repo_path, added_at FROM households ORDER BY name")?;
     let rows = stmt
         .query_map([], |r| {
             Ok(HouseholdRow {
@@ -209,10 +208,7 @@ pub fn list_households(conn: &Connection) -> Result<Vec<HouseholdRow>> {
     Ok(rows)
 }
 
-pub fn get_household(
-    conn: &Connection,
-    name: &str,
-) -> Result<Option<HouseholdRow>> {
+pub fn get_household(conn: &Connection, name: &str) -> Result<Option<HouseholdRow>> {
     let result = conn
         .query_row(
             "SELECT name, meta_repo_path, added_at FROM households WHERE name = ?1",
@@ -231,13 +227,9 @@ pub fn get_household(
 
 /// Return all cards whose `household` column equals `name`. Used by
 /// `handle_household_show` to surface the cards-referencing-this-household list.
-pub fn cards_for_household(
-    conn: &Connection,
-    name: &str,
-) -> Result<Vec<(String, String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, brief, column_ FROM cards WHERE household = ?1 ORDER BY id",
-    )?;
+pub fn cards_for_household(conn: &Connection, name: &str) -> Result<Vec<(String, String, String)>> {
+    let mut stmt =
+        conn.prepare("SELECT id, brief, column_ FROM cards WHERE household = ?1 ORDER BY id")?;
     let rows = stmt
         .query_map([name], |r| {
             Ok((

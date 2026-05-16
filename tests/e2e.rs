@@ -169,7 +169,6 @@ fn isolated_env_with_config(temp: &std::path::Path) -> Vec<(String, String)> {
     ]
 }
 
-
 fn parse_card_id_from_new_output(stdout: &str) -> String {
     // "created <uuid> (Backlog)"
     stdout
@@ -439,7 +438,13 @@ fn m3_5_household_new_then_implementing() {
 
     // Create a card tied to the new household.
     let out_new = cmd("reeve", &env)
-        .args(["new", "--household", "test-household", "--brief", "m3.5 smoke"])
+        .args([
+            "new",
+            "--household",
+            "test-household",
+            "--brief",
+            "m3.5 smoke",
+        ])
         .output()
         .expect("run reeve new");
     assert!(
@@ -464,15 +469,18 @@ fn m3_5_household_new_then_implementing() {
     );
 
     // Discover and register the container for cleanup on drop.
-    let container_name = discover_container_by_label(&card_id)
-        .expect("container not discovered by label after mv");
+    let container_name =
+        discover_container_by_label(&card_id).expect("container not discovered by label after mv");
     cleanup.0 = Some(container_name.clone());
 
     // Verify the workspace was cloned correctly.
     let workspace = temp.path().join("cards").join(&card_id);
     assert!(workspace.join(".git").exists(), "meta-repo cloned");
     assert!(workspace.join("lore/.git").exists(), "lore sibling cloned");
-    assert!(workspace.join("extra/.git").exists(), "extra sibling cloned");
+    assert!(
+        workspace.join("extra/.git").exists(),
+        "extra sibling cloned"
+    );
     assert!(
         workspace.join(".devcontainer/devcontainer.json").exists(),
         "devcontainer.json travelled with the meta-repo clone",

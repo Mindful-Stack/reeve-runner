@@ -61,11 +61,7 @@ impl GitOps for RealGitOps {
 
     async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
         let output = Command::new("git")
-            .args([
-                "clone",
-                url,
-                dest.to_str().context("dest path not utf-8")?,
-            ])
+            .args(["clone", url, dest.to_str().context("dest path not utf-8")?])
             .output()
             .await
             .context("exec git clone")?;
@@ -312,7 +308,11 @@ mod tests {
             .await
             .unwrap();
         let calls = ops.inner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "only the workspace was cloned; lore is inline");
+        assert_eq!(
+            calls.len(),
+            1,
+            "only the workspace was cloned; lore is inline"
+        );
         assert_eq!(calls[0].0, meta);
         assert!(
             workspace.join("lore").exists(),
@@ -340,7 +340,10 @@ mod tests {
             "unexpected error: {msg}",
         );
         assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clones issued");
-        assert!(!workspace.exists(), "workspace not created on pre-flight failure");
+        assert!(
+            !workspace.exists(),
+            "workspace not created on pre-flight failure"
+        );
     }
 
     #[tokio::test]
@@ -482,7 +485,10 @@ mod integration_tests {
             .await
             .unwrap();
 
-        assert!(workspace.join(".git").exists(), "workspace meta-repo cloned");
+        assert!(
+            workspace.join(".git").exists(),
+            "workspace meta-repo cloned"
+        );
         assert!(workspace.join("backend/.git").exists(), "sibling cloned");
     }
 }

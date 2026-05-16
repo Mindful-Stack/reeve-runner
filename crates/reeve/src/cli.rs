@@ -225,12 +225,12 @@ fn is_git_url(s: &str) -> bool {
 
 async fn household_run(cmd: HouseholdCommand) -> Result<()> {
     match cmd {
-        HouseholdCommand::Add { name, source, path } => {
-            household_add(name, source, path).await
-        }
-        HouseholdCommand::New { name, path, template } => {
-            household_new(name, path, template).await
-        }
+        HouseholdCommand::Add { name, source, path } => household_add(name, source, path).await,
+        HouseholdCommand::New {
+            name,
+            path,
+            template,
+        } => household_new(name, path, template).await,
         HouseholdCommand::Ls => household_ls().await,
         HouseholdCommand::Rm { name } => household_rm(name).await,
         HouseholdCommand::Show { name } => household_show(name).await,
@@ -241,17 +241,27 @@ async fn household_add(name: String, source: String, path: Option<PathBuf>) -> R
     let src = if is_git_url(&source) {
         HouseholdSource::Url { url: source }
     } else {
-        HouseholdSource::Path { path: PathBuf::from(source) }
+        HouseholdSource::Path {
+            path: PathBuf::from(source),
+        }
     };
     let socket = paths::detect_socket();
-    let params = HouseholdAddParams { name, source: src, clone_into: path };
+    let params = HouseholdAddParams {
+        name,
+        source: src,
+        clone_into: path,
+    };
     let result = client::call(&socket, "household.add", serde_json::to_value(params)?)
         .await
         .context("calling household.add")?;
     match result {
         Ok(value) => {
             let summary: HouseholdSummary = serde_json::from_value(value)?;
-            println!("Registered {} at {}", summary.name, summary.meta_repo_path.display());
+            println!(
+                "Registered {} at {}",
+                summary.name,
+                summary.meta_repo_path.display()
+            );
             println!("  workspace: {}", summary.workspace_name);
             if let Some(kb) = summary.knowledge_base {
                 println!("  knowledge_base: {kb}");
@@ -269,14 +279,22 @@ async fn household_new(
     template: Option<String>,
 ) -> Result<()> {
     let socket = paths::detect_socket();
-    let params = HouseholdNewParams { name, path, template };
+    let params = HouseholdNewParams {
+        name,
+        path,
+        template,
+    };
     let result = client::call(&socket, "household.new", serde_json::to_value(params)?)
         .await
         .context("calling household.new")?;
     match result {
         Ok(value) => {
             let summary: HouseholdSummary = serde_json::from_value(value)?;
-            println!("Scaffolded {} at {}", summary.name, summary.meta_repo_path.display());
+            println!(
+                "Scaffolded {} at {}",
+                summary.name,
+                summary.meta_repo_path.display()
+            );
             println!("\nNext steps:");
             println!("  cd {}", summary.meta_repo_path.display());
             println!("  $EDITOR repos.json   # declare your sibling repos");
@@ -331,9 +349,13 @@ async fn household_rm(name: String) -> Result<()> {
 
 async fn household_show(name: String) -> Result<()> {
     let socket = paths::detect_socket();
-    let result = client::call(&socket, "household.show", serde_json::json!({ "name": name }))
-        .await
-        .context("calling household.show")?;
+    let result = client::call(
+        &socket,
+        "household.show",
+        serde_json::json!({ "name": name }),
+    )
+    .await
+    .context("calling household.show")?;
     match result {
         Ok(value) => {
             let detail: HouseholdDetail = serde_json::from_value(value)?;
