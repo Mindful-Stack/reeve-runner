@@ -2,7 +2,7 @@
 //! Bundled with the `DaemonState` that the dispatcher closure captures.
 
 use crate::clones::GitOpsHandle;
-use crate::container::{self, ContainerOpsHandle};
+use crate::container::ContainerOpsHandle;
 use crate::db;
 use crate::household::HouseholdMap;
 use crate::listeners::ListenerRegistry;
@@ -48,21 +48,21 @@ impl TransitionEffects for LiveEffects {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         let card_id = card.id.clone();
 
-        let profile = self
+        let _household = self
             .state
             .households
             .get(&card.household)
             .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "household '{}' not configured (in ~/.config/reeve/households/)",
+                    "household '{}' not configured",
                     card.household,
                 )
             })?;
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
         let cards_socket_dir = reeve_protocol::paths::cards_socket_dir();
-        let workspace = reeve_protocol::paths::card_workspace_path(&card_id);
+        let _workspace = reeve_protocol::paths::card_workspace_path(&card_id);
 
         // Ensure the cards SOCKET directory exists so docker bind-mounts the
         // dir (not a fresh empty one). M2 contract.
@@ -100,97 +100,12 @@ impl TransitionEffects for LiveEffects {
             }
         }
 
-        // Create workspace dir + clone repos. Failures bubble up; caller
-        // (handle_mv) has already mutated the column, so partial failure
-        // leaves the card as Implementing+no-container (M2 documented gap).
-        std::fs::create_dir_all(&workspace)
-            .with_context(|| format!("create workspace {}", workspace.display()))?;
-        crate::clones::clone_all_repos(&*self.state.git, &workspace, &profile.repos)
-            .await
-            .context("clone repos into card workspace")?;
-
-        // Record Spawning before launching devcontainer. If we crash between
-        // here and discovery, the row stays Spawning; reconcile marks Failed.
-        // Use a synthetic name until discovery succeeds; reconcile only ever
-        // queries by inspect/ps so a stale name doesn't break anything.
-        let pending_name = format!("pending-{card_id}");
-        let id_for_record = card_id.clone();
-        let name_for_record = pending_name.clone();
-        let db = self.state.db.clone();
-        let now = now_secs();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = db.blocking_lock();
-            db::upsert_container(
-                &conn,
-                &id_for_record,
-                &name_for_record,
-                ContainerStatus::Spawning,
-                now,
-            )
-        })
-        .await??;
-
-        let argv = container::devcontainer_up_command(
-            &card_id,
-            &workspace,
-            &profile.devcontainer,
-            &cards_socket_dir,
-            &self.state.claude_dir,
-            self.state.api_key.as_deref(),
-        );
-        let spawn_result = self.state.containers.spawn(argv).await;
-
-        if spawn_result.is_err() {
-            let id_for_update = card_id.clone();
-            let db = self.state.db.clone();
-            let now = now_secs();
-            tokio::task::spawn_blocking(move || -> Result<()> {
-                let conn = db.blocking_lock();
-                db::update_container_status(&conn, &id_for_update, ContainerStatus::Failed, now)
-            })
-            .await??;
-            return spawn_result;
-        }
-
-        // Discover the actual container name (devcontainer CLI picks it).
-        // Poll briefly — devcontainer up may return success a moment before
-        // the container is visible in docker ps. On timeout, mark the row
-        // Failed (per spec) so a long-running daemon doesn't leave a stale
-        // Spawning row indefinitely.
-        let discovered = match discover_with_deadline(&self.state, &card_id).await {
-            Ok(name) => name,
-            Err(e) => {
-                let id_for_update = card_id.clone();
-                let db = self.state.db.clone();
-                let now = now_secs();
-                tokio::task::spawn_blocking(move || -> Result<()> {
-                    let conn = db.blocking_lock();
-                    db::update_container_status(&conn, &id_for_update, ContainerStatus::Failed, now)
-                })
-                .await??;
-                return Err(e);
-            }
-        };
-
-        // Upsert with the real name now.
-        let id_for_update = card_id.clone();
-        let name_for_update = discovered.clone();
-        let db = self.state.db.clone();
-        let now = now_secs();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = db.blocking_lock();
-            db::upsert_container(
-                &conn,
-                &id_for_update,
-                &name_for_update,
-                ContainerStatus::Running,
-                now,
-            )
-        })
-        .await??;
-
-        self.state.listeners.spawn(&card_id, socket).await;
-        Ok(())
+        // M3.5 Task 9 will rewrite this to:
+        //   1. Look up the manifest via load_household_manifest(&household).
+        //   2. Use `<workspace>/.devcontainer/devcontainer.json` instead of the dropped
+        //      `profile.devcontainer` path.
+        //   3. Call clone_all_for_card(...) instead of clone_all_repos(...).
+        todo!("M3.5 Task 9 — devcontainer path convention + clone_all_for_card");
     }
 
     async fn ensure_stopped(&self, card_id: &str) -> Result<()> {

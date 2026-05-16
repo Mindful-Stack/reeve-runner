@@ -67,7 +67,10 @@ async fn main() -> Result<()> {
         state: std::sync::OnceLock::new(),
     });
 
-    let households = household::load_all(&lifecycle::households_dir()?)?;
+    let households = {
+        let conn = db.lock().await;
+        household::load_households(&conn)?
+    };
     let containers: container::ContainerOpsHandle = Arc::new(container::DockerOps);
     let listeners = listeners::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
     let claude_dir = std::env::var("HOME")

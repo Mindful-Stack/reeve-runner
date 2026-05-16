@@ -47,35 +47,14 @@ fn precheck_household_for_implementing(
     state: &DaemonState,
     household_name: &str,
 ) -> std::result::Result<(), RpcError> {
-    let profile = state
-        .households
-        .get(household_name)
-        .ok_or_else(|| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("household '{household_name}' not configured"),
-        })?;
-
-    let dc = &profile.devcontainer;
-    if !dc.is_file() {
-        return Err(RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("devcontainer.json not readable at {}", dc.display()),
-        });
-    }
-
-    for repo in &profile.repos {
-        let git_marker = repo.path.join(".git");
-        if !git_marker.exists() {
-            return Err(RpcError {
-                code: RpcError::INTERNAL,
-                message: format!(
-                    "repo '{}' at {} is not a git repository (no .git found)",
-                    repo.name,
-                    repo.path.display(),
-                ),
-            });
-        }
-    }
+    // M3.5 Task 9 will rewrite this to read the meta-repo's manifest:
+    //   - <meta_repo_path>/.devcontainer/devcontainer.json must be a file
+    //   - For each repos[] entry other than the workspace: the on-disk dir
+    //     must exist (either as a sibling clone with .git/ or inline)
+    let _ = state.households.get(household_name).ok_or_else(|| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("household '{household_name}' not configured"),
+    })?;
     Ok(())
 }
 
@@ -327,7 +306,7 @@ mod tests {
     }
 
     fn fresh_state_with_households(
-        map: HashMap<String, crate::household::HouseholdProfile>,
+        map: HashMap<String, crate::household::Household>,
     ) -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
@@ -612,170 +591,4 @@ mod tests {
         assert_eq!(ls.cards[0].column, Column::Backlog);
     }
 
-    #[tokio::test]
-    async fn mv_to_implementing_with_configured_household_succeeds() {
-        use crate::household::HouseholdProfile;
-        let dir = tempfile::tempdir().unwrap();
-        let dc = dir.path().join("dc.json");
-        std::fs::write(&dc, "{}").unwrap();
-
-        let mut households = HashMap::new();
-        households.insert(
-            "h".to_string(),
-            HouseholdProfile {
-                devcontainer: dc.clone(),
-                repos: vec![],
-            },
-        );
-        let state = fresh_state_with_households(households);
-
-        let new_value = dispatch(
-            RpcRequest {
-                id: 1,
-                method: "new".into(),
-                params: serde_json::json!({
-                    "household": "h",
-                    "brief": "x",
-                    "needs_heavy": false,
-                }),
-            },
-            state.clone(),
-            CallerContext::host(),
-        )
-        .await
-        .unwrap();
-        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
-
-        // NoopOps returns Ok for spawn and Some("test-container") for
-        // discover_container_name — so ensure_running runs end-to-end
-        // without hitting real docker. NoopGit creates dest dirs to satisfy
-        // clone_all_repos. The mv should succeed.
-        let mv_value = dispatch(
-            RpcRequest {
-                id: 2,
-                method: "mv".into(),
-                params: serde_json::json!({"id": card.id, "column": "implementing"}),
-            },
-            state.clone(),
-            CallerContext::host(),
-        )
-        .await
-        .unwrap();
-        let result: MvResult = serde_json::from_value(mv_value).unwrap();
-        assert_eq!(result.card.column, Column::Implementing);
-    }
-
-    #[tokio::test]
-    async fn mv_to_implementing_without_devcontainer_file_rejects() {
-        use crate::household::HouseholdProfile;
-        let mut households = HashMap::new();
-        households.insert(
-            "h".to_string(),
-            HouseholdProfile {
-                devcontainer: PathBuf::from("/nonexistent/dc.json"),
-                repos: vec![],
-            },
-        );
-        let state = fresh_state_with_households(households);
-
-        let new_value = dispatch(
-            RpcRequest {
-                id: 1,
-                method: "new".into(),
-                params: serde_json::json!({
-                    "household": "h",
-                    "brief": "x",
-                    "needs_heavy": false,
-                }),
-            },
-            state.clone(),
-            CallerContext::host(),
-        )
-        .await
-        .unwrap();
-        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
-
-        let err = dispatch(
-            RpcRequest {
-                id: 2,
-                method: "mv".into(),
-                params: serde_json::json!({"id": card.id, "column": "implementing"}),
-            },
-            state.clone(),
-            CallerContext::host(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.code, RpcError::INTERNAL);
-        assert!(err.message.contains("devcontainer.json not readable"));
-
-        let ls_value = dispatch(
-            RpcRequest {
-                id: 3,
-                method: "ls".into(),
-                params: serde_json::json!({}),
-            },
-            state,
-            CallerContext::host(),
-        )
-        .await
-        .unwrap();
-        let ls: LsResult = serde_json::from_value(ls_value).unwrap();
-        assert_eq!(ls.cards[0].column, Column::Backlog);
-    }
-
-    #[tokio::test]
-    async fn mv_to_implementing_with_repo_not_a_git_repo_rejects() {
-        use crate::clones::RepoSpec;
-        use crate::household::HouseholdProfile;
-        let dir = tempfile::tempdir().unwrap();
-        let dc = dir.path().join("dc.json");
-        std::fs::write(&dc, "{}").unwrap();
-        let fake_repo = dir.path().join("not-a-repo");
-        std::fs::create_dir_all(&fake_repo).unwrap();
-
-        let mut households = HashMap::new();
-        households.insert(
-            "h".to_string(),
-            HouseholdProfile {
-                devcontainer: dc.clone(),
-                repos: vec![RepoSpec {
-                    name: "x".into(),
-                    path: fake_repo.clone(),
-                }],
-            },
-        );
-        let state = fresh_state_with_households(households);
-
-        let new_value = dispatch(
-            RpcRequest {
-                id: 1,
-                method: "new".into(),
-                params: serde_json::json!({
-                    "household": "h",
-                    "brief": "x",
-                    "needs_heavy": false,
-                }),
-            },
-            state.clone(),
-            CallerContext::host(),
-        )
-        .await
-        .unwrap();
-        let card = serde_json::from_value::<NewResult>(new_value).unwrap().card;
-
-        let err = dispatch(
-            RpcRequest {
-                id: 2,
-                method: "mv".into(),
-                params: serde_json::json!({"id": card.id, "column": "implementing"}),
-            },
-            state,
-            CallerContext::host(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.code, RpcError::INTERNAL);
-        assert!(err.message.contains("is not a git repository"));
-    }
 }
