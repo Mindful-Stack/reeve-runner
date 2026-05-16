@@ -280,3 +280,207 @@ fn m1_walking_skeleton_round_trip() {
 // were removed in M3.5 Task 3. They tested ensure_running with the M3
 // TOML-backed household (devcontainer path + repos[] clone). Those code paths
 // are now behind todo!("M3.5 Task 9 ...") and will be re-tested in Task 9.
+
+// ---------------------------------------------------------------------------
+// Helpers for M3.5 tests
+// ---------------------------------------------------------------------------
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .expect("git invoke");
+    assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+fn build_test_template(dst: &std::path::Path) {
+    std::fs::create_dir_all(dst.join(".devcontainer")).unwrap();
+    // Declare "lore" as a sibling repo in the manifest but do NOT track any
+    // `lore/` subdirectory inside the template. In real usage, sibling repos
+    // live alongside the meta-repo and are never committed inline. If lore/
+    // were committed inline here, cloning the meta-repo into the card workspace
+    // would create workspace/lore/ which then conflicts when clone_all_for_card
+    // tries to `git clone <sibling>` into that already-existing path.
+    std::fs::write(
+        dst.join("repos.json"),
+        r#"{
+          "workspace": "template",
+          "knowledge_base": "lore",
+          "repos": [
+            { "name": "template" },
+            { "name": "lore" }
+          ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dst.join(".devcontainer/devcontainer.json"),
+        r#"{ "name": "test", "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+    )
+    .unwrap();
+    std::fs::write(dst.join("CLAUDE.md"), "test workspace").unwrap();
+    std::fs::write(dst.join(".gitignore"), "").unwrap();
+    git_in(dst, &["init", "-b", "main", "--quiet"]);
+    git_in(dst, &["config", "user.email", "t@t.com"]);
+    git_in(dst, &["config", "user.name", "t"]);
+    git_in(dst, &["add", "-A"]);
+    git_in(dst, &["commit", "-m", "template", "--quiet"]);
+}
+
+fn init_sibling(path: &std::path::Path) {
+    std::fs::create_dir_all(path).unwrap();
+    git_in(path, &["init", "-b", "main", "--quiet"]);
+    git_in(path, &["config", "user.email", "t@t.com"]);
+    git_in(path, &["config", "user.name", "t"]);
+    std::fs::write(path.join("README.md"), "hi\n").unwrap();
+    git_in(path, &["add", "-A"]);
+    git_in(path, &["commit", "-m", "initial", "--quiet"]);
+}
+
+fn write_manifest(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+}
+
+fn commit_meta_changes(repo: &std::path::Path) {
+    git_in(repo, &["config", "user.email", "t@t.com"]);
+    git_in(repo, &["config", "user.name", "t"]);
+    git_in(repo, &["add", "-A"]);
+    git_in(repo, &["commit", "-m", "manifest update", "--quiet"]);
+}
+
+// ---------------------------------------------------------------------------
+// M3.5 Task 12 — e2e: household new + → Implementing round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m3_5_household_new_then_implementing() {
+    if !is_docker_available() {
+        eprintln!("skip: docker not available");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skip: devcontainer CLI not available");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    build_workspace();
+    let mut env = isolated_env_with_config(temp.path());
+    // The test isolates XDG_CONFIG_HOME so the daemon's internal `git commit`
+    // can't find the user's ~/.config/git/config. Supply a minimal author
+    // identity via env vars so the household-new initial commit succeeds.
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    // Build a local template so we don't hit the network.
+    let template_src = temp.path().join("template-source");
+    build_test_template(&template_src);
+
+    let dest = temp.path().join("my-household");
+
+    // Spawn daemon.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+
+    // Wait for socket.
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "daemon socket not created within 2s");
+
+    // Scaffold the household from our local template.
+    let out = cmd("reeve", &env)
+        .args([
+            "household",
+            "new",
+            "test-household",
+            "--path",
+            &dest.to_string_lossy(),
+            "--template",
+            &format!("file://{}", template_src.display()),
+        ])
+        .output()
+        .expect("run reeve household new");
+    assert!(
+        out.status.success(),
+        "household new failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // The template had "lore" as a sibling; initialise it next to the
+    // meta-repo.  Also add an "extra" sibling and update the manifest so
+    // we exercise the manifest-iteration path.
+    init_sibling(&dest.join("lore"));
+    init_sibling(&dest.join("extra"));
+    write_manifest(
+        &dest.join("repos.json"),
+        r#"{
+          "workspace": "test-household",
+          "knowledge_base": "lore",
+          "repos": [
+            { "name": "test-household" },
+            { "name": "lore" },
+            { "name": "extra" }
+          ]
+        }"#,
+    );
+    commit_meta_changes(&dest);
+
+    // Create a card tied to the new household.
+    let out_new = cmd("reeve", &env)
+        .args(["new", "--household", "test-household", "--brief", "m3.5 smoke"])
+        .output()
+        .expect("run reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new failed: {}",
+        String::from_utf8_lossy(&out_new.stderr),
+    );
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+
+    // Defensive cleanup in case mv fails mid-spawn.
+    let mut cleanup = DockerCleanup(None);
+
+    // Move to Implementing — this clones repos and starts the devcontainer.
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "implementing"])
+        .output()
+        .expect("run reeve mv");
+    assert!(
+        out_mv.status.success(),
+        "reeve mv failed: {}",
+        String::from_utf8_lossy(&out_mv.stderr),
+    );
+
+    // Discover and register the container for cleanup on drop.
+    let container_name = discover_container_by_label(&card_id)
+        .expect("container not discovered by label after mv");
+    cleanup.0 = Some(container_name.clone());
+
+    // Verify the workspace was cloned correctly.
+    let workspace = temp.path().join("cards").join(&card_id);
+    assert!(workspace.join(".git").exists(), "meta-repo cloned");
+    assert!(workspace.join("lore/.git").exists(), "lore sibling cloned");
+    assert!(workspace.join("extra/.git").exists(), "extra sibling cloned");
+    assert!(
+        workspace.join(".devcontainer/devcontainer.json").exists(),
+        "devcontainer.json travelled with the meta-repo clone",
+    );
+
+    // Verify the container is running.
+    let status = docker_inspect_status(&container_name).expect("container exists");
+    assert_eq!(status, "running", "container should be running");
+
+    // cleanup is dropped here, removing the container.
+}

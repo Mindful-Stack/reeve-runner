@@ -65,7 +65,7 @@ pub async fn dispatch(
     }
 }
 
-fn precheck_household_for_implementing(
+async fn precheck_household_for_implementing(
     state: &DaemonState,
     household_name: &str,
 ) -> std::result::Result<(), RpcError> {
@@ -73,10 +73,25 @@ fn precheck_household_for_implementing(
     //   - <meta_repo_path>/.devcontainer/devcontainer.json must be a file
     //   - For each repos[] entry other than the workspace: the on-disk dir
     //     must exist (either as a sibling clone with .git/ or inline)
-    let _ = state.households.get(household_name).ok_or_else(|| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("household '{household_name}' not configured"),
-    })?;
+    //
+    // Query the DB directly rather than the stale in-memory map so that
+    // households registered after daemon start (via `household new/add`) are
+    // visible immediately.
+    let name = household_name.to_string();
+    let db = state.db.clone();
+    let found = tokio::task::spawn_blocking(move || -> Result<bool> {
+        let conn = db.blocking_lock();
+        Ok(db::get_household(&conn, &name)?.is_some())
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?;
+    if !found {
+        return Err(RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("household '{household_name}' not configured"),
+        });
+    }
     Ok(())
 }
 
@@ -166,7 +181,7 @@ async fn handle_mv(state: DaemonState, params: MvParams) -> std::result::Result<
     // Precheck: a move that requires a container must have a configured household.
     // Reject BEFORE the column is mutated so the user can fix their config and retry.
     if new_column == Column::Implementing {
-        precheck_household_for_implementing(&state, &existing.household)?;
+        precheck_household_for_implementing(&state, &existing.household).await?;
     }
 
     let db = state.db.clone();
@@ -186,7 +201,10 @@ async fn handle_mv(state: DaemonState, params: MvParams) -> std::result::Result<
     let fx = LiveEffects::new(state);
     transitions::on_column_change(old_column, new_column, &card, &fx)
         .await
-        .map_err(to_internal)?;
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("{e:#}"),
+        })?;
     serde_json::to_value(MvResult { card }).map_err(to_internal)
 }
 
@@ -214,7 +232,7 @@ async fn handle_mv_self(
     let old_column = existing.column;
 
     if new_column == Column::Implementing {
-        precheck_household_for_implementing(&state, &existing.household)?;
+        precheck_household_for_implementing(&state, &existing.household).await?;
     }
 
     let db = state.db.clone();
@@ -234,7 +252,10 @@ async fn handle_mv_self(
     let fx = LiveEffects::new(state);
     transitions::on_column_change(old_column, new_column, &card, &fx)
         .await
-        .map_err(to_internal)?;
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("{e:#}"),
+        })?;
     serde_json::to_value(MvSelfResult { card }).map_err(to_internal)
 }
 

@@ -48,17 +48,22 @@ impl TransitionEffects for LiveEffects {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         let card_id = card.id.clone();
 
-        let household = self
-            .state
-            .households
-            .get(&card.household)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "household '{}' not configured",
-                    card.household,
-                )
-            })?;
+        // Query the DB for the household so that households registered after
+        // daemon start (via `household new/add`) are visible immediately.
+        let household_name = card.household.clone();
+        let db = self.state.db.clone();
+        let row = tokio::task::spawn_blocking(move || -> Result<Option<db::HouseholdRow>> {
+            let conn = db.blocking_lock();
+            db::get_household(&conn, &household_name)
+        })
+        .await??;
+        let row = row.ok_or_else(|| {
+            anyhow::anyhow!("household '{}' not configured", card.household)
+        })?;
+        let household = household::Household {
+            name: row.name,
+            meta_repo_path: row.meta_repo_path,
+        };
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
         let cards_socket_dir = reeve_protocol::paths::cards_socket_dir();
