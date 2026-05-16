@@ -1,10 +1,10 @@
 //! Live wiring of `TransitionEffects` for the running daemon.
 //! Bundled with the `DaemonState` that the dispatcher closure captures.
 
-use crate::clones::GitOpsHandle;
-use crate::container::ContainerOpsHandle;
+use crate::clones::{self, GitOpsHandle};
+use crate::container::{self, ContainerOpsHandle};
 use crate::db;
-use crate::household::HouseholdMap;
+use crate::household::{self, HouseholdMap};
 use crate::listeners::ListenerRegistry;
 use crate::server::DbHandle;
 use crate::transitions::TransitionEffects;
@@ -48,7 +48,7 @@ impl TransitionEffects for LiveEffects {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         let card_id = card.id.clone();
 
-        let _household = self
+        let household = self
             .state
             .households
             .get(&card.household)
@@ -62,7 +62,7 @@ impl TransitionEffects for LiveEffects {
 
         let socket = reeve_protocol::paths::card_socket_path(&card_id);
         let cards_socket_dir = reeve_protocol::paths::cards_socket_dir();
-        let _workspace = reeve_protocol::paths::card_workspace_path(&card_id);
+        let workspace = reeve_protocol::paths::card_workspace_path(&card_id);
 
         // Ensure the cards SOCKET directory exists so docker bind-mounts the
         // dir (not a fresh empty one). M2 contract.
@@ -100,12 +100,56 @@ impl TransitionEffects for LiveEffects {
             }
         }
 
-        // M3.5 Task 9 will rewrite this to:
-        //   1. Look up the manifest via load_household_manifest(&household).
-        //   2. Use `<workspace>/.devcontainer/devcontainer.json` instead of the dropped
-        //      `profile.devcontainer` path.
-        //   3. Call clone_all_for_card(...) instead of clone_all_repos(...).
-        todo!("M3.5 Task 9 — devcontainer path convention + clone_all_for_card");
+        let manifest = household::load_household_manifest(&household)
+            .with_context(|| format!("load manifest for '{}'", household.name))?;
+
+        // Ensure the cards ROOT dir exists. clone_all_for_card refuses to clone
+        // into a pre-existing workspace, so we MUST NOT create the workspace itself.
+        if let Some(parent) = workspace.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create cards root {}", parent.display()))?;
+        }
+
+        clones::clone_all_for_card(&*self.state.git, &household, &manifest, &workspace).await?;
+
+        let devcontainer_path = workspace.join(".devcontainer").join("devcontainer.json");
+        if !devcontainer_path.exists() {
+            anyhow::bail!(
+                "devcontainer.json missing at {} — every witan-household must ship one at the conventional location",
+                devcontainer_path.display(),
+            );
+        }
+
+        let argv = container::devcontainer_up_command(
+            &card_id,
+            &workspace,
+            &devcontainer_path,
+            &cards_socket_dir,
+            &self.state.claude_dir,
+            self.state.api_key.as_deref(),
+        );
+        self.state.containers.spawn(argv).await?;
+
+        let container_name = discover_with_deadline(&self.state, &card_id).await?;
+
+        let id_for_update = card_id.clone();
+        let name_for_update = container_name.clone();
+        let db = self.state.db.clone();
+        let now = now_secs();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = db.blocking_lock();
+            db::upsert_container(
+                &conn,
+                &id_for_update,
+                &name_for_update,
+                ContainerStatus::Running,
+                now,
+            )
+        })
+        .await??;
+
+        self.state.listeners.spawn(&card_id, socket).await;
+        Ok(())
     }
 
     async fn ensure_stopped(&self, card_id: &str) -> Result<()> {
@@ -161,7 +205,6 @@ impl TransitionEffects for LiveEffects {
 /// 2-second deadline. Returns `Err` if the deadline expires without a result.
 /// `devcontainer up` may return success a moment before docker registers the
 /// container, so this poll absorbs the race.
-#[allow(dead_code)] // M3.5 Task 9 will restore the caller
 async fn discover_with_deadline(state: &DaemonState, card_id: &str) -> Result<String> {
     let start = std::time::Instant::now();
     let deadline = std::time::Duration::from_secs(2);
