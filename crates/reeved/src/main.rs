@@ -28,6 +28,8 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    warn_if_old_toml_exists();
+
     // Mask group/other on every file we create from here on. The Unix socket,
     // pid file, and runtime/data directories are all per-user; nobody else
     // should have access. Without this, the /tmp fallback in lifecycle::runtime_dir
@@ -117,6 +119,33 @@ async fn main() -> Result<()> {
     }
     info!(socket = %socket_path.display(), "reeved stopped");
     result
+}
+
+fn warn_if_old_toml_exists() {
+    let dir = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".config/reeve/households"))
+        .ok();
+    let Some(dir) = dir else { return };
+    if !dir.is_dir() {
+        return;
+    }
+    let mut found_toml = false;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|s| s.to_str()) == Some("toml") {
+                found_toml = true;
+                break;
+            }
+        }
+    }
+    if found_toml {
+        tracing::warn!(
+            "Old-style household TOML files found in {} — M3.5 uses sqlite-backed households, \
+             not TOML. Re-register each household via `reeve household add <name> <path>` \
+             pointing at its meta-repo. The TOML files are otherwise ignored.",
+            dir.display(),
+        );
+    }
 }
 
 fn spawn_signal_handler(tx: oneshot::Sender<()>) {
