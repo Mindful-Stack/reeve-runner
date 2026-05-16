@@ -603,3 +603,132 @@ fn m3_5_missing_sibling_blocks_implementing() {
         "container should NOT exist for failed mv",
     );
 }
+
+// ---------------------------------------------------------------------------
+// M3.5 Task 14 — e2e: lore/ sibling lands in workspace and is accessible
+//                       inside the running container
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m3_5_lore_subdir_lands_in_workspace() {
+    if !is_docker_available() {
+        eprintln!("skip: docker not available");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skip: devcontainer CLI not available");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    build_workspace();
+    let mut env = isolated_env_with_config(temp.path());
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    let template_src = temp.path().join("template-source");
+    build_test_template(&template_src);
+
+    let dest = temp.path().join("with-kb");
+
+    // Spawn daemon.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+
+    // Wait for socket.
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "daemon socket not created within 2s");
+
+    // Scaffold the household from our local template.
+    let out = cmd("reeve", &env)
+        .args([
+            "household",
+            "new",
+            "with-kb",
+            "--path",
+            &dest.to_string_lossy(),
+            "--template",
+            &format!("file://{}", template_src.display()),
+        ])
+        .output()
+        .expect("run reeve household new");
+    assert!(
+        out.status.success(),
+        "household new failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // The template's repos.json already declares "lore" as a sibling.
+    // After `household new`, the handler rewrites the manifest so workspace
+    // becomes "with-kb" and the matching repos[] entry is renamed accordingly:
+    //   { "workspace": "with-kb", "knowledge_base": "lore",
+    //     "repos": [{"name": "with-kb"}, {"name": "lore"}] }
+    // We just need the lore repo to exist on disk so clone_all_for_card can
+    // clone it, then commit any working-tree changes the init leaves behind.
+    init_sibling(&dest.join("lore"));
+    commit_meta_changes(&dest);
+
+    // Create a card tied to the household.
+    let out_new = cmd("reeve", &env)
+        .args(["new", "--household", "with-kb", "--brief", "kb smoke"])
+        .output()
+        .expect("run reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new failed: {}",
+        String::from_utf8_lossy(&out_new.stderr),
+    );
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+
+    // Move to Implementing — clones repos and starts the devcontainer.
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "implementing"])
+        .output()
+        .expect("run reeve mv");
+    assert!(
+        out_mv.status.success(),
+        "reeve mv failed: {}",
+        String::from_utf8_lossy(&out_mv.stderr),
+    );
+
+    // Discover the container via label (devcontainer CLI assigns its own name).
+    let container_name = discover_container_by_label(&card_id)
+        .expect("container should be discoverable by label after mv to Implementing");
+    let _cleanup = DockerCleanup(Some(container_name.clone()));
+
+    // Verify lore landed on the host workspace.
+    let workspace = temp.path().join("cards").join(&card_id);
+    assert!(
+        workspace.join("lore/.git").exists(),
+        "lore sibling cloned to workspace",
+    );
+
+    // Verify lore is accessible inside the container.
+    // Devcontainer CLI bind-mounts the workspace folder at
+    // /workspaces/<basename> where basename is the last path component of
+    // the host workspace directory — which is the card_id itself.
+    let in_container_path = format!("/workspaces/{}/lore", card_id);
+    let exec = std::process::Command::new("docker")
+        .args(["exec", &container_name, "test", "-d", &in_container_path])
+        .output()
+        .expect("docker exec");
+    assert!(
+        exec.status.success(),
+        "lore/ accessible inside container at {in_container_path}: {}",
+        String::from_utf8_lossy(&exec.stderr),
+    );
+
+    // _cleanup dropped here — container removed.
+}
