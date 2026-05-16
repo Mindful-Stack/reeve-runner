@@ -1,6 +1,7 @@
 //! Shared protocol types for Reeve daemon and clients.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// The kanban columns a card may occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -206,6 +207,80 @@ pub struct StatusSelfParams {}
 pub struct StatusSelfResult {
     pub card: Card,
     pub container_status: Option<ContainerStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HouseholdSource {
+    Path { path: PathBuf },
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HouseholdAddParams {
+    pub name: String,
+    pub source: HouseholdSource,
+    /// Override default clone location for URL sources. Ignored for path sources.
+    #[serde(default)]
+    pub clone_into: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HouseholdNewParams {
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HouseholdSummary {
+    pub name: String,
+    pub meta_repo_path: PathBuf,
+    pub workspace_name: String,
+    pub knowledge_base: Option<String>,
+    pub repo_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoOnDisk {
+    /// Directory exists with its own .git/ — separate sibling repo.
+    Sibling,
+    /// Directory exists without .git/ — tracked as part of the workspace meta-repo.
+    Inline,
+    /// Directory doesn't exist on the host. Sibling that wasn't bootstrapped.
+    Missing,
+    /// The workspace entry itself — lives at the meta-repo root, always "present".
+    Workspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoDetail {
+    pub name: String,
+    pub url: Option<String>,
+    pub tags: Vec<String>,
+    pub description: Option<String>,
+    /// True iff this entry is the manifest's `workspace`.
+    pub is_workspace: bool,
+    /// True iff this entry is the manifest's `knowledge_base`.
+    pub is_knowledge_base: bool,
+    /// On-disk classification, derived at `show` time.
+    pub on_disk: RepoOnDisk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardReference {
+    pub id: String,
+    pub brief: String,
+    pub column: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HouseholdDetail {
+    pub summary: HouseholdSummary,
+    pub workspace_url: Option<String>,
+    pub repos: Vec<RepoDetail>,
+    pub cards: Vec<CardReference>,
 }
 
 /// Shared runtime-directory helpers (used by both the daemon and clients).
