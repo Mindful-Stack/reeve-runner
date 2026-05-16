@@ -216,6 +216,7 @@ async fn status_self() -> Result<()> {
 
 fn is_git_url(s: &str) -> bool {
     s.starts_with("git@")
+        || s.starts_with("git://")
         || s.starts_with("https://")
         || s.starts_with("http://")
         || s.starts_with("file://")
