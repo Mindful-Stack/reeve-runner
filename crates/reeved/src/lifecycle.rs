@@ -34,19 +34,3 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-
-/// Returns the directory for persistent user configuration.
-/// Prefers `$XDG_CONFIG_HOME/reeve`; falls back to `$HOME/.config/reeve`.
-pub fn config_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir).join("reeve"));
-        }
-    }
-    let home = std::env::var("HOME").context("$HOME not set")?;
-    Ok(PathBuf::from(home).join(".config/reeve"))
-}
-
-pub fn households_dir() -> Result<PathBuf> {
-    Ok(config_dir()?.join("households"))
-}

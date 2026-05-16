@@ -161,6 +161,7 @@ impl TransitionEffects for LiveEffects {
 /// 2-second deadline. Returns `Err` if the deadline expires without a result.
 /// `devcontainer up` may return success a moment before docker registers the
 /// container, so this poll absorbs the race.
+#[allow(dead_code)] // M3.5 Task 9 will restore the caller
 async fn discover_with_deadline(state: &DaemonState, card_id: &str) -> Result<String> {
     let start = std::time::Instant::now();
     let deadline = std::time::Duration::from_secs(2);

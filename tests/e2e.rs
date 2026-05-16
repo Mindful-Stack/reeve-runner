@@ -169,47 +169,6 @@ fn isolated_env_with_config(temp: &std::path::Path) -> Vec<(String, String)> {
     ]
 }
 
-fn write_test_household(temp: &std::path::Path) {
-    // Generate a minimal devcontainer.json the test household will reference.
-    let dc_dir = temp.join(".devcontainer");
-    std::fs::create_dir_all(&dc_dir).unwrap();
-    std::fs::write(
-        dc_dir.join("devcontainer.json"),
-        r#"{"image":"debian:trixie-slim","remoteUser":"root","overrideCommand":true}"#,
-    )
-    .unwrap();
-
-    let households = temp.join("config/reeve/households");
-    std::fs::create_dir_all(&households).unwrap();
-    std::fs::write(
-        households.join("test.toml"),
-        format!(
-            "devcontainer = \"{}\"\n[[repos]]\nname = \"sample\"\npath = \"{}\"\n",
-            dc_dir.join("devcontainer.json").display(),
-            temp.join("host-repo").display(),
-        ),
-    )
-    .unwrap();
-}
-
-fn init_host_repo(temp: &std::path::Path) {
-    let repo = temp.join("host-repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    fn git(repo: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .status()
-            .expect("git invoke");
-        assert!(status.success(), "git {args:?} failed");
-    }
-    git(&repo, &["init", "--quiet"]);
-    git(&repo, &["config", "user.email", "test@example.com"]);
-    git(&repo, &["config", "user.name", "test"]);
-    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "initial"]);
-}
 
 fn parse_card_id_from_new_output(stdout: &str) -> String {
     // "created <uuid> (Backlog)"
