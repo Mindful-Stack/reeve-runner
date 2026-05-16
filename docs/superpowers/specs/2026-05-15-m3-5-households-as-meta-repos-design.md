@@ -19,7 +19,7 @@ M3.5 adopts this pattern. M4 then drops `[knowledge_base]`, `KbSpec`, basename-d
 
 A **household** is a user-cloned (or Reeve-scaffolded) meta-repo containing:
 
-- `repos.json` — manifest declaring the workspace name, the KB pointer, and the sibling repos
+- `household.json` — manifest declaring the workspace name, the KB pointer, and the sibling repos
 - `.devcontainer/devcontainer.json` — devcontainer config at the conventional location
 - `CLAUDE.md` — workspace-level guidance
 - `.gitignore` — excludes sibling repo dirs
@@ -35,7 +35,7 @@ The Lorekeeper plugin gains `./lore` and `./docs/lore` in its sibling-fallback r
 
 ### Manifest schema
 
-`repos.json` at the meta-repo root. The schema is unified: every repo participating in the workspace — including the workspace meta-repo itself — is a `repos[]` entry. Two singular top-level pointers select which entry plays the workspace role and which (if any) holds the knowledge base.
+`household.json` at the meta-repo root. The schema is unified: every repo participating in the workspace — including the workspace meta-repo itself — is a `repos[]` entry. Two singular top-level pointers select which entry plays the workspace role and which (if any) holds the knowledge base.
 
 ```json
 {
@@ -77,7 +77,7 @@ For each `repos[]` entry other than the workspace, Reeve dispatches on disk stat
 |---|---|---|
 | Exists with `.git/` | Separate sibling repo | `--reference --dissociate` clone into `<card-workspace>/<name>/` |
 | Exists without `.git/` | Inline directory tracked as part of the meta-repo | No separate clone — it travels with the meta-repo |
-| Doesn't exist | User forgot to bootstrap | Hard error: "sibling `<name>` declared in repos.json but not cloned" |
+| Doesn't exist | User forgot to bootstrap | Hard error: "sibling `<name>` declared in household.json but not cloned" |
 
 This makes the single-repo inline-KB workspace (where `lore/` is a tracked directory in the meta-repo, not a separate git history) a first-class case. The manifest is the same shape; only disk state differs.
 
@@ -88,7 +88,7 @@ Multi-repo case (every non-workspace entry is a separate sibling git repo):
 ```
 ~/Source/myarchy-workspace/         ← meta-repo (user-cloned or `reeve household new`)
 ├── .git/
-├── repos.json
+├── household.json
 ├── .devcontainer/
 │   └── devcontainer.json
 ├── CLAUDE.md
@@ -106,7 +106,7 @@ Single-repo inline-KB case (the witan-household starter shape):
 ```
 ~/Source/my-workspace/              ← meta-repo (workspace + inline KB)
 ├── .git/
-├── repos.json                       ← workspace: "my-workspace", knowledge_base: "lore", repos: [{my-workspace}, {lore}]
+├── household.json                       ← workspace: "my-workspace", knowledge_base: "lore", repos: [{my-workspace}, {lore}]
 ├── .devcontainer/devcontainer.json
 ├── CLAUDE.md
 ├── .gitignore                       ← does NOT exclude lore/ (it's tracked)
@@ -124,7 +124,7 @@ Sibling clones inside the meta-repo are the **canonical source** for Reeve's `gi
 ```
 ~/reeve/cards/<card-id>/             ← card workspace (mount root for devcontainer)
 ├── .git/                            ← per-card clone of meta-repo, --reference --dissociate from host meta-repo
-├── repos.json                       ← (copy travels with meta-repo clone)
+├── household.json                       ← (copy travels with meta-repo clone)
 ├── .devcontainer/
 │   └── devcontainer.json            ← devcontainer up --workspace-folder uses this
 ├── CLAUDE.md
@@ -139,7 +139,7 @@ Sibling clones inside the meta-repo are the **canonical source** for Reeve's `gi
 
 Inside the container, this directory is bind-mounted at `/workspaces/<card-id>/`. The devcontainer.json at `<workspace>/.devcontainer/devcontainer.json` is found by `devcontainer up` via its standard convention — no manifest field needs to point at it.
 
-The meta-repo participates in fetch + push as **repo zero** alongside siblings. Agent commits to `repos.json`, `.devcontainer/devcontainer.json`, `CLAUDE.md` flow back to the user's host meta-repo via `refs/reeve/<card-id>/*` in M4.
+The meta-repo participates in fetch + push as **repo zero** alongside siblings. Agent commits to `household.json`, `.devcontainer/devcontainer.json`, `CLAUDE.md` flow back to the user's host meta-repo via `refs/reeve/<card-id>/*` in M4.
 
 ### Lorekeeper interaction (no Reeve mechanism)
 
@@ -157,7 +157,7 @@ Users who want to override (e.g., a KB named other than `lore`) set `containerEn
 
 #### Modified modules
 
-- `crates/reeved/src/household.rs` — `HouseholdProfile` removed. Replaced with a much smaller `Household { name: String, meta_repo_path: PathBuf }`. The `devcontainer` field is gone (found by convention at `<meta_repo_path>/.devcontainer/devcontainer.json`). The `[[repos]]` array is gone (read from the meta-repo's `repos.json` on demand). The `households` map at startup loads from the new sqlite `households` table, not from `~/.config/reeve/households/*.toml`.
+- `crates/reeved/src/household.rs` — `HouseholdProfile` removed. Replaced with a much smaller `Household { name: String, meta_repo_path: PathBuf }`. The `devcontainer` field is gone (found by convention at `<meta_repo_path>/.devcontainer/devcontainer.json`). The `[[repos]]` array is gone (read from the meta-repo's `household.json` on demand). The `households` map at startup loads from the new sqlite `households` table, not from `~/.config/reeve/households/*.toml`.
 
 - `crates/reeved/src/db.rs` — new `households` table:
   ```sql
@@ -170,12 +170,12 @@ Users who want to override (e.g., a KB named other than `lore`) set `containerEn
   Migration: on first daemon start under M3.5, if `~/.config/reeve/households/*.toml` exists, log a warn pointing the user at `reeve household add` and skip auto-import (the old TOML format is incompatible enough that auto-conversion is more dangerous than helpful).
 
 - `crates/reeved/src/clones.rs` — `clone_all_for_card` walks the unified `repos[]`:
-  1. Load manifest from `<meta_repo_path>/repos.json`.
+  1. Load manifest from `<meta_repo_path>/household.json`.
   2. Clone the **workspace entry** (the one named by `manifest.workspace`): `git clone --reference <meta_repo_path>/.git --dissociate <meta_repo_path> <card_workspace>/`. The card workspace dir is **created by `git clone`**, not pre-created by the daemon — `git clone` refuses to write into a non-empty directory, so the caller must NOT `create_dir_all(<card_workspace>)` before this step. The parent (`$REEVE_CARDS_DIR`) IS pre-created.
   3. For each remaining `repo` in `manifest.repos` (i.e. every entry except the one identified as the workspace), dispatch on host disk state:
      - `<meta_repo_path>/<repo.name>/.git/` exists → separate sibling repo. `git clone --reference <meta_repo_path>/<repo.name>/.git --dissociate <meta_repo_path>/<repo.name> <card_workspace>/<repo.name>/`.
      - `<meta_repo_path>/<repo.name>/` exists but has no `.git/` → inline directory (tracked as part of the workspace meta-repo). No separate clone — it travelled with the workspace clone in step 2. Reeve does nothing for this entry beyond noting it.
-     - `<meta_repo_path>/<repo.name>/` does not exist → hard error ("sibling `<name>` declared in repos.json but not cloned at `<path>` — run your workspace's bootstrap").
+     - `<meta_repo_path>/<repo.name>/` does not exist → hard error ("sibling `<name>` declared in household.json but not cloned at `<path>` — run your workspace's bootstrap").
 
 - `crates/reeved/src/effects.rs::ensure_running` — clone invocation switches to `clone_all_for_card(&*git, &household, &manifest, &workspace)`. **Remove the pre-existing `std::fs::create_dir_all(&workspace)` call** that M3 added before clones — step 2 above now handles workspace creation. The `$REEVE_CARDS_DIR` parent dir is still pre-created (M3 also does this implicitly when binding the cards socket dir). The `devcontainer` path passed to `devcontainer up` becomes `<card_workspace>/.devcontainer/devcontainer.json` (which was just cloned in as part of the workspace meta-repo).
 
@@ -210,11 +210,11 @@ Created as part of M3.5 work, in the `Mindful-Stack` org, configured as a GitHub
 
 ```
 witan-household/
-├── repos.json                       ← starter (see below)
+├── household.json                       ← starter (see below)
 ├── .devcontainer/
 │   └── devcontainer.json            ← starter: ubuntu base, claude install, lorekeeper plugin install (commented)
 ├── CLAUDE.md                        ← workspace pattern explainer + space for project-specific guidance
-├── .gitignore                       ← `/*` allowlist excluding repos.json, .devcontainer/, .gitignore, CLAUDE.md, README.md, lore/
+├── .gitignore                       ← `/*` allowlist excluding household.json, .devcontainer/, .gitignore, CLAUDE.md, README.md, lore/
 ├── README.md                        ← how to use this workspace (with or without Reeve, with or without Lorekeeper)
 └── lore/
     └── knowledge/
@@ -225,7 +225,7 @@ witan-household/
         └── learnings/_starter.md
 ```
 
-The starter `repos.json` (single-repo, inline-KB shape — `reeve household new` substitutes the workspace name in both places):
+The starter `household.json` (single-repo, inline-KB shape — `reeve household new` substitutes the workspace name in both places):
 
 ```json
 {
@@ -326,11 +326,11 @@ Tracked separately, but should land in the same Reeve milestone window:
   2. Manually populate one sibling under `<tmp>/test-household/<sibling>/` (init + commit one file).
   3. `reeve new --household test-household --brief "smoke"` → `<id>`.
   4. `reeve mv <id> implementing`.
-  5. Assert `~/reeve/cards/<id>/` contains the meta-repo clone (`.devcontainer/`, `repos.json`, `lore/`) AND the sibling clone.
+  5. Assert `~/reeve/cards/<id>/` contains the meta-repo clone (`.devcontainer/`, `household.json`, `lore/`) AND the sibling clone.
   6. Assert container is running with workspace mounted.
 
 - `m3_5_missing_sibling_blocks_implementing`:
-  1. Scaffold a household, declare a sibling in `repos.json`, do NOT populate it on host.
+  1. Scaffold a household, declare a sibling in `household.json`, do NOT populate it on host.
   2. `reeve mv <id> implementing` → error with the expected message; no container started.
 
 ### KB-presence smoke (separate from Lorekeeper PR)
@@ -367,12 +367,12 @@ A merged M3.5 must:
 2. Pass the new unit, integration, and Docker-gated e2e tests.
 3. `cargo test --workspace` clean (with `REEVE_TESTS_STRICT=1`); `cargo fmt --check` clean; `cargo clippy` clean.
 4. Manually:
-   1. `reeve household new reeve-self --path ~/Source/reeve-household` — scaffolds from `Mindful-Stack/witan-household`. The scaffolded `repos.json` has `workspace: "reeve-self"` and a single `repos[]` entry of the same name, plus the inline `lore` entry.
-   2. Hand-edit `repos.json` to add a `repos[]` entry for the local `reeve` repo (`{ "name": "reeve", "url": "git@github.com:Daniel-Thyselius/reeve.git" }`). Leave `lore` inline OR add a `url` and clone it as a separate sibling — both shapes are valid.
+   1. `reeve household new reeve-self --path ~/Source/reeve-household` — scaffolds from `Mindful-Stack/witan-household`. The scaffolded `household.json` has `workspace: "reeve-self"` and a single `repos[]` entry of the same name, plus the inline `lore` entry.
+   2. Hand-edit `household.json` to add a `repos[]` entry for the local `reeve` repo (`{ "name": "reeve", "url": "git@github.com:Daniel-Thyselius/reeve.git" }`). Leave `lore` inline OR add a `url` and clone it as a separate sibling — both shapes are valid.
    3. Populate `~/Source/reeve-household/reeve/` (manual clone). If you made `lore` a sibling, populate that too.
    4. `reeve household show reeve-self` — confirms manifest parses, every entry's `role` and `populated_on_host` are correct (workspace + inline-or-sibling for `lore`, sibling for `reeve`).
    5. `reeve new --household reeve-self --brief "m3.5 smoke"` → `<id>`.
    6. `reeve mv <id> implementing` → `~/reeve/cards/<id>/` contains the workspace clone (with inline `lore/` if applicable), the `reeve/` sibling clone (and the `lore/` sibling clone if applicable); container is up with workspace mounted at `/workspaces/<id>/`.
-   7. `docker exec <container> ls /workspaces/<id>/` → shows `.devcontainer/`, `repos.json`, `lore/`, `reeve/`, `CLAUDE.md`.
+   7. `docker exec <container> ls /workspaces/<id>/` → shows `.devcontainer/`, `household.json`, `lore/`, `reeve/`, `CLAUDE.md`.
    8. (If Lorekeeper installed in the container via uncommented `postCreateCommand`) `docker exec <container> claude /lore:help` reports "Knowledge base found" at the workspace's `lore/` directory — works the same whether `lore/` is inline or a sibling.
    9. `reeve mv <id> done` → container teardown; card workspace remains on disk (consistent with M3 behaviour).

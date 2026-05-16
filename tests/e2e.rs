@@ -302,7 +302,7 @@ fn build_test_template(dst: &std::path::Path) {
     // would create workspace/lore/ which then conflicts when clone_all_for_card
     // tries to `git clone <sibling>` into that already-existing path.
     std::fs::write(
-        dst.join("repos.json"),
+        dst.join("household.json"),
         r#"{
           "workspace": "template",
           "knowledge_base": "lore",
@@ -423,7 +423,7 @@ fn m3_5_household_new_then_implementing() {
     init_sibling(&dest.join("lore"));
     init_sibling(&dest.join("extra"));
     write_manifest(
-        &dest.join("repos.json"),
+        &dest.join("household.json"),
         r#"{
           "workspace": "test-household",
           "knowledge_base": "lore",
@@ -562,7 +562,7 @@ fn m3_5_missing_sibling_blocks_implementing() {
     // "lore" is properly initialised; "phantom" is intentionally missing.
     init_sibling(&dest.join("lore"));
     write_manifest(
-        &dest.join("repos.json"),
+        &dest.join("household.json"),
         r#"{
           "workspace": "incomplete",
           "knowledge_base": "lore",
@@ -678,7 +678,7 @@ fn m3_5_lore_subdir_lands_in_workspace() {
         String::from_utf8_lossy(&out.stderr),
     );
 
-    // The template's repos.json already declares "lore" as a sibling.
+    // The template's household.json already declares "lore" as a sibling.
     // After `household new`, the handler rewrites the manifest so workspace
     // becomes "with-kb" and the matching repos[] entry is renamed accordingly:
     //   { "workspace": "with-kb", "knowledge_base": "lore",

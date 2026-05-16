@@ -14,7 +14,7 @@ M4 closes the user-can-review-code half:
 
 1. **Continuous fetch** — the daemon periodically `git fetch`es each card's clones back into the host repos, into a private `refs/reeve/<card-id>/*` namespace. GitKraken/lazygit/sublime-merge pick the refs up automatically.
 2. **`reeve push <id>`** — explicit promotion. Fast-forwards `refs/heads/<branch>` from the namespaced ref, then `git push origin <branch>`. Nothing reaches GitHub until the user runs it.
-3. **Meta-repo as repo zero** — the meta-repo itself participates in fetch + push. Agent commits to `repos.json`, `.devcontainer/devcontainer.json`, `CLAUDE.md` flow back via the same mechanism. No special code path; the meta-repo is just another git repo in the iteration.
+3. **Meta-repo as repo zero** — the meta-repo itself participates in fetch + push. Agent commits to `household.json`, `.devcontainer/devcontainer.json`, `CLAUDE.md` flow back via the same mechanism. No special code path; the meta-repo is just another git repo in the iteration.
 
 The fetch + push pair is what lets the user actually use the cards as a kanban: the agent writes code, the user reviews via their normal git workflow, the user promotes when satisfied. Without this, M3/M3.5's containers are just a sandbox with no integration point back to the user's repos.
 
@@ -166,7 +166,7 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 - **Push error (per-repo)**: e.g., `list_namespace_refs` fails because the host repo path is gone. Returned to the CLI as an `INTERNAL` RpcError; the CLI exits non-zero with the message.
 - **Card not found**: `NOT_FOUND` RpcError; CLI prints "card X not found" and exits non-zero.
 - **Household no longer in the loaded map** (renamed since daemon start): `INTERNAL "household '<name>' not configured"`. User restarts daemon to re-load.
-- **Manifest re-read fails mid-fetch** (user broke `repos.json` while the daemon is running): warn-log per fetch tick; worker skips the affected card until the manifest parses again.
+- **Manifest re-read fails mid-fetch** (user broke `household.json` while the daemon is running): warn-log per fetch tick; worker skips the affected card until the manifest parses again.
 
 ## Testing
 

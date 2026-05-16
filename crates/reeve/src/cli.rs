@@ -297,7 +297,7 @@ async fn household_new(
             );
             println!("\nNext steps:");
             println!("  cd {}", summary.meta_repo_path.display());
-            println!("  $EDITOR repos.json   # declare your sibling repos");
+            println!("  $EDITOR household.json   # declare your sibling repos");
             println!("  git remote add origin <url>   # if you want to push it to a remote");
             Ok(())
         }

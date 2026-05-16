@@ -588,8 +588,8 @@ async fn handle_household_new(
             message: format!("git init: {e:#}"),
         })?;
 
-    // 3. Substitute the workspace name in repos.json.
-    let manifest_path = dest.join("repos.json");
+    // 3. Substitute the workspace name in household.json.
+    let manifest_path = dest.join("household.json");
     let body = std::fs::read_to_string(&manifest_path).map_err(|e| RpcError {
         code: RpcError::INTERNAL,
         message: format!("read manifest: {e:#}"),
@@ -1021,7 +1021,7 @@ mod tests {
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
         )
         .unwrap();
@@ -1048,7 +1048,7 @@ mod tests {
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
         )
         .unwrap();
@@ -1089,7 +1089,7 @@ mod tests {
             .status()
             .unwrap();
         std::fs::write(
-            template.join("repos.json"),
+            template.join("household.json"),
             r#"{ "workspace": "default", "repos": [{ "name": "default" }] }"#,
         )
         .unwrap();
@@ -1123,8 +1123,8 @@ mod tests {
             "manifest workspace pointer rewritten"
         );
         assert!(dest.join(".git").exists(), "fresh git history");
-        assert!(dest.join("repos.json").exists());
-        let manifest_body = std::fs::read_to_string(dest.join("repos.json")).unwrap();
+        assert!(dest.join("household.json").exists());
+        let manifest_body = std::fs::read_to_string(dest.join("household.json")).unwrap();
         assert!(
             manifest_body.contains("\"workspace\": \"my-ws\""),
             "workspace pointer substituted: {manifest_body}"
@@ -1145,7 +1145,7 @@ mod tests {
             let meta = dir.path().join(n);
             std::fs::create_dir_all(meta.join(".git")).unwrap();
             std::fs::write(
-                meta.join("repos.json"),
+                meta.join("household.json"),
                 format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
             )
             .unwrap();
@@ -1192,7 +1192,7 @@ mod tests {
         std::fs::create_dir_all(meta.join("lore")).unwrap(); // inline (no .git/)
         // "frontend" declared but NOT created -> Missing
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{
               "workspace": "ws",
               "knowledge_base": "lore",
@@ -1242,7 +1242,7 @@ mod tests {
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ours", "repos": [{ "name": "ours" }] }"#,
         )
         .unwrap();

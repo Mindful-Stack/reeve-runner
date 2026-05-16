@@ -103,7 +103,7 @@ pub async fn clone_all_for_card(
         let dir = meta.join(&entry.name);
         if !dir.exists() {
             anyhow::bail!(
-                "sibling '{}' declared in repos.json but not cloned at {} — \
+                "sibling '{}' declared in household.json but not cloned at {} — \
                  run your workspace's bootstrap (e.g. `make setup`) first",
                 entry.name,
                 dir.display(),
@@ -336,7 +336,7 @@ mod tests {
             .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("declared in repos.json but not cloned"),
+            msg.contains("declared in household.json but not cloned"),
             "unexpected error: {msg}",
         );
         assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clones issued");

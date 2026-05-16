@@ -38,7 +38,7 @@
 
 ```rust
 // crates/reeved/src/manifest.rs
-//! Workspace manifest loader. A `repos.json` at the meta-repo root declares the
+//! Workspace manifest loader. A `household.json` at the meta-repo root declares the
 //! workspace pointer, an optional knowledge-base pointer, and a unified list of
 //! every repo (workspace meta-repo included). The schema lives here; consumers
 //! (clones.rs, handlers.rs) read parsed `Manifest` values, not raw JSON.
@@ -47,7 +47,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const MANIFEST_FILENAME: &str = "repos.json";
+const MANIFEST_FILENAME: &str = "household.json";
 
 /// Reserved directory names that cannot be used as a repo entry's `name`.
 /// These collide with meta-repo internals or git itself.
@@ -111,7 +111,7 @@ impl Manifest {
     }
 }
 
-/// Read and validate `<meta_repo_path>/repos.json`.
+/// Read and validate `<meta_repo_path>/household.json`.
 pub fn load_manifest(meta_repo_path: &Path) -> Result<Manifest> {
     let path = meta_repo_path.join(MANIFEST_FILENAME);
     let body = std::fs::read_to_string(&path)
@@ -704,7 +704,7 @@ pub async fn clone_all_for_card(
         let dir = meta.join(&entry.name);
         if !dir.exists() {
             anyhow::bail!(
-                "sibling '{}' declared in repos.json but not cloned at {} — \
+                "sibling '{}' declared in household.json but not cloned at {} — \
                  run your workspace's bootstrap (e.g. `make setup`) first",
                 entry.name,
                 dir.display(),
@@ -898,7 +898,7 @@ Append in the same `#[cfg(test)] mod tests` block in `clones.rs`:
             .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("declared in repos.json but not cloned"),
+            msg.contains("declared in household.json but not cloned"),
             "unexpected error: {msg}",
         );
         assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clones issued");
@@ -1220,7 +1220,7 @@ Append in the handlers module's tests:
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
         ).unwrap();
         let state = test_state();
@@ -1244,7 +1244,7 @@ Append in the handlers module's tests:
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
         ).unwrap();
         let state = test_state();
@@ -1318,7 +1318,7 @@ pub async fn handle_household_new(
 
     // 3. Substitute the workspace name in BOTH places: the top-level `workspace`
     //    pointer AND the `repos[]` entry it points at.
-    let manifest_path = dest.join("repos.json");
+    let manifest_path = dest.join("household.json");
     let body = std::fs::read_to_string(&manifest_path)
         .map_err(|e| RpcError::internal(format!("read manifest: {e:#}")))?;
     let mut m: manifest::Manifest = serde_json::from_str(&body)
@@ -1394,7 +1394,7 @@ Add to the handlers tests:
         std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(&template).status().unwrap();
         std::process::Command::new("git").args(["config", "user.name", "t"]).current_dir(&template).status().unwrap();
         std::fs::write(
-            template.join("repos.json"),
+            template.join("household.json"),
             r#"{ "workspace": "default", "repos": [{ "name": "default" }] }"#,
         ).unwrap();
         std::process::Command::new("git").args(["add", "-A"]).current_dir(&template).status().unwrap();
@@ -1415,8 +1415,8 @@ Add to the handlers tests:
 
         assert_eq!(result.workspace_name, "my-ws", "manifest workspace pointer rewritten");
         assert!(dest.join(".git").exists(), "fresh git history");
-        assert!(dest.join("repos.json").exists());
-        let manifest_body = std::fs::read_to_string(dest.join("repos.json")).unwrap();
+        assert!(dest.join("household.json").exists());
+        let manifest_body = std::fs::read_to_string(dest.join("household.json")).unwrap();
         assert!(manifest_body.contains("\"workspace\": \"my-ws\""), "workspace pointer substituted: {manifest_body}");
         assert!(manifest_body.contains("\"name\": \"my-ws\""), "matching repos[] entry renamed: {manifest_body}");
     }
@@ -1591,7 +1591,7 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
             let meta = dir.path().join(n);
             std::fs::create_dir_all(meta.join(".git")).unwrap();
             std::fs::write(
-                meta.join("repos.json"),
+                meta.join("household.json"),
                 format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
             ).unwrap();
             handle_household_add(
@@ -1628,7 +1628,7 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
         std::fs::create_dir_all(meta.join("lore")).unwrap();           // inline (no .git/)
         // "frontend" declared but NOT created -> Missing
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{
               "workspace": "ws",
               "knowledge_base": "lore",
@@ -1671,7 +1671,7 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
-            meta.join("repos.json"),
+            meta.join("household.json"),
             r#"{ "workspace": "ours", "repos": [{ "name": "ours" }] }"#,
         ).unwrap();
         let state = test_state();
@@ -1855,7 +1855,7 @@ Commands::Household { cmd } => match cmd {
         println!("Scaffolded {} at {}", result.name, result.meta_repo_path.display());
         println!("\nNext steps:");
         println!("  cd {}", result.meta_repo_path.display());
-        println!("  $EDITOR repos.json   # declare your sibling repos");
+        println!("  $EDITOR household.json   # declare your sibling repos");
         println!("  git remote add origin <url>   # if you want to push it to a remote");
     }
     HouseholdCommand::Ls => {
@@ -2053,7 +2053,7 @@ async fn m3_5_household_new_then_implementing_lands_workspace() {
     init_sibling(&dest.join("lore"));
     // Add a sibling entry to the manifest by hand, then init that sibling.
     write_manifest(
-        &dest.join("repos.json"),
+        &dest.join("household.json"),
         r#"{
           "workspace": "test-household",
           "knowledge_base": "lore",
@@ -2098,7 +2098,7 @@ fn build_test_template(dst: &Path) {
     std::fs::create_dir_all(dst.join(".devcontainer")).unwrap();
     std::fs::create_dir_all(dst.join("lore/knowledge/general")).unwrap();
     std::fs::write(
-        dst.join("repos.json"),
+        dst.join("household.json"),
         r#"{
           "workspace": "template",
           "knowledge_base": "lore",
@@ -2194,7 +2194,7 @@ async fn m3_5_missing_sibling_blocks_implementing() {
 
     // Declare a sibling that we deliberately do NOT populate.
     write_manifest(
-        &dest.join("repos.json"),
+        &dest.join("household.json"),
         r#"{
           "workspace": "incomplete",
           "knowledge_base": "lore",
@@ -2326,8 +2326,8 @@ Follow the spec's Verification section steps 4.1 through 4.9 exactly:
 # 1. scaffold
 reeve household new reeve-self --path ~/Source/reeve-household --template https://github.com/Mindful-Stack/witan-household
 
-# 2-3. hand-edit repos.json and populate siblings
-$EDITOR ~/Source/reeve-household/repos.json
+# 2-3. hand-edit household.json and populate siblings
+$EDITOR ~/Source/reeve-household/household.json
 # Add a `reeve` entry (existing local reeve clone)
 # Add a `lore` entry pointing at any local KB
 
@@ -2344,7 +2344,7 @@ reeve household show reeve-self
 reeve new --household reeve-self --brief "m3.5 smoke" --no-plan
 # capture the printed card id as $CARD
 reeve mv $CARD implementing
-ls ~/reeve/cards/$CARD/   # expect: .devcontainer/, repos.json, lore/, reeve/, CLAUDE.md
+ls ~/reeve/cards/$CARD/   # expect: .devcontainer/, household.json, lore/, reeve/, CLAUDE.md
 docker exec reeve-$CARD ls /workspaces/$CARD/  # same
 
 # 8. (optional) install Lorekeeper inside the container and verify /lore:help

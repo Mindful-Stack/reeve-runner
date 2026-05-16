@@ -1,4 +1,4 @@
-//! Workspace manifest loader. A `repos.json` at the meta-repo root declares the
+//! Workspace manifest loader. A `household.json` at the meta-repo root declares the
 //! workspace pointer, an optional knowledge-base pointer, and a unified list of
 //! every repo (workspace meta-repo included). The schema lives here; consumers
 //! (clones.rs, handlers.rs) read parsed `Manifest` values, not raw JSON.
@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const MANIFEST_FILENAME: &str = "repos.json";
+const MANIFEST_FILENAME: &str = "household.json";
 
 /// Reserved directory names that cannot be used as a repo entry's `name`.
 /// These collide with meta-repo internals or git itself.
@@ -64,7 +64,7 @@ impl Manifest {
     }
 }
 
-/// Read and validate `<meta_repo_path>/repos.json`.
+/// Read and validate `<meta_repo_path>/household.json`.
 pub fn load_manifest(meta_repo_path: &Path) -> Result<Manifest> {
     let path = meta_repo_path.join(MANIFEST_FILENAME);
     let body = std::fs::read_to_string(&path)
