@@ -7,13 +7,15 @@ use crate::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
-    Card, Column, HouseholdAddParams, HouseholdSource, HouseholdSummary, LsResult, MvParams,
-    MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, RpcError, RpcRequest,
-    StatusSelfResult,
+    Card, Column, HouseholdAddParams, HouseholdNewParams, HouseholdSource, HouseholdSummary,
+    LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, RpcError,
+    RpcRequest, StatusSelfResult,
 };
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const DEFAULT_TEMPLATE: &str = "https://github.com/Mindful-Stack/witan-household";
 
 pub async fn dispatch(
     req: RpcRequest,
@@ -42,6 +44,10 @@ pub async fn dispatch(
         "household.add" => {
             let params = parse_params::<HouseholdAddParams>(req.params)?;
             handle_household_add(&state, params).await
+        }
+        "household.new" => {
+            let params = parse_params::<HouseholdNewParams>(req.params)?;
+            handle_household_new(&state, params).await
         }
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
@@ -343,6 +349,126 @@ async fn handle_household_add(
     serde_json::to_value(summary_from(&row, &m)).map_err(to_internal)
 }
 
+async fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let status = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .await?;
+    if !status.success() {
+        anyhow::bail!("git {:?} failed in {}", args, dir.display());
+    }
+    Ok(())
+}
+
+async fn handle_household_new(
+    state: &DaemonState,
+    params: HouseholdNewParams,
+) -> std::result::Result<Value, RpcError> {
+    let dest = params
+        .path
+        .clone()
+        .unwrap_or_else(|| default_source_dir().join(&params.name));
+
+    if dest.exists() && dest.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+        return Err(RpcError {
+            code: RpcError::CONFLICT,
+            message: format!("target directory {} exists and is non-empty", dest.display()),
+        });
+    }
+
+    let template = params.template.clone().unwrap_or_else(|| DEFAULT_TEMPLATE.into());
+
+    // 1. Shallow-clone the template via URL.
+    state
+        .git
+        .clone_url(&template, &dest)
+        .await
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("clone template {template}: {e:#}"),
+        })?;
+
+    // 2. Detach from the template's history: rm .git, re-init, single commit.
+    std::fs::remove_dir_all(dest.join(".git")).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("remove .git: {e:#}"),
+    })?;
+    git_in(&dest, &["init", "-b", "main", "--quiet"])
+        .await
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("git init: {e:#}"),
+        })?;
+
+    // 3. Substitute the workspace name in repos.json.
+    let manifest_path = dest.join("repos.json");
+    let body = std::fs::read_to_string(&manifest_path).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("read manifest: {e:#}"),
+    })?;
+    let mut m: manifest::Manifest = serde_json::from_str(&body).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("parse template manifest: {e:#}"),
+    })?;
+    let old_workspace = m.workspace.clone();
+    if let Some(entry) = m.repos.iter_mut().find(|r| r.name == old_workspace) {
+        entry.name = params.name.clone();
+    } else {
+        return Err(RpcError {
+            code: RpcError::INTERNAL,
+            message: format!(
+                "template manifest's workspace = '{old_workspace}' has no matching repos[] entry"
+            ),
+        });
+    }
+    m.workspace = params.name.clone();
+    let body = serde_json::to_string_pretty(&m).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("re-serialize manifest: {e:#}"),
+    })?;
+    std::fs::write(&manifest_path, body).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("write manifest: {e:#}"),
+    })?;
+
+    // 4. Initial commit.
+    git_in(&dest, &["add", "-A"])
+        .await
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("git add: {e:#}"),
+        })?;
+    git_in(&dest, &["commit", "-m", "Initial workspace", "--quiet"])
+        .await
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("git commit: {e:#}"),
+        })?;
+
+    // 5. Register in the database.
+    let added_at = now_secs();
+    let row = db::HouseholdRow {
+        name: params.name.clone(),
+        meta_repo_path: dest.clone(),
+        added_at,
+    };
+    let db = state.db.clone();
+    let row_clone = row.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let conn = db.blocking_lock();
+        db::insert_household(&conn, &row_clone)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(|e| RpcError {
+        code: RpcError::CONFLICT,
+        message: format!("insert household: {e:#}"),
+    })?;
+
+    serde_json::to_value(summary_from(&row, &m)).map_err(to_internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +536,20 @@ mod tests {
 
     fn fresh_state() -> DaemonState {
         fresh_state_with_households(HashMap::new())
+    }
+
+    fn fresh_state_with_git(git: GitOpsHandle) -> DaemonState {
+        let conn = db::open(":memory:").unwrap();
+        let db: DbHandle = Arc::new(Mutex::new(conn));
+        DaemonState {
+            db: db.clone(),
+            containers: Arc::new(NoopOps) as ContainerOpsHandle,
+            git,
+            listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
+            households: Arc::new(HashMap::new()),
+            claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            api_key: None,
+        }
     }
 
     fn fresh_state_with_households(
@@ -748,6 +888,93 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.message.contains("manifest invalid"));
+    }
+
+    #[tokio::test]
+    async fn household_new_uses_default_template_path_when_provided() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let template = dir.path().join("template");
+        std::fs::create_dir_all(&template).unwrap();
+        // Initialise a real git repo with one commit.
+        std::process::Command::new("git")
+            .args(["init", "-b", "main", "--quiet"])
+            .current_dir(&template)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(&template)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(&template)
+            .status()
+            .unwrap();
+        std::fs::write(
+            template.join("repos.json"),
+            r#"{ "workspace": "default", "repos": [{ "name": "default" }] }"#,
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&template)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&template)
+            .status()
+            .unwrap();
+
+        let dest = dir.path().join("my-ws");
+        let state = fresh_state_with_git(Arc::new(crate::clones::RealGitOps) as GitOpsHandle);
+        let result = handle_household_new(
+            &state,
+            HouseholdNewParams {
+                name: "my-ws".into(),
+                path: Some(dest.clone()),
+                template: Some(format!("file://{}", template.display())),
+            },
+        )
+        .await
+        .unwrap();
+
+        let summary: HouseholdSummary = serde_json::from_value(result).unwrap();
+        assert_eq!(summary.workspace_name, "my-ws", "manifest workspace pointer rewritten");
+        assert!(dest.join(".git").exists(), "fresh git history");
+        assert!(dest.join("repos.json").exists());
+        let manifest_body = std::fs::read_to_string(dest.join("repos.json")).unwrap();
+        assert!(
+            manifest_body.contains("\"workspace\": \"my-ws\""),
+            "workspace pointer substituted: {manifest_body}"
+        );
+        assert!(
+            manifest_body.contains("\"name\": \"my-ws\""),
+            "matching repos[] entry renamed: {manifest_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn household_new_refuses_non_empty_target() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("occupied");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("something"), "x").unwrap();
+        let state = fresh_state();
+        let err = handle_household_new(
+            &state,
+            HouseholdNewParams {
+                name: "occupied".into(),
+                path: Some(dest),
+                template: Some("file:///nonexistent".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:?}").contains("exists and is non-empty"));
     }
 
 }
