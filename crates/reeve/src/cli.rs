@@ -4,7 +4,9 @@ use crate::client;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use reeve_protocol::{
-    Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult, paths,
+    Card, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams, HouseholdSource,
+    HouseholdSummary, LsResult, MvResult, MvSelfResult, NewResult, RepoOnDisk, StatusSelfResult,
+    paths,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -51,9 +53,39 @@ pub enum Command {
     },
     /// (in-container only) Print the calling card and its container status.
     StatusSelf,
+    /// Household management subcommands.
+    #[command(subcommand)]
+    Household(HouseholdCommand),
     /// Daemon management subcommands.
     #[command(subcommand)]
     Daemon(DaemonCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HouseholdCommand {
+    /// Register an existing meta-repo (path) or clone-then-register one (URL).
+    Add {
+        name: String,
+        /// Filesystem path OR git URL.
+        source: String,
+        /// Where to clone (only meaningful for URL sources). Default ~/Source/<name>/.
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Scaffold a fresh household from the witan-household template.
+    New {
+        name: String,
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        template: Option<String>,
+    },
+    /// List registered households.
+    Ls,
+    /// Unregister a household (does not delete the meta-repo).
+    Rm { name: String },
+    /// Show manifest + sibling presence + referencing cards.
+    Show { name: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -86,6 +118,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::Mv { id, column } => mv(id, column).await,
         Command::MvSelf { column } => mv_self(column).await,
         Command::StatusSelf => status_self().await,
+        Command::Household(cmd) => household_run(cmd).await,
         Command::Daemon(_) => unreachable!("Daemon commands are handled in main"),
     }
 }
@@ -174,6 +207,165 @@ async fn status_self() -> Result<()> {
             match r.container_status {
                 Some(s) => println!("container: {}", s.as_wire_str()),
                 None => println!("container: (none)"),
+            }
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+fn is_git_url(s: &str) -> bool {
+    s.starts_with("git@")
+        || s.starts_with("https://")
+        || s.starts_with("http://")
+        || s.starts_with("file://")
+        || s.starts_with("ssh://")
+}
+
+async fn household_run(cmd: HouseholdCommand) -> Result<()> {
+    match cmd {
+        HouseholdCommand::Add { name, source, path } => {
+            household_add(name, source, path).await
+        }
+        HouseholdCommand::New { name, path, template } => {
+            household_new(name, path, template).await
+        }
+        HouseholdCommand::Ls => household_ls().await,
+        HouseholdCommand::Rm { name } => household_rm(name).await,
+        HouseholdCommand::Show { name } => household_show(name).await,
+    }
+}
+
+async fn household_add(name: String, source: String, path: Option<PathBuf>) -> Result<()> {
+    let src = if is_git_url(&source) {
+        HouseholdSource::Url { url: source }
+    } else {
+        HouseholdSource::Path { path: PathBuf::from(source) }
+    };
+    let socket = paths::detect_socket();
+    let params = HouseholdAddParams { name, source: src, clone_into: path };
+    let result = client::call(&socket, "household.add", serde_json::to_value(params)?)
+        .await
+        .context("calling household.add")?;
+    match result {
+        Ok(value) => {
+            let summary: HouseholdSummary = serde_json::from_value(value)?;
+            println!("Registered {} at {}", summary.name, summary.meta_repo_path.display());
+            println!("  workspace: {}", summary.workspace_name);
+            if let Some(kb) = summary.knowledge_base {
+                println!("  knowledge_base: {kb}");
+            }
+            println!("  repos: {}", summary.repo_count);
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn household_new(
+    name: String,
+    path: Option<PathBuf>,
+    template: Option<String>,
+) -> Result<()> {
+    let socket = paths::detect_socket();
+    let params = HouseholdNewParams { name, path, template };
+    let result = client::call(&socket, "household.new", serde_json::to_value(params)?)
+        .await
+        .context("calling household.new")?;
+    match result {
+        Ok(value) => {
+            let summary: HouseholdSummary = serde_json::from_value(value)?;
+            println!("Scaffolded {} at {}", summary.name, summary.meta_repo_path.display());
+            println!("\nNext steps:");
+            println!("  cd {}", summary.meta_repo_path.display());
+            println!("  $EDITOR repos.json   # declare your sibling repos");
+            println!("  git remote add origin <url>   # if you want to push it to a remote");
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn household_ls() -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "household.ls", serde_json::json!({}))
+        .await
+        .context("calling household.ls")?;
+    match result {
+        Ok(value) => {
+            let list: Vec<HouseholdSummary> = serde_json::from_value(value)?;
+            if list.is_empty() {
+                println!(
+                    "(no households registered — run `reeve household add` or `reeve household new`)"
+                );
+            } else {
+                for h in list {
+                    println!(
+                        "{:<24} {} ({} repos)",
+                        h.name,
+                        h.meta_repo_path.display(),
+                        h.repo_count
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn household_rm(name: String) -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "household.rm", serde_json::json!({ "name": name }))
+        .await
+        .context("calling household.rm")?;
+    match result {
+        Ok(_) => {
+            println!("Unregistered {} (meta-repo on disk untouched)", name);
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn household_show(name: String) -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "household.show", serde_json::json!({ "name": name }))
+        .await
+        .context("calling household.show")?;
+    match result {
+        Ok(value) => {
+            let detail: HouseholdDetail = serde_json::from_value(value)?;
+            println!(
+                "{} ({})",
+                detail.summary.name,
+                detail.summary.meta_repo_path.display()
+            );
+            println!("  workspace: {}", detail.summary.workspace_name);
+            if let Some(url) = detail.workspace_url {
+                println!("  url: {}", url);
+            }
+            if let Some(kb) = &detail.summary.knowledge_base {
+                println!("  knowledge_base: {} (→ repo entry of the same name)", kb);
+            }
+            println!("\n  Repos ({}):", detail.repos.len());
+            for r in detail.repos {
+                let glyph = match r.on_disk {
+                    RepoOnDisk::Workspace => "W",
+                    RepoOnDisk::Sibling => "✓",
+                    RepoOnDisk::Inline => "·",
+                    RepoOnDisk::Missing => "✗",
+                };
+                let kb_marker = if r.is_knowledge_base { " [KB]" } else { "" };
+                println!("    {glyph} {}{kb_marker}", r.name);
+            }
+            if detail.cards.is_empty() {
+                println!("\n  No cards reference this household.");
+            } else {
+                println!("\n  Cards referencing this household:");
+                for c in detail.cards {
+                    println!("    {} [{}] {}", c.id, c.column, c.brief);
+                }
             }
             Ok(())
         }
