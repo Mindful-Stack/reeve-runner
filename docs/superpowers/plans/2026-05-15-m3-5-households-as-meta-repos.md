@@ -39,13 +39,13 @@
 ```rust
 // crates/reeved/src/manifest.rs
 //! Workspace manifest loader. A `repos.json` at the meta-repo root declares the
-//! workspace's name, optional canonical URL, a singular knowledge-base pointer,
-//! and the list of sibling repos. The schema lives here; consumers (clones.rs,
-//! handlers.rs) read parsed `Manifest` values, not raw JSON.
+//! workspace pointer, an optional knowledge-base pointer, and a unified list of
+//! every repo (workspace meta-repo included). The schema lives here; consumers
+//! (clones.rs, handlers.rs) read parsed `Manifest` values, not raw JSON.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const MANIFEST_FILENAME: &str = "repos.json";
 
@@ -55,25 +55,23 @@ const RESERVED_NAMES: &[&str] = &[".git", ".devcontainer"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Manifest {
-    /// Workspace friendly name. Optional; defaults to meta-repo directory basename.
-    pub name: Option<String>,
+    /// Required. Name of the `repos[]` entry that IS the meta-repo itself.
+    /// Its on-disk location is the meta-repo root.
+    pub workspace: String,
 
-    /// Canonical git URL of the meta-repo itself. Optional; informational only.
-    /// Reeve never resolves this for cloning (the meta-repo is already on disk).
-    pub url: Option<String>,
-
-    /// Singular pointer to the `repos[].name` that holds the knowledge base.
-    /// Optional; if set, must match exactly one entry in `repos`.
+    /// Optional. Name of the `repos[]` entry that holds the knowledge base.
+    /// May equal `workspace` for inline-KB single-repo setups.
+    #[serde(default)]
     pub knowledge_base: Option<String>,
 
-    /// Sibling repos declared by this workspace.
-    #[serde(default)]
+    /// Every repo participating in the workspace, the meta-repo included.
+    /// Non-empty (the workspace entry must exist).
     pub repos: Vec<RepoEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RepoEntry {
-    /// Directory name on disk relative to the meta-repo root.
+    /// Manifest identifier; also the on-disk directory name for non-workspace entries.
     pub name: String,
 
     /// Canonical git URL. Optional; surfaced in `household show` and consumed by
@@ -81,8 +79,8 @@ pub struct RepoEntry {
     #[serde(default)]
     pub url: Option<String>,
 
-    /// Free-form categorisation (`backend`, `core`, `docs`, ...). The KB
-    /// marker is NOT a tag — that lives in the top-level `knowledge_base`.
+    /// Free-form categorisation (`backend`, `core`, `docs`, ...). Neither the KB
+    /// marker nor the workspace marker is a tag — both live in top-level fields.
     #[serde(default)]
     pub tags: Vec<String>,
 
@@ -91,26 +89,47 @@ pub struct RepoEntry {
     pub description: Option<String>,
 }
 
-/// Read and validate `<meta_repo_path>/repos.json`. Returns the parsed manifest
-/// with `name` resolved (top-level field, else dir basename).
+impl Manifest {
+    /// The entry pointed to by `workspace`. Validated at load, so unwrap is safe here.
+    pub fn workspace_entry(&self) -> &RepoEntry {
+        self.repos
+            .iter()
+            .find(|r| r.name == self.workspace)
+            .expect("workspace_entry: validation ensures workspace matches a repos[].name")
+    }
+
+    /// The entry pointed to by `knowledge_base`, if set.
+    pub fn knowledge_base_entry(&self) -> Option<&RepoEntry> {
+        self.knowledge_base
+            .as_ref()
+            .and_then(|kb| self.repos.iter().find(|r| &r.name == kb))
+    }
+
+    /// Every non-workspace entry, in declaration order.
+    pub fn siblings(&self) -> impl Iterator<Item = &RepoEntry> {
+        self.repos.iter().filter(|r| r.name != self.workspace)
+    }
+}
+
+/// Read and validate `<meta_repo_path>/repos.json`.
 pub fn load_manifest(meta_repo_path: &Path) -> Result<Manifest> {
     let path = meta_repo_path.join(MANIFEST_FILENAME);
     let body = std::fs::read_to_string(&path)
         .with_context(|| format!("read manifest at {}", path.display()))?;
-    let mut manifest: Manifest = serde_json::from_str(&body)
+    let manifest: Manifest = serde_json::from_str(&body)
         .with_context(|| format!("parse manifest at {}", path.display()))?;
     validate(&manifest)?;
-    if manifest.name.is_none() {
-        manifest.name = meta_repo_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
-    }
     Ok(manifest)
 }
 
 fn validate(m: &Manifest) -> Result<()> {
-    // Rule 3: every repos[].name is non-empty and unique.
+    if m.repos.is_empty() {
+        bail!("manifest: repos[] must be non-empty (must contain at least the workspace entry)");
+    }
+    if m.workspace.is_empty() {
+        bail!("manifest: workspace must be non-empty");
+    }
+    // Names non-empty + unique + not reserved.
     let mut seen = std::collections::HashSet::new();
     for entry in &m.repos {
         if entry.name.is_empty() {
@@ -123,7 +142,14 @@ fn validate(m: &Manifest) -> Result<()> {
             bail!("manifest: duplicate repos[].name '{}'", entry.name);
         }
     }
-    // Rule 4: knowledge_base, if set, matches exactly one repos[].name.
+    // Workspace points at exactly one repos[].name.
+    if !m.repos.iter().any(|r| r.name == m.workspace) {
+        bail!(
+            "manifest: workspace = '{}' does not match any repos[].name",
+            m.workspace
+        );
+    }
+    // knowledge_base, if set, points at exactly one repos[].name.
     if let Some(kb) = &m.knowledge_base {
         if !m.repos.iter().any(|r| &r.name == kb) {
             bail!(
@@ -171,10 +197,10 @@ mod tests {
         let root = write_manifest(
             dir.path(),
             r#"{
-              "name": "myarchy-workspace",
-              "url": "git@github.com:Mindful-Stack/myarchy-workspace.git",
+              "workspace": "myarchy-workspace",
               "knowledge_base": "lore",
               "repos": [
+                { "name": "myarchy-workspace", "url": "git@github.com:Mindful-Stack/myarchy-workspace.git" },
                 { "name": "backend",  "url": "git@github.com:Mindful-Stack/myarchy-backend.git", "tags": ["backend"] },
                 { "name": "frontend", "url": "git@github.com:Mindful-Stack/myarchy-frontend.git", "tags": ["frontend"] },
                 { "name": "lore",     "tags": ["docs"] }
@@ -182,12 +208,57 @@ mod tests {
             }"#,
         );
         let m = load_manifest(&root).unwrap();
-        assert_eq!(m.name.as_deref(), Some("myarchy-workspace"));
-        assert_eq!(m.url.as_deref(), Some("git@github.com:Mindful-Stack/myarchy-workspace.git"));
+        assert_eq!(m.workspace, "myarchy-workspace");
         assert_eq!(m.knowledge_base.as_deref(), Some("lore"));
-        assert_eq!(m.repos.len(), 3);
-        assert_eq!(m.repos[0].name, "backend");
-        assert_eq!(m.repos[2].url, None);
+        assert_eq!(m.repos.len(), 4);
+        assert_eq!(m.workspace_entry().name, "myarchy-workspace");
+        assert_eq!(m.workspace_entry().url.as_deref(), Some("git@github.com:Mindful-Stack/myarchy-workspace.git"));
+        assert_eq!(m.knowledge_base_entry().unwrap().name, "lore");
+        let sibs: Vec<&str> = m.siblings().map(|r| r.name.as_str()).collect();
+        assert_eq!(sibs, vec!["backend", "frontend", "lore"]);
+    }
+
+    #[test]
+    fn parses_single_repo_inline_kb_manifest() {
+        // The witan-household starter shape.
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{
+              "workspace": "my-ws",
+              "knowledge_base": "lore",
+              "repos": [
+                { "name": "my-ws", "url": "git@github.com:you/my-ws.git" },
+                { "name": "lore",  "description": "Inline KB" }
+              ]
+            }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert_eq!(m.workspace, "my-ws");
+        assert_eq!(m.workspace_entry().name, "my-ws");
+        assert_eq!(m.knowledge_base_entry().unwrap().name, "lore");
+        let sibs: Vec<&str> = m.siblings().map(|r| r.name.as_str()).collect();
+        assert_eq!(sibs, vec!["lore"]);
+    }
+
+    #[test]
+    fn allows_knowledge_base_to_equal_workspace() {
+        // A single-repo workspace where the KB IS the workspace itself.
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{
+              "workspace": "kb-only",
+              "knowledge_base": "kb-only",
+              "repos": [{ "name": "kb-only" }]
+            }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert_eq!(m.workspace, "kb-only");
+        assert!(std::ptr::eq(
+            m.workspace_entry() as *const _,
+            m.knowledge_base_entry().unwrap() as *const _,
+        ));
     }
 }
 ```
@@ -202,15 +273,28 @@ Expected: PASS.
 Append in the same `mod tests`:
 
 ```rust
+    // Note: append these inside the same `mod tests` block as the parse tests above.
+
     #[test]
-    fn requires_knowledge_base_to_exist_in_repos() {
+    fn requires_workspace_to_match_a_repos_entry() {
         let dir = tempdir().unwrap();
         let root = write_manifest(
             dir.path(),
-            r#"{ "knowledge_base": "lore", "repos": [] }"#,
+            r#"{ "workspace": "ghost", "repos": [{ "name": "real" }] }"#,
         );
         let err = load_manifest(&root).unwrap_err();
-        assert!(format!("{err:#}").contains("knowledge_base = 'lore' does not match"));
+        assert!(format!("{err:#}").contains("workspace = 'ghost' does not match"));
+    }
+
+    #[test]
+    fn requires_knowledge_base_to_match_a_repos_entry() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{ "workspace": "ws", "knowledge_base": "ghost", "repos": [{ "name": "ws" }] }"#,
+        );
+        let err = load_manifest(&root).unwrap_err();
+        assert!(format!("{err:#}").contains("knowledge_base = 'ghost' does not match"));
     }
 
     #[test]
@@ -218,7 +302,7 @@ Append in the same `mod tests`:
         let dir = tempdir().unwrap();
         let root = write_manifest(
             dir.path(),
-            r#"{ "repos": [{ "name": "a" }, { "name": "a" }] }"#,
+            r#"{ "workspace": "a", "repos": [{ "name": "a" }, { "name": "a" }] }"#,
         );
         let err = load_manifest(&root).unwrap_err();
         assert!(format!("{err:#}").contains("duplicate repos[].name 'a'"));
@@ -229,39 +313,33 @@ Append in the same `mod tests`:
         let dir = tempdir().unwrap();
         let root = write_manifest(
             dir.path(),
-            r#"{ "repos": [{ "name": ".git" }] }"#,
+            r#"{ "workspace": "ws", "repos": [{ "name": "ws" }, { "name": ".git" }] }"#,
         );
         let err = load_manifest(&root).unwrap_err();
         assert!(format!("{err:#}").contains("is reserved"));
     }
 
     #[test]
-    fn rejects_empty_repo_name() {
+    fn rejects_empty_repos_array() {
         let dir = tempdir().unwrap();
         let root = write_manifest(
             dir.path(),
-            r#"{ "repos": [{ "name": "" }] }"#,
+            r#"{ "workspace": "ws", "repos": [] }"#,
         );
         let err = load_manifest(&root).unwrap_err();
-        assert!(format!("{err:#}").contains("empty name"));
+        assert!(format!("{err:#}").contains("repos[] must be non-empty"));
     }
 
     #[test]
-    fn defaults_name_to_dir_basename_when_absent() {
+    fn rejects_missing_workspace_field() {
         let dir = tempdir().unwrap();
-        let sub = dir.path().join("my-workspace");
-        std::fs::create_dir_all(&sub).unwrap();
-        let root = write_manifest(&sub, r#"{ "repos": [] }"#);
-        let m = load_manifest(&root).unwrap();
-        assert_eq!(m.name.as_deref(), Some("my-workspace"));
-    }
-
-    #[test]
-    fn accepts_minimal_manifest() {
-        let dir = tempdir().unwrap();
-        let root = write_manifest(dir.path(), r#"{ "repos": [] }"#);
-        let m = load_manifest(&root).unwrap();
-        assert!(m.repos.is_empty());
+        let root = write_manifest(
+            dir.path(),
+            r#"{ "repos": [{ "name": "a" }] }"#,
+        );
+        let err = load_manifest(&root).unwrap_err();
+        // serde will fail before validate() because workspace is required.
+        assert!(format!("{err:#}").contains("workspace"));
     }
 
     #[test]
@@ -599,13 +677,18 @@ In `crates/reeved/src/clones.rs`, alongside the existing `clone_all_repos`, add:
 use crate::household::Household;
 use crate::manifest::Manifest;
 
-/// Clone the household's meta-repo and every sibling declared in its manifest
-/// into the card workspace, using `--reference --dissociate` per the parent
-/// design's poly-repo topology.
+/// Clone the workspace meta-repo plus every separate-sibling repo declared in
+/// the manifest into the card workspace, using `--reference --dissociate` per
+/// the parent design's poly-repo topology. Inline entries (directories tracked
+/// inside the meta-repo without their own `.git/`) require no separate clone —
+/// they arrive with the workspace clone.
+///
+/// The card workspace dir is created by `git clone` itself in step 1 (git
+/// refuses to clone into a non-empty directory). The caller must NOT
+/// `create_dir_all(workspace)` before calling.
 ///
 /// On any failure, the partial workspace is removed (best-effort) and the
-/// error is returned. The caller is responsible for creating `workspace`
-/// before calling.
+/// error is returned.
 pub async fn clone_all_for_card(
     ops: &dyn GitOps,
     household: &Household,
@@ -614,46 +697,63 @@ pub async fn clone_all_for_card(
 ) -> Result<()> {
     let meta = &household.meta_repo_path;
 
-    // Validate every declared sibling exists on the host BEFORE issuing
-    // any clones. This makes errors deterministic and avoids partial state.
-    for entry in &manifest.repos {
-        let sibling = meta.join(&entry.name);
-        let sibling_git = sibling.join(".git");
-        if !sibling.exists() || !sibling_git.exists() {
-            cleanup(workspace);
+    // Pre-flight: validate every NON-workspace entry exists on disk in some
+    // form. Missing entirely => error. Existing without .git/ => inline.
+    // Existing with .git/ => sibling. Workspace entry doesn't need this check.
+    for entry in manifest.siblings() {
+        let dir = meta.join(&entry.name);
+        if !dir.exists() {
             anyhow::bail!(
                 "sibling '{}' declared in repos.json but not cloned at {} — \
                  run your workspace's bootstrap (e.g. `make setup`) first",
                 entry.name,
-                sibling.display(),
+                dir.display(),
             );
         }
     }
 
-    // Repo zero: the meta-repo itself.
+    // Step 1: clone the workspace entry. Its on-disk source is the meta-repo
+    // root itself. `git clone` creates `<workspace>/`.
     if let Err(e) = ops.clone(meta, workspace).await {
+        // Workspace dir may have been partially created by git; clean it up.
         cleanup(workspace);
-        return Err(e.context("clone meta-repo"));
+        return Err(e.context("clone workspace meta-repo"));
     }
 
-    // Siblings.
-    for entry in &manifest.repos {
+    // Step 2: for each non-workspace entry, dispatch on disk state.
+    for entry in manifest.siblings() {
         let source = meta.join(&entry.name);
         let dest = workspace.join(&entry.name);
-        if let Err(e) = ops.clone(&source, &dest).await {
-            cleanup(workspace);
-            return Err(e.context(format!("clone sibling '{}'", entry.name)));
+        if source.join(".git").exists() {
+            // Separate sibling repo.
+            if let Err(e) = ops.clone(&source, &dest).await {
+                cleanup(workspace);
+                return Err(e.context(format!("clone sibling '{}'", entry.name)));
+            }
+        } else {
+            // Inline directory. No clone needed — it travelled with the
+            // workspace clone. Verify it actually arrived (defensive).
+            if !dest.exists() {
+                cleanup(workspace);
+                anyhow::bail!(
+                    "inline entry '{}' is missing from workspace clone — \
+                     is it correctly tracked in the meta-repo?",
+                    entry.name,
+                );
+            }
         }
     }
     Ok(())
 }
 
 fn cleanup(workspace: &Path) {
-    if let Err(e) = std::fs::remove_dir_all(workspace) {
-        warn!(
-            "failed to clean partial workspace {}: {e:#}",
-            workspace.display()
-        );
+    if workspace.exists() {
+        if let Err(e) = std::fs::remove_dir_all(workspace) {
+            warn!(
+                "failed to clean partial workspace {}: {e:#}",
+                workspace.display()
+            );
+        }
     }
 }
 ```
@@ -675,10 +775,24 @@ Append in the same `#[cfg(test)] mod tests` block in `clones.rs`:
         meta
     }
 
-    fn manifest_with(repos: &[&str], kb: Option<&str>) -> Manifest {
+    /// Build a host meta-repo with workspace `.git/` + each named sibling.
+    /// `siblings_with_git` get their own `.git/`; `inline_dirs` get a directory
+    /// but no `.git/`.
+    fn host_meta(dir: &Path, siblings_with_git: &[&str], inline_dirs: &[&str]) -> PathBuf {
+        let meta = dir.join("meta");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        for name in siblings_with_git {
+            std::fs::create_dir_all(meta.join(name).join(".git")).unwrap();
+        }
+        for name in inline_dirs {
+            std::fs::create_dir_all(meta.join(name)).unwrap();
+        }
+        meta
+    }
+
+    fn workspace_manifest(workspace_name: &str, repos: &[&str], kb: Option<&str>) -> Manifest {
         Manifest {
-            name: Some("test".into()),
-            url: None,
+            workspace: workspace_name.into(),
             knowledge_base: kb.map(str::to_string),
             repos: repos
                 .iter()
@@ -693,40 +807,91 @@ Append in the same `#[cfg(test)] mod tests` block in `clones.rs`:
     }
 
     #[tokio::test]
-    async fn clone_all_for_card_clones_meta_then_siblings() {
+    async fn clone_all_for_card_clones_workspace_then_separate_siblings() {
         let dir = tempdir().unwrap();
-        let meta = host_meta(dir.path(), &["backend", "lore"]);
-        let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).unwrap();
+        let meta = host_meta(dir.path(), &["backend", "lore"], &[]);
+        let workspace = dir.path().join("ws"); // do NOT pre-create
         let household = Household {
             name: "test".into(),
             meta_repo_path: meta.clone(),
         };
-        let manifest = manifest_with(&["backend", "lore"], Some("lore"));
+        let manifest = workspace_manifest("test", &["test", "backend", "lore"], Some("lore"));
         let ops = MockGitOps::new();
         clone_all_for_card(&ops, &household, &manifest, &workspace)
             .await
             .unwrap();
         let calls = ops.calls.lock().unwrap();
-        assert_eq!(calls.len(), 3, "meta + 2 siblings");
-        assert_eq!(calls[0].0, meta, "meta-repo cloned first");
+        assert_eq!(calls.len(), 3, "workspace + 2 separate siblings");
+        assert_eq!(calls[0].0, meta, "workspace cloned first from meta path");
         assert_eq!(calls[0].1, workspace);
         assert_eq!(calls[1].0, meta.join("backend"));
         assert_eq!(calls[1].1, workspace.join("backend"));
         assert_eq!(calls[2].0, meta.join("lore"));
+        assert_eq!(calls[2].1, workspace.join("lore"));
+    }
+
+    #[tokio::test]
+    async fn clone_all_for_card_skips_inline_entries() {
+        // Inline `lore/` exists in the meta-repo but has no .git/.
+        // The mock's clone of the workspace creates the dest dir;
+        // we have to seed it with the inline `lore/` to mimic the
+        // real "it travels with the meta-repo clone" behaviour.
+        let dir = tempdir().unwrap();
+        let meta = host_meta(dir.path(), &[], &["lore"]);
+        let workspace = dir.path().join("ws");
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = workspace_manifest("test", &["test", "lore"], Some("lore"));
+
+        // Custom mock that creates the workspace AND copies inline dirs.
+        struct InlineSimulatingOps {
+            inner: MockGitOps,
+            inline_to_seed: Vec<(PathBuf, PathBuf)>, // (src, dest-under-workspace)
+        }
+        #[async_trait]
+        impl GitOps for InlineSimulatingOps {
+            async fn clone(&self, source: &Path, dest: &Path) -> anyhow::Result<()> {
+                self.inner.clone(source, dest).await?;
+                // After the workspace clone, the real `git clone` would have
+                // brought every tracked subdirectory along. Simulate that for
+                // the workspace-level clone only.
+                if dest == self.inline_to_seed.first().map(|(_, d)| d.parent().unwrap()).unwrap_or(dest) {
+                    for (src_rel, _) in &self.inline_to_seed {
+                        let abs_src = source.join(src_rel.file_name().unwrap());
+                        let abs_dest = dest.join(src_rel.file_name().unwrap());
+                        if abs_src.exists() {
+                            std::fs::create_dir_all(&abs_dest)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+        let ops = InlineSimulatingOps {
+            inner: MockGitOps::new(),
+            inline_to_seed: vec![(meta.join("lore"), workspace.join("lore"))],
+        };
+        clone_all_for_card(&ops, &household, &manifest, &workspace)
+            .await
+            .unwrap();
+        let calls = ops.inner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "only the workspace was cloned; lore is inline");
+        assert_eq!(calls[0].0, meta);
+        assert!(workspace.join("lore").exists(), "inline lore/ landed via workspace clone");
     }
 
     #[tokio::test]
     async fn clone_all_for_card_errors_on_missing_sibling() {
         let dir = tempdir().unwrap();
-        let meta = host_meta(dir.path(), &[]); // declare "backend" but don't create it
+        let meta = host_meta(dir.path(), &[], &[]); // declare "backend" but don't create it
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).unwrap();
         let household = Household {
             name: "test".into(),
             meta_repo_path: meta,
         };
-        let manifest = manifest_with(&["backend"], None);
+        let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
         let err = clone_all_for_card(&ops, &household, &manifest, &workspace)
             .await
@@ -737,20 +902,19 @@ Append in the same `#[cfg(test)] mod tests` block in `clones.rs`:
             "unexpected error: {msg}",
         );
         assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clones issued");
-        assert!(!workspace.exists(), "workspace removed on failure");
+        assert!(!workspace.exists(), "workspace not created on pre-flight failure");
     }
 
     #[tokio::test]
-    async fn clone_all_for_card_with_empty_repos_still_clones_meta() {
+    async fn clone_all_for_card_with_workspace_only_clones_workspace() {
         let dir = tempdir().unwrap();
-        let meta = host_meta(dir.path(), &[]);
+        let meta = host_meta(dir.path(), &[], &[]);
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).unwrap();
         let household = Household {
             name: "test".into(),
             meta_repo_path: meta.clone(),
         };
-        let manifest = manifest_with(&[], None);
+        let manifest = workspace_manifest("test", &["test"], None);
         let ops = MockGitOps::new();
         clone_all_for_card(&ops, &household, &manifest, &workspace)
             .await
@@ -758,6 +922,7 @@ Append in the same `#[cfg(test)] mod tests` block in `clones.rs`:
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, meta);
+        assert_eq!(calls[0].1, workspace);
     }
 ```
 
@@ -784,32 +949,38 @@ In the `#[cfg(test)] mod integration_tests` block (same file), add:
             meta_repo_path: meta.clone(),
         };
         let manifest = Manifest {
-            name: Some("test".into()),
-            url: None,
+            workspace: "meta".into(),
             knowledge_base: None,
-            repos: vec![RepoEntry {
-                name: "backend".into(),
-                url: None,
-                tags: vec![],
-                description: None,
-            }],
+            repos: vec![
+                RepoEntry {
+                    name: "meta".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+                RepoEntry {
+                    name: "backend".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+            ],
         };
         (meta, household, manifest)
     }
 
     #[tokio::test]
-    async fn real_clone_all_for_card_lands_meta_and_siblings() {
+    async fn real_clone_all_for_card_lands_workspace_and_siblings() {
         let dir = tempdir().unwrap();
         let (_meta, household, manifest) = full_workspace(dir.path());
-        let workspace = dir.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = dir.path().join("workspace"); // do NOT pre-create
 
         let ops = RealGitOps;
         clone_all_for_card(&ops, &household, &manifest, &workspace)
             .await
             .unwrap();
 
-        assert!(workspace.join(".git").exists(), "meta-repo cloned");
+        assert!(workspace.join(".git").exists(), "workspace meta-repo cloned");
         assert!(workspace.join("backend/.git").exists(), "sibling cloned");
     }
 ```
@@ -873,13 +1044,31 @@ pub struct HouseholdSummary {
     pub repo_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoOnDisk {
+    /// Directory exists with its own .git/ — separate sibling repo.
+    Sibling,
+    /// Directory exists without .git/ — tracked as part of the workspace meta-repo.
+    Inline,
+    /// Directory doesn't exist on the host. Sibling that wasn't bootstrapped.
+    Missing,
+    /// The workspace entry itself — lives at the meta-repo root, always "present".
+    Workspace,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoDetail {
     pub name: String,
     pub url: Option<String>,
     pub tags: Vec<String>,
     pub description: Option<String>,
-    pub populated_on_host: bool,
+    /// True iff this entry is the manifest's `workspace`.
+    pub is_workspace: bool,
+    /// True iff this entry is the manifest's `knowledge_base`.
+    pub is_knowledge_base: bool,
+    /// On-disk classification, derived at `show` time.
+    pub on_disk: RepoOnDisk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -995,7 +1184,7 @@ fn summary_from(row: &HouseholdRow, m: &manifest::Manifest) -> HouseholdSummary 
     HouseholdSummary {
         name: row.name.clone(),
         meta_repo_path: row.meta_repo_path.clone(),
-        workspace_name: m.name.clone().unwrap_or_else(|| row.name.clone()),
+        workspace_name: m.workspace.clone(),
         knowledge_base: m.knowledge_base.clone(),
         repo_count: m.repos.len(),
     }
@@ -1030,7 +1219,10 @@ Append in the handlers module's tests:
         let dir = tempdir().unwrap();
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
-        std::fs::write(meta.join("repos.json"), r#"{ "repos": [] }"#).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
+        ).unwrap();
         let state = test_state();
         let result = handle_household_add(
             &state,
@@ -1051,7 +1243,10 @@ Append in the handlers module's tests:
         let dir = tempdir().unwrap();
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
-        std::fs::write(meta.join("repos.json"), r#"{ "knowledge_base": "missing", "repos": [] }"#).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
+        ).unwrap();
         let state = test_state();
         let err = handle_household_add(
             &state,
@@ -1121,13 +1316,23 @@ pub async fn handle_household_new(
     git_in(&dest, &["init", "-b", "main", "--quiet"])
         .map_err(|e| RpcError::internal(format!("git init: {e:#}")))?;
 
-    // 3. Substitute the manifest's top-level `name` field.
+    // 3. Substitute the workspace name in BOTH places: the top-level `workspace`
+    //    pointer AND the `repos[]` entry it points at.
     let manifest_path = dest.join("repos.json");
     let body = std::fs::read_to_string(&manifest_path)
         .map_err(|e| RpcError::internal(format!("read manifest: {e:#}")))?;
     let mut m: manifest::Manifest = serde_json::from_str(&body)
         .map_err(|e| RpcError::internal(format!("parse template manifest: {e:#}")))?;
-    m.name = Some(params.name.clone());
+    let old_workspace = m.workspace.clone();
+    // Rename the repos[] entry that the template pointed at.
+    if let Some(entry) = m.repos.iter_mut().find(|r| r.name == old_workspace) {
+        entry.name = params.name.clone();
+    } else {
+        return Err(RpcError::internal(format!(
+            "template manifest's workspace = '{old_workspace}' has no matching repos[] entry"
+        )));
+    }
+    m.workspace = params.name.clone();
     let body = serde_json::to_string_pretty(&m)
         .map_err(|e| RpcError::internal(format!("re-serialize manifest: {e:#}")))?;
     std::fs::write(&manifest_path, body)
@@ -1188,7 +1393,10 @@ Add to the handlers tests:
         std::process::Command::new("git").args(["init", "-b", "main", "--quiet"]).current_dir(&template).status().unwrap();
         std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(&template).status().unwrap();
         std::process::Command::new("git").args(["config", "user.name", "t"]).current_dir(&template).status().unwrap();
-        std::fs::write(template.join("repos.json"), r#"{ "name": "default", "repos": [] }"#).unwrap();
+        std::fs::write(
+            template.join("repos.json"),
+            r#"{ "workspace": "default", "repos": [{ "name": "default" }] }"#,
+        ).unwrap();
         std::process::Command::new("git").args(["add", "-A"]).current_dir(&template).status().unwrap();
         std::process::Command::new("git").args(["commit", "-m", "init", "--quiet"]).current_dir(&template).status().unwrap();
 
@@ -1205,11 +1413,12 @@ Add to the handlers tests:
         .await
         .unwrap();
 
-        assert_eq!(result.workspace_name, "my-ws", "manifest name rewritten");
+        assert_eq!(result.workspace_name, "my-ws", "manifest workspace pointer rewritten");
         assert!(dest.join(".git").exists(), "fresh git history");
         assert!(dest.join("repos.json").exists());
         let manifest_body = std::fs::read_to_string(dest.join("repos.json")).unwrap();
-        assert!(manifest_body.contains("\"name\": \"my-ws\""), "name substituted: {manifest_body}");
+        assert!(manifest_body.contains("\"workspace\": \"my-ws\""), "workspace pointer substituted: {manifest_body}");
+        assert!(manifest_body.contains("\"name\": \"my-ws\""), "matching repos[] entry renamed: {manifest_body}");
     }
 
     #[tokio::test]
@@ -1299,19 +1508,38 @@ pub async fn handle_household_show(
     let m = manifest::load_manifest(&row.meta_repo_path)
         .map_err(|e| RpcError::internal(format!("load manifest: {e:#}")))?;
 
-    let workspace_url = m.url.clone().or_else(|| git_remote_url(&row.meta_repo_path));
+    let workspace_url = m
+        .workspace_entry()
+        .url
+        .clone()
+        .or_else(|| git_remote_url(&row.meta_repo_path));
 
     let repos = m
         .repos
         .iter()
         .map(|entry| {
-            let sib_git = row.meta_repo_path.join(&entry.name).join(".git");
+            let is_workspace = entry.name == m.workspace;
+            let is_knowledge_base = m.knowledge_base.as_deref() == Some(entry.name.as_str());
+            let on_disk = if is_workspace {
+                reeve_protocol::RepoOnDisk::Workspace
+            } else {
+                let dir = row.meta_repo_path.join(&entry.name);
+                if dir.join(".git").exists() {
+                    reeve_protocol::RepoOnDisk::Sibling
+                } else if dir.exists() {
+                    reeve_protocol::RepoOnDisk::Inline
+                } else {
+                    reeve_protocol::RepoOnDisk::Missing
+                }
+            };
             reeve_protocol::RepoDetail {
                 name: entry.name.clone(),
                 url: entry.url.clone(),
                 tags: entry.tags.clone(),
                 description: entry.description.clone(),
-                populated_on_host: sib_git.exists(),
+                is_workspace,
+                is_knowledge_base,
+                on_disk,
             }
         })
         .collect();
@@ -1362,7 +1590,10 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
         for n in ["alpha", "beta"] {
             let meta = dir.path().join(n);
             std::fs::create_dir_all(meta.join(".git")).unwrap();
-            std::fs::write(meta.join("repos.json"), r#"{ "repos": [] }"#).unwrap();
+            std::fs::write(
+                meta.join("repos.json"),
+                format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
+            ).unwrap();
             handle_household_add(
                 &state,
                 HouseholdAddParams {
@@ -1388,15 +1619,26 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
     }
 
     #[tokio::test]
-    async fn household_show_reports_sibling_presence() {
+    async fn household_show_classifies_each_entry() {
+        use reeve_protocol::RepoOnDisk;
         let dir = tempdir().unwrap();
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
-        std::fs::create_dir_all(meta.join("backend/.git")).unwrap(); // present
-        // "frontend" declared but NOT created -> populated_on_host = false
+        std::fs::create_dir_all(meta.join("backend/.git")).unwrap();   // separate sibling, present
+        std::fs::create_dir_all(meta.join("lore")).unwrap();           // inline (no .git/)
+        // "frontend" declared but NOT created -> Missing
         std::fs::write(
             meta.join("repos.json"),
-            r#"{ "repos": [{ "name": "backend" }, { "name": "frontend" }] }"#,
+            r#"{
+              "workspace": "ws",
+              "knowledge_base": "lore",
+              "repos": [
+                { "name": "ws" },
+                { "name": "backend" },
+                { "name": "lore" },
+                { "name": "frontend" }
+              ]
+            }"#,
         ).unwrap();
         let state = test_state();
         handle_household_add(
@@ -1410,11 +1652,14 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
         .await
         .unwrap();
         let detail = handle_household_show(&state, NameParam { name: "test".into() }).await.unwrap();
-        assert_eq!(detail.repos.len(), 2);
-        let backend = detail.repos.iter().find(|r| r.name == "backend").unwrap();
-        let frontend = detail.repos.iter().find(|r| r.name == "frontend").unwrap();
-        assert!(backend.populated_on_host);
-        assert!(!frontend.populated_on_host);
+        assert_eq!(detail.repos.len(), 4);
+        let by = |n: &str| detail.repos.iter().find(|r| r.name == n).unwrap();
+        assert!(by("ws").is_workspace);
+        assert_eq!(by("ws").on_disk, RepoOnDisk::Workspace);
+        assert!(by("lore").is_knowledge_base);
+        assert_eq!(by("lore").on_disk, RepoOnDisk::Inline);
+        assert_eq!(by("backend").on_disk, RepoOnDisk::Sibling);
+        assert_eq!(by("frontend").on_disk, RepoOnDisk::Missing);
     }
 
     #[tokio::test]
@@ -1425,7 +1670,10 @@ fn git_remote_url(meta_repo: &Path) -> Option<String> {
         let dir = tempdir().unwrap();
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
-        std::fs::write(meta.join("repos.json"), r#"{ "repos": [] }"#).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ours", "repos": [{ "name": "ours" }] }"#,
+        ).unwrap();
         let state = test_state();
         handle_household_add(
             &state,
@@ -1636,12 +1884,14 @@ Commands::Household { cmd } => match cmd {
         }
         println!("\n  Repos ({}):", detail.repos.len());
         for r in detail.repos {
-            let presence = if r.populated_on_host { "✓" } else { "✗" };
-            let kb_marker = match &detail.summary.knowledge_base {
-                Some(kb) if kb == &r.name => " [KB]",
-                _ => "",
+            let glyph = match r.on_disk {
+                reeve_protocol::RepoOnDisk::Workspace => "W",
+                reeve_protocol::RepoOnDisk::Sibling => "✓",
+                reeve_protocol::RepoOnDisk::Inline => "·",
+                reeve_protocol::RepoOnDisk::Missing => "✗",
             };
-            println!("    {presence} {}{kb_marker}", r.name);
+            let kb_marker = if r.is_knowledge_base { " [KB]" } else { "" };
+            println!("    {glyph} {}{kb_marker}", r.name);
         }
         if detail.cards.is_empty() {
             println!("\n  No cards reference this household.");
@@ -1805,9 +2055,10 @@ async fn m3_5_household_new_then_implementing_lands_workspace() {
     write_manifest(
         &dest.join("repos.json"),
         r#"{
-          "name": "test-household",
+          "workspace": "test-household",
           "knowledge_base": "lore",
           "repos": [
+            { "name": "test-household" },
             { "name": "lore" },
             { "name": "extra" }
           ]
@@ -1848,7 +2099,14 @@ fn build_test_template(dst: &Path) {
     std::fs::create_dir_all(dst.join("lore/knowledge/general")).unwrap();
     std::fs::write(
         dst.join("repos.json"),
-        r#"{ "name": "template", "knowledge_base": "lore", "repos": [{ "name": "lore" }] }"#,
+        r#"{
+          "workspace": "template",
+          "knowledge_base": "lore",
+          "repos": [
+            { "name": "template" },
+            { "name": "lore" }
+          ]
+        }"#,
     ).unwrap();
     std::fs::write(
         dst.join(".devcontainer/devcontainer.json"),
@@ -1938,9 +2196,10 @@ async fn m3_5_missing_sibling_blocks_implementing() {
     write_manifest(
         &dest.join("repos.json"),
         r#"{
-          "name": "incomplete",
+          "workspace": "incomplete",
           "knowledge_base": "lore",
           "repos": [
+            { "name": "incomplete" },
             { "name": "lore" },
             { "name": "phantom" }
           ]
@@ -2135,12 +2394,13 @@ After running through every task:
 - [ ] **Placeholder scan:** no "TBD", "TODO", "implement later", "similar to Task N" in the steps above. Code blocks are concrete.
 
 - [ ] **Type consistency check:**
-  - `Manifest { name: Option<String>, url: Option<String>, knowledge_base: Option<String>, repos: Vec<RepoEntry> }` — same across Tasks 1, 5, 8.
+  - `Manifest { workspace: String, knowledge_base: Option<String>, repos: Vec<RepoEntry> }` — same across Tasks 1, 5, 8. Helper methods `workspace_entry()`, `knowledge_base_entry()`, `siblings()` used in Tasks 4, 8.
   - `RepoEntry { name, url, tags, description }` — fields consistent in Tasks 1, 4, 5, 8.
   - `Household { name, meta_repo_path }` — same in Tasks 3, 4, 9.
   - `HouseholdRow { name, meta_repo_path, added_at }` — same in Tasks 2, 6, 7, 8.
-  - `HouseholdSummary { name, meta_repo_path, workspace_name, knowledge_base, repo_count }` — same in Tasks 5, 6, 7, 8.
-  - `HouseholdDetail { summary, workspace_url, repos, cards }` — same in Tasks 5, 8.
+  - `HouseholdSummary { name, meta_repo_path, workspace_name, knowledge_base, repo_count }` — same in Tasks 5, 6, 7, 8. `workspace_name` sourced from `manifest.workspace`.
+  - `RepoDetail { name, url, tags, description, is_workspace, is_knowledge_base, on_disk }`, `RepoOnDisk { Workspace, Sibling, Inline, Missing }` — same in Tasks 5, 8, 10.
+  - `HouseholdDetail { summary, workspace_url, repos, cards }` — same in Tasks 5, 8. `workspace_url` sourced from the workspace entry's `url`.
   - RPC methods: `household.add`, `household.new`, `household.ls`, `household.rm`, `household.show` — same in Tasks 6–8, 10.
 
 - [ ] **Open items deferred to writing-plans were resolved:**
