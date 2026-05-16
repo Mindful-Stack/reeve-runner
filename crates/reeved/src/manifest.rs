@@ -3,7 +3,7 @@
 //! every repo (workspace meta-repo included). The schema lives here; consumers
 //! (clones.rs, handlers.rs) read parsed `Manifest` values, not raw JSON.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -56,13 +56,6 @@ impl Manifest {
             .iter()
             .find(|r| r.name == self.workspace)
             .expect("workspace_entry: validation ensures workspace matches a repos[].name")
-    }
-
-    /// The entry pointed to by `knowledge_base`, if set.
-    pub fn knowledge_base_entry(&self) -> Option<&RepoEntry> {
-        self.knowledge_base
-            .as_ref()
-            .and_then(|kb| self.repos.iter().find(|r| &r.name == kb))
     }
 
     /// Every non-workspace entry, in declaration order.
@@ -154,8 +147,10 @@ mod tests {
         assert_eq!(m.knowledge_base.as_deref(), Some("lore"));
         assert_eq!(m.repos.len(), 4);
         assert_eq!(m.workspace_entry().name, "myarchy-workspace");
-        assert_eq!(m.workspace_entry().url.as_deref(), Some("git@github.com:Mindful-Stack/myarchy-workspace.git"));
-        assert_eq!(m.knowledge_base_entry().unwrap().name, "lore");
+        assert_eq!(
+            m.workspace_entry().url.as_deref(),
+            Some("git@github.com:Mindful-Stack/myarchy-workspace.git")
+        );
         let sibs: Vec<&str> = m.siblings().map(|r| r.name.as_str()).collect();
         assert_eq!(sibs, vec!["backend", "frontend", "lore"]);
     }
@@ -177,28 +172,8 @@ mod tests {
         let m = load_manifest(&root).unwrap();
         assert_eq!(m.workspace, "my-ws");
         assert_eq!(m.workspace_entry().name, "my-ws");
-        assert_eq!(m.knowledge_base_entry().unwrap().name, "lore");
         let sibs: Vec<&str> = m.siblings().map(|r| r.name.as_str()).collect();
         assert_eq!(sibs, vec!["lore"]);
-    }
-
-    #[test]
-    fn allows_knowledge_base_to_equal_workspace() {
-        let dir = tempdir().unwrap();
-        let root = write_manifest(
-            dir.path(),
-            r#"{
-              "workspace": "kb-only",
-              "knowledge_base": "kb-only",
-              "repos": [{ "name": "kb-only" }]
-            }"#,
-        );
-        let m = load_manifest(&root).unwrap();
-        assert_eq!(m.workspace, "kb-only");
-        assert!(std::ptr::eq(
-            m.workspace_entry() as *const _,
-            m.knowledge_base_entry().unwrap() as *const _,
-        ));
     }
 
     #[test]
@@ -248,10 +223,7 @@ mod tests {
     #[test]
     fn rejects_empty_repos_array() {
         let dir = tempdir().unwrap();
-        let root = write_manifest(
-            dir.path(),
-            r#"{ "workspace": "ws", "repos": [] }"#,
-        );
+        let root = write_manifest(dir.path(), r#"{ "workspace": "ws", "repos": [] }"#);
         let err = load_manifest(&root).unwrap_err();
         assert!(format!("{err:#}").contains("repos[] must be non-empty"));
     }
@@ -259,10 +231,7 @@ mod tests {
     #[test]
     fn rejects_missing_workspace_field() {
         let dir = tempdir().unwrap();
-        let root = write_manifest(
-            dir.path(),
-            r#"{ "repos": [{ "name": "a" }] }"#,
-        );
+        let root = write_manifest(dir.path(), r#"{ "repos": [{ "name": "a" }] }"#);
         let err = load_manifest(&root).unwrap_err();
         assert!(format!("{err:#}").contains("workspace"));
     }

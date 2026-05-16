@@ -4,7 +4,7 @@
 use crate::clones::{self, GitOpsHandle};
 use crate::container::{self, ContainerOpsHandle};
 use crate::db;
-use crate::household::{self, HouseholdMap};
+use crate::household;
 use crate::listeners::ListenerRegistry;
 use crate::server::DbHandle;
 use crate::transitions::TransitionEffects;
@@ -21,7 +21,6 @@ pub struct DaemonState {
     pub containers: ContainerOpsHandle,
     pub git: GitOpsHandle,
     pub listeners: ListenerRegistry,
-    pub households: HouseholdMap,
     pub claude_dir: PathBuf,
     pub api_key: Option<String>,
 }
@@ -57,9 +56,8 @@ impl TransitionEffects for LiveEffects {
             db::get_household(&conn, &household_name)
         })
         .await??;
-        let row = row.ok_or_else(|| {
-            anyhow::anyhow!("household '{}' not configured", card.household)
-        })?;
+        let row =
+            row.ok_or_else(|| anyhow::anyhow!("household '{}' not configured", card.household))?;
         let household = household::Household {
             name: row.name,
             meta_repo_path: row.meta_repo_path,

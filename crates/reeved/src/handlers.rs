@@ -415,19 +415,19 @@ pub struct NameParam {
 
 async fn handle_household_ls(state: &DaemonState) -> std::result::Result<Value, RpcError> {
     let conn = state.db.lock().await;
-    let rows = db::list_households(&conn)
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("list households: {e:#}"),
-        })?;
+    let rows = db::list_households(&conn).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("list households: {e:#}"),
+    })?;
     drop(conn);
     let mut out: Vec<HouseholdSummary> = Vec::with_capacity(rows.len());
     for row in rows {
-        let m = manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| manifest::Manifest {
-            workspace: row.name.clone(),
-            knowledge_base: None,
-            repos: vec![],
-        });
+        let m =
+            manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| manifest::Manifest {
+                workspace: row.name.clone(),
+                knowledge_base: None,
+                repos: vec![],
+            });
         out.push(summary_from(&row, &m));
     }
     serde_json::to_value(out).map_err(to_internal)
@@ -438,11 +438,10 @@ async fn handle_household_rm(
     params: NameParam,
 ) -> std::result::Result<Value, RpcError> {
     let conn = state.db.lock().await;
-    let removed = db::remove_household(&conn, &params.name)
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("remove household: {e:#}"),
-        })?;
+    let removed = db::remove_household(&conn, &params.name).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("remove household: {e:#}"),
+    })?;
     drop(conn);
     if !removed {
         return Err(RpcError {
@@ -472,11 +471,10 @@ async fn handle_household_show(
     };
 
     // Unlocked: file I/O and subprocess work.
-    let m = manifest::load_manifest(&row.meta_repo_path)
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("load manifest: {e:#}"),
-        })?;
+    let m = manifest::load_manifest(&row.meta_repo_path).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("load manifest: {e:#}"),
+    })?;
 
     let workspace_url = m
         .workspace_entry()
@@ -517,11 +515,10 @@ async fn handle_household_show(
     // Second locked section: fetch referencing cards.
     let cards = {
         let conn = state.db.lock().await;
-        db::cards_for_household(&conn, &params.name)
-            .map_err(|e| RpcError {
-                code: RpcError::INTERNAL,
-                message: format!("list cards: {e:#}"),
-            })?
+        db::cards_for_household(&conn, &params.name).map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("list cards: {e:#}"),
+        })?
     }
     .into_iter()
     .map(|(id, brief, column)| CardReference { id, brief, column })
@@ -545,14 +542,25 @@ async fn handle_household_new(
         .clone()
         .unwrap_or_else(|| default_source_dir().join(&params.name));
 
-    if dest.exists() && dest.read_dir().map(|mut i| i.next().is_some()).unwrap_or(true) {
+    if dest.exists()
+        && dest
+            .read_dir()
+            .map(|mut i| i.next().is_some())
+            .unwrap_or(true)
+    {
         return Err(RpcError {
             code: RpcError::CONFLICT,
-            message: format!("target directory {} exists and is non-empty", dest.display()),
+            message: format!(
+                "target directory {} exists and is non-empty",
+                dest.display()
+            ),
         });
     }
 
-    let template = params.template.clone().unwrap_or_else(|| DEFAULT_TEMPLATE.into());
+    let template = params
+        .template
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TEMPLATE.into());
 
     // 1. Shallow-clone the template via URL.
     state
@@ -612,12 +620,10 @@ async fn handle_household_new(
     })?;
 
     // 4. Initial commit.
-    git_in(&dest, &["add", "-A"])
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("git add: {e:#}"),
-        })?;
+    git_in(&dest, &["add", "-A"]).await.map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("git add: {e:#}"),
+    })?;
     git_in(&dest, &["commit", "-m", "Initial workspace", "--quiet"])
         .await
         .map_err(|e| RpcError {
@@ -656,7 +662,6 @@ mod tests {
     use crate::listeners::{Dispatcher, ListenerRegistry};
     use anyhow::Result;
     use async_trait::async_trait;
-    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -714,7 +719,16 @@ mod tests {
     }
 
     fn fresh_state() -> DaemonState {
-        fresh_state_with_households(HashMap::new())
+        let conn = db::open(":memory:").unwrap();
+        let db: DbHandle = Arc::new(Mutex::new(conn));
+        DaemonState {
+            db: db.clone(),
+            containers: Arc::new(NoopOps) as ContainerOpsHandle,
+            git: Arc::new(NoopGit) as GitOpsHandle,
+            listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
+            claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            api_key: None,
+        }
     }
 
     fn fresh_state_with_git(git: GitOpsHandle) -> DaemonState {
@@ -725,23 +739,6 @@ mod tests {
             containers: Arc::new(NoopOps) as ContainerOpsHandle,
             git,
             listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
-            households: Arc::new(HashMap::new()),
-            claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
-            api_key: None,
-        }
-    }
-
-    fn fresh_state_with_households(
-        map: HashMap<String, crate::household::Household>,
-    ) -> DaemonState {
-        let conn = db::open(":memory:").unwrap();
-        let db: DbHandle = Arc::new(Mutex::new(conn));
-        DaemonState {
-            db: db.clone(),
-            containers: Arc::new(NoopOps) as ContainerOpsHandle,
-            git: Arc::new(NoopGit) as GitOpsHandle,
-            listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
-            households: Arc::new(map),
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
         }
@@ -1121,7 +1118,10 @@ mod tests {
         .unwrap();
 
         let summary: HouseholdSummary = serde_json::from_value(result).unwrap();
-        assert_eq!(summary.workspace_name, "my-ws", "manifest workspace pointer rewritten");
+        assert_eq!(
+            summary.workspace_name, "my-ws",
+            "manifest workspace pointer rewritten"
+        );
         assert!(dest.join(".git").exists(), "fresh git history");
         assert!(dest.join("repos.json").exists());
         let manifest_body = std::fs::read_to_string(dest.join("repos.json")).unwrap();
@@ -1170,16 +1170,21 @@ mod tests {
     #[tokio::test]
     async fn household_rm_returns_not_found_for_unknown() {
         let state = fresh_state();
-        let err = handle_household_rm(&state, NameParam { name: "nope".into() })
-            .await
-            .unwrap_err();
+        let err = handle_household_rm(
+            &state,
+            NameParam {
+                name: "nope".into(),
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{err:?}").contains("not found"));
     }
 
     #[tokio::test]
     async fn household_show_classifies_each_entry() {
-        use tempfile::tempdir;
         use reeve_protocol::RepoOnDisk;
+        use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let meta = dir.path().join("ws");
         std::fs::create_dir_all(meta.join(".git")).unwrap();
@@ -1211,9 +1216,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let detail_val = handle_household_show(&state, NameParam { name: "test".into() })
-            .await
-            .unwrap();
+        let detail_val = handle_household_show(
+            &state,
+            NameParam {
+                name: "test".into(),
+            },
+        )
+        .await
+        .unwrap();
         let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
         assert_eq!(detail.repos.len(), 4);
         let by = |n: &str| detail.repos.iter().find(|r| r.name == n).unwrap();
@@ -1260,8 +1270,11 @@ mod tests {
         };
         {
             let conn = state.db.lock().await;
-            db::insert_card(&conn, &make_card("card-1", "brief one", Column::Backlog, "ours"))
-                .unwrap();
+            db::insert_card(
+                &conn,
+                &make_card("card-1", "brief one", Column::Backlog, "ours"),
+            )
+            .unwrap();
             db::insert_card(
                 &conn,
                 &make_card("card-2", "brief two", Column::Implementing, "ours"),
@@ -1273,9 +1286,14 @@ mod tests {
             )
             .unwrap();
         }
-        let detail_val = handle_household_show(&state, NameParam { name: "ours".into() })
-            .await
-            .unwrap();
+        let detail_val = handle_household_show(
+            &state,
+            NameParam {
+                name: "ours".into(),
+            },
+        )
+        .await
+        .unwrap();
         let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
         let ids: Vec<&str> = detail.cards.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["card-1", "card-2"]);
@@ -1302,5 +1320,4 @@ mod tests {
         .unwrap_err();
         assert!(format!("{err:?}").contains("exists and is non-empty"));
     }
-
 }
