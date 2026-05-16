@@ -6,6 +6,7 @@ mod handlers;
 mod household;
 mod lifecycle;
 mod listeners;
+mod manifest;
 mod server;
 mod transitions;
 
