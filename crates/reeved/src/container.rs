@@ -45,6 +45,13 @@ impl ContainerOps for DockerOps {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        // Surface devcontainer up's output even on success — otherwise
+        // postCreateCommand logs (and any silent setup issues) are invisible.
+        tracing::info!(
+            "devcontainer up succeeded; stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         Ok(())
     }
 
