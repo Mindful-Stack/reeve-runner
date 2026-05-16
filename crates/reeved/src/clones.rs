@@ -6,17 +6,13 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::process::Command;
 use tracing::warn;
 
-/// Spec for one repo to clone into a card workspace.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct RepoSpec {
-    pub name: String,
-    pub path: PathBuf,
-}
+use crate::household::Household;
+use crate::manifest::Manifest;
 
 /// Abstract git-subprocess backend. The trait exists so unit tests can mock
 /// out the subprocess and assert on the argv that would have been issued.
@@ -61,50 +57,104 @@ impl GitOps for RealGitOps {
     }
 }
 
-/// Clone every repo in `repos` into `<workspace>/<repo.name>/` serially.
-/// On any clone failure, removes the partial workspace and returns the error.
-/// Caller is responsible for creating the workspace dir before this call.
-pub async fn clone_all_repos(ops: &dyn GitOps, workspace: &Path, repos: &[RepoSpec]) -> Result<()> {
-    for repo in repos {
-        let dest = workspace.join(&repo.name);
-        if let Err(e) = ops.clone(&repo.path, &dest).await {
-            // Best-effort cleanup of the partial workspace.
-            if let Err(rm_err) = std::fs::remove_dir_all(workspace) {
-                warn!(
-                    "failed to clean partial workspace {}: {rm_err:#}",
-                    workspace.display()
+/// Clone the workspace meta-repo plus every separate-sibling repo declared in
+/// the manifest into the card workspace, using `--reference --dissociate` per
+/// the parent design's poly-repo topology. Inline entries (directories tracked
+/// inside the meta-repo without their own `.git/`) require no separate clone —
+/// they arrive with the workspace clone.
+///
+/// The card workspace dir is created by `git clone` itself in step 1 (git
+/// refuses to clone into a non-empty directory). The caller must NOT
+/// `create_dir_all(workspace)` before calling.
+///
+/// On any failure, the partial workspace is removed (best-effort) and the
+/// error is returned.
+pub async fn clone_all_for_card(
+    ops: &dyn GitOps,
+    household: &Household,
+    manifest: &Manifest,
+    workspace: &Path,
+) -> Result<()> {
+    let meta = &household.meta_repo_path;
+
+    // Pre-flight: validate every NON-workspace entry exists on disk in some
+    // form. Missing entirely => error. Existing without .git/ => inline.
+    // Existing with .git/ => sibling. Workspace entry doesn't need this check.
+    for entry in manifest.siblings() {
+        let dir = meta.join(&entry.name);
+        if !dir.exists() {
+            anyhow::bail!(
+                "sibling '{}' declared in repos.json but not cloned at {} — \
+                 run your workspace's bootstrap (e.g. `make setup`) first",
+                entry.name,
+                dir.display(),
+            );
+        }
+    }
+
+    // Step 1: clone the workspace entry. Its on-disk source is the meta-repo
+    // root itself. `git clone` creates `<workspace>/`.
+    if let Err(e) = ops.clone(meta, workspace).await {
+        // Workspace dir may have been partially created by git; clean it up.
+        cleanup(workspace);
+        return Err(e.context("clone workspace meta-repo"));
+    }
+
+    // Step 2: for each non-workspace entry, dispatch on disk state.
+    for entry in manifest.siblings() {
+        let source = meta.join(&entry.name);
+        let dest = workspace.join(&entry.name);
+        if source.join(".git").exists() {
+            // Separate sibling repo.
+            if let Err(e) = ops.clone(&source, &dest).await {
+                cleanup(workspace);
+                return Err(e.context(format!("clone sibling '{}'", entry.name)));
+            }
+        } else {
+            // Inline directory. No clone needed — it travelled with the
+            // workspace clone. Verify it actually arrived (defensive).
+            if !dest.exists() {
+                cleanup(workspace);
+                anyhow::bail!(
+                    "inline entry '{}' is missing from workspace clone — \
+                     is it correctly tracked in the meta-repo?",
+                    entry.name,
                 );
             }
-            return Err(e.context(format!("clone repo '{}'", repo.name)));
         }
     }
     Ok(())
 }
 
+fn cleanup(workspace: &Path) {
+    if workspace.exists() {
+        if let Err(e) = std::fs::remove_dir_all(workspace) {
+            warn!(
+                "failed to clean partial workspace {}: {e:#}",
+                workspace.display()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::household::Household;
+    use crate::manifest::{Manifest, RepoEntry};
+    use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    /// Records every `clone` call. Configurable failure on the Nth call.
+    /// Records every `clone` call.
     struct MockGitOps {
         calls: Mutex<Vec<(PathBuf, PathBuf)>>,
-        fail_after: Option<usize>,
     }
 
     impl MockGitOps {
         fn new() -> Self {
             Self {
                 calls: Mutex::new(vec![]),
-                fail_after: None,
-            }
-        }
-
-        fn failing_after(n: usize) -> Self {
-            Self {
-                calls: Mutex::new(vec![]),
-                fail_after: Some(n),
             }
         }
     }
@@ -114,92 +164,169 @@ mod tests {
         async fn clone(&self, source: &Path, dest: &Path) -> Result<()> {
             let mut calls = self.calls.lock().unwrap();
             calls.push((source.to_path_buf(), dest.to_path_buf()));
-            if let Some(n) = self.fail_after {
-                if calls.len() > n {
-                    anyhow::bail!("simulated clone failure");
-                }
-            }
             // Pretend the clone succeeded by creating the dest dir.
             std::fs::create_dir_all(dest).unwrap();
             Ok(())
         }
     }
 
-    fn repo(name: &str, path: &Path) -> RepoSpec {
-        RepoSpec {
-            name: name.into(),
-            path: path.to_path_buf(),
+    /// Build a host meta-repo with workspace `.git/` + each named sibling.
+    /// `siblings_with_git` get their own `.git/`; `inline_dirs` get a directory
+    /// but no `.git/`.
+    fn host_meta(dir: &Path, siblings_with_git: &[&str], inline_dirs: &[&str]) -> PathBuf {
+        let meta = dir.join("meta");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        for name in siblings_with_git {
+            std::fs::create_dir_all(meta.join(name).join(".git")).unwrap();
+        }
+        for name in inline_dirs {
+            std::fs::create_dir_all(meta.join(name)).unwrap();
+        }
+        meta
+    }
+
+    fn workspace_manifest(workspace_name: &str, repos: &[&str], kb: Option<&str>) -> Manifest {
+        Manifest {
+            workspace: workspace_name.into(),
+            knowledge_base: kb.map(str::to_string),
+            repos: repos
+                .iter()
+                .map(|n| RepoEntry {
+                    name: (*n).into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                })
+                .collect(),
         }
     }
 
     #[tokio::test]
-    async fn clone_all_repos_issues_one_clone_per_repo() {
+    async fn clone_all_for_card_clones_workspace_then_separate_siblings() {
         let dir = tempdir().unwrap();
-        let workspace = dir.path().join("card-1");
-        std::fs::create_dir_all(&workspace).unwrap();
+        let meta = host_meta(dir.path(), &["backend", "lore"], &[]);
+        let workspace = dir.path().join("ws"); // do NOT pre-create
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = workspace_manifest("test", &["test", "backend", "lore"], Some("lore"));
         let ops = MockGitOps::new();
-        let host_a = dir.path().join("host-a");
-        let host_b = dir.path().join("host-b");
-        clone_all_repos(&ops, &workspace, &[repo("a", &host_a), repo("b", &host_b)])
+        clone_all_for_card(&ops, &household, &manifest, &workspace)
             .await
             .unwrap();
         let calls = ops.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, host_a);
-        assert_eq!(calls[0].1, workspace.join("a"));
-        assert_eq!(calls[1].0, host_b);
-        assert_eq!(calls[1].1, workspace.join("b"));
+        assert_eq!(calls.len(), 3, "workspace + 2 separate siblings");
+        assert_eq!(calls[0].0, meta, "workspace cloned first from meta path");
+        assert_eq!(calls[0].1, workspace);
+        assert_eq!(calls[1].0, meta.join("backend"));
+        assert_eq!(calls[1].1, workspace.join("backend"));
+        assert_eq!(calls[2].0, meta.join("lore"));
+        assert_eq!(calls[2].1, workspace.join("lore"));
     }
 
     #[tokio::test]
-    async fn clone_all_repos_with_empty_repos_is_noop() {
+    async fn clone_all_for_card_skips_inline_entries() {
+        // Inline `lore/` exists in the meta-repo but has no .git/.
+        // The mock's clone of the workspace creates the dest dir;
+        // we have to seed it with the inline `lore/` to mimic the
+        // real "it travels with the meta-repo clone" behaviour.
         let dir = tempdir().unwrap();
-        let workspace = dir.path().join("card-1");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let ops = MockGitOps::new();
-        clone_all_repos(&ops, &workspace, &[]).await.unwrap();
-        assert_eq!(ops.calls.lock().unwrap().len(), 0);
-    }
+        let meta = host_meta(dir.path(), &[], &["lore"]);
+        let workspace = dir.path().join("ws");
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = workspace_manifest("test", &["test", "lore"], Some("lore"));
 
-    #[tokio::test]
-    async fn clone_all_repos_removes_workspace_on_failure() {
-        let dir = tempdir().unwrap();
-        let workspace = dir.path().join("card-1");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let ops = MockGitOps::failing_after(1);
-        let host_a = dir.path().join("host-a");
-        let host_b = dir.path().join("host-b");
-        let result =
-            clone_all_repos(&ops, &workspace, &[repo("a", &host_a), repo("b", &host_b)]).await;
-        assert!(result.is_err());
+        // Custom mock that creates the workspace AND copies inline dirs.
+        struct InlineSimulatingOps {
+            inner: MockGitOps,
+            inline_to_seed: Vec<(PathBuf, PathBuf)>, // (src, dest-under-workspace)
+        }
+        #[async_trait]
+        impl GitOps for InlineSimulatingOps {
+            async fn clone(&self, source: &Path, dest: &Path) -> anyhow::Result<()> {
+                self.inner.clone(source, dest).await?;
+                // After the workspace clone, the real `git clone` would have
+                // brought every tracked subdirectory along. Simulate that for
+                // the workspace-level clone only.
+                if dest
+                    == self
+                        .inline_to_seed
+                        .first()
+                        .map(|(_, d)| d.parent().unwrap())
+                        .unwrap_or(dest)
+                {
+                    for (src_rel, _) in &self.inline_to_seed {
+                        let abs_src = source.join(src_rel.file_name().unwrap());
+                        let abs_dest = dest.join(src_rel.file_name().unwrap());
+                        if abs_src.exists() {
+                            std::fs::create_dir_all(&abs_dest)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+        let ops = InlineSimulatingOps {
+            inner: MockGitOps::new(),
+            inline_to_seed: vec![(meta.join("lore"), workspace.join("lore"))],
+        };
+        clone_all_for_card(&ops, &household, &manifest, &workspace)
+            .await
+            .unwrap();
+        let calls = ops.inner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "only the workspace was cloned; lore is inline");
+        assert_eq!(calls[0].0, meta);
         assert!(
-            !workspace.exists(),
-            "workspace should be removed after clone failure",
+            workspace.join("lore").exists(),
+            "inline lore/ landed via workspace clone"
         );
     }
 
     #[tokio::test]
-    async fn clone_all_repos_serial_order_preserved() {
+    async fn clone_all_for_card_errors_on_missing_sibling() {
         let dir = tempdir().unwrap();
-        let workspace = dir.path().join("card-1");
-        std::fs::create_dir_all(&workspace).unwrap();
+        let meta = host_meta(dir.path(), &[], &[]); // declare "backend" but don't create it
+        let workspace = dir.path().join("ws");
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta,
+        };
+        let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        let host_a = dir.path().join("a");
-        let host_b = dir.path().join("b");
-        let host_c = dir.path().join("c");
-        clone_all_repos(
-            &ops,
-            &workspace,
-            &[repo("a", &host_a), repo("b", &host_b), repo("c", &host_c)],
-        )
-        .await
-        .unwrap();
+        let err = clone_all_for_card(&ops, &household, &manifest, &workspace)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("declared in repos.json but not cloned"),
+            "unexpected error: {msg}",
+        );
+        assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clones issued");
+        assert!(!workspace.exists(), "workspace not created on pre-flight failure");
+    }
+
+    #[tokio::test]
+    async fn clone_all_for_card_with_workspace_only_clones_workspace() {
+        let dir = tempdir().unwrap();
+        let meta = host_meta(dir.path(), &[], &[]);
+        let workspace = dir.path().join("ws");
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = workspace_manifest("test", &["test"], None);
+        let ops = MockGitOps::new();
+        clone_all_for_card(&ops, &household, &manifest, &workspace)
+            .await
+            .unwrap();
         let calls = ops.calls.lock().unwrap();
-        let names: Vec<&str> = calls
-            .iter()
-            .map(|(s, _)| s.file_name().unwrap().to_str().unwrap())
-            .collect();
-        assert_eq!(names, vec!["a", "b", "c"]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, meta);
+        assert_eq!(calls[0].1, workspace);
     }
 }
 
@@ -207,6 +334,9 @@ mod tests {
 mod integration_tests {
     //! Real-git tests. Require `git` in $PATH. Hit the filesystem.
     use super::*;
+    use crate::household::Household;
+    use crate::manifest::{Manifest, RepoEntry};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn git(repo: &Path, args: &[&str]) {
@@ -233,6 +363,36 @@ mod integration_tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "--quiet", "-m", "initial"]);
         repo
+    }
+
+    /// Init a meta-repo with one sibling, both real git repos with one commit each.
+    fn full_workspace(dir: &Path) -> (PathBuf, Household, Manifest) {
+        let meta = host_repo(dir, "meta");
+        // Carve out a sibling inside the meta-repo dir.
+        let _sibling = host_repo(&meta, "backend");
+        let household = Household {
+            name: "test".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = Manifest {
+            workspace: "meta".into(),
+            knowledge_base: None,
+            repos: vec![
+                RepoEntry {
+                    name: "meta".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+                RepoEntry {
+                    name: "backend".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+            ],
+        };
+        (meta, household, manifest)
     }
 
     #[tokio::test]
@@ -266,36 +426,6 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn real_clone_two_repos_via_clone_all_repos() {
-        let dir = tempdir().unwrap();
-        let a = host_repo(dir.path(), "host-a");
-        let b = host_repo(dir.path(), "host-b");
-        let workspace = dir.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-
-        let ops = RealGitOps;
-        clone_all_repos(
-            &ops,
-            &workspace,
-            &[
-                RepoSpec {
-                    name: "a".into(),
-                    path: a,
-                },
-                RepoSpec {
-                    name: "b".into(),
-                    path: b,
-                },
-            ],
-        )
-        .await
-        .unwrap();
-
-        assert!(workspace.join("a/.git").exists());
-        assert!(workspace.join("b/.git").exists());
-    }
-
-    #[tokio::test]
     async fn real_clone_fails_when_source_is_not_a_repo() {
         let dir = tempdir().unwrap();
         let not_a_repo = dir.path().join("garbage");
@@ -305,5 +435,20 @@ mod integration_tests {
         let ops = RealGitOps;
         let result = ops.clone(&not_a_repo, &dest).await;
         assert!(result.is_err(), "clone of non-repo should fail");
+    }
+
+    #[tokio::test]
+    async fn real_clone_all_for_card_lands_workspace_and_siblings() {
+        let dir = tempdir().unwrap();
+        let (_meta, household, manifest) = full_workspace(dir.path());
+        let workspace = dir.path().join("workspace"); // do NOT pre-create
+
+        let ops = RealGitOps;
+        clone_all_for_card(&ops, &household, &manifest, &workspace)
+            .await
+            .unwrap();
+
+        assert!(workspace.join(".git").exists(), "workspace meta-repo cloned");
+        assert!(workspace.join("backend/.git").exists(), "sibling cloned");
     }
 }
