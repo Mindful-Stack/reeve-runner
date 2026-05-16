@@ -7,9 +7,9 @@ use crate::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
-    Card, Column, HouseholdAddParams, HouseholdNewParams, HouseholdSource, HouseholdSummary,
-    LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, RpcError,
-    RpcRequest, StatusSelfResult,
+    Card, CardReference, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams,
+    HouseholdSource, HouseholdSummary, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
+    NewParams, NewResult, RepoDetail, RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,15 @@ pub async fn dispatch(
         "household.new" => {
             let params = parse_params::<HouseholdNewParams>(req.params)?;
             handle_household_new(&state, params).await
+        }
+        "household.ls" => handle_household_ls(&state).await,
+        "household.rm" => {
+            let params = parse_params::<NameParam>(req.params)?;
+            handle_household_rm(&state, params).await
+        }
+        "household.show" => {
+            let params = parse_params::<NameParam>(req.params)?;
+            handle_household_show(&state, params).await
         }
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
@@ -364,6 +373,139 @@ async fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+pub struct NameParam {
+    pub name: String,
+}
+
+async fn handle_household_ls(state: &DaemonState) -> std::result::Result<Value, RpcError> {
+    let conn = state.db.lock().await;
+    let rows = db::list_households(&conn)
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("list households: {e:#}"),
+        })?;
+    drop(conn);
+    let mut out: Vec<HouseholdSummary> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let m = manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| manifest::Manifest {
+            workspace: row.name.clone(),
+            knowledge_base: None,
+            repos: vec![],
+        });
+        out.push(summary_from(&row, &m));
+    }
+    serde_json::to_value(out).map_err(to_internal)
+}
+
+async fn handle_household_rm(
+    state: &DaemonState,
+    params: NameParam,
+) -> std::result::Result<Value, RpcError> {
+    let conn = state.db.lock().await;
+    let removed = db::remove_household(&conn, &params.name)
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("remove household: {e:#}"),
+        })?;
+    drop(conn);
+    if !removed {
+        return Err(RpcError {
+            code: RpcError::NOT_FOUND,
+            message: format!("household '{}' not found", params.name),
+        });
+    }
+    serde_json::to_value(()).map_err(to_internal)
+}
+
+async fn handle_household_show(
+    state: &DaemonState,
+    params: NameParam,
+) -> std::result::Result<Value, RpcError> {
+    let conn = state.db.lock().await;
+    let row = db::get_household(&conn, &params.name)
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("get household: {e:#}"),
+        })?
+        .ok_or_else(|| RpcError {
+            code: RpcError::NOT_FOUND,
+            message: format!("household '{}' not found", params.name),
+        })?;
+
+    let m = manifest::load_manifest(&row.meta_repo_path)
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("load manifest: {e:#}"),
+        })?;
+
+    let workspace_url = m
+        .workspace_entry()
+        .url
+        .clone()
+        .or_else(|| git_remote_url(&row.meta_repo_path));
+
+    let repos: Vec<RepoDetail> = m
+        .repos
+        .iter()
+        .map(|entry| {
+            let is_workspace = entry.name == m.workspace;
+            let is_knowledge_base = m.knowledge_base.as_deref() == Some(entry.name.as_str());
+            let on_disk = if is_workspace {
+                RepoOnDisk::Workspace
+            } else {
+                let dir = row.meta_repo_path.join(&entry.name);
+                if dir.join(".git").exists() {
+                    RepoOnDisk::Sibling
+                } else if dir.exists() {
+                    RepoOnDisk::Inline
+                } else {
+                    RepoOnDisk::Missing
+                }
+            };
+            RepoDetail {
+                name: entry.name.clone(),
+                url: entry.url.clone(),
+                tags: entry.tags.clone(),
+                description: entry.description.clone(),
+                is_workspace,
+                is_knowledge_base,
+                on_disk,
+            }
+        })
+        .collect();
+
+    let cards: Vec<CardReference> = db::cards_for_household(&conn, &params.name)
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("list cards: {e:#}"),
+        })?
+        .into_iter()
+        .map(|(id, brief, column)| CardReference { id, brief, column })
+        .collect();
+    drop(conn);
+
+    let detail = HouseholdDetail {
+        summary: summary_from(&row, &m),
+        workspace_url,
+        repos,
+        cards,
+    };
+    serde_json::to_value(detail).map_err(to_internal)
+}
+
+fn git_remote_url(meta_repo: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(meta_repo)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 async fn handle_household_new(
@@ -963,6 +1105,152 @@ mod tests {
             manifest_body.contains("\"name\": \"my-ws\""),
             "matching repos[] entry renamed: {manifest_body}"
         );
+    }
+
+    #[tokio::test]
+    async fn household_ls_returns_inserted_households() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let state = fresh_state();
+        // Insert two via add.
+        for n in ["alpha", "beta"] {
+            let meta = dir.path().join(n);
+            std::fs::create_dir_all(meta.join(".git")).unwrap();
+            std::fs::write(
+                meta.join("repos.json"),
+                format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
+            )
+            .unwrap();
+            handle_household_add(
+                &state,
+                HouseholdAddParams {
+                    name: n.into(),
+                    source: HouseholdSource::Path { path: meta },
+                    clone_into: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let list_val = handle_household_ls(&state).await.unwrap();
+        let list: Vec<HouseholdSummary> = serde_json::from_value(list_val).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "alpha");
+        assert_eq!(list[1].name, "beta");
+    }
+
+    #[tokio::test]
+    async fn household_rm_returns_not_found_for_unknown() {
+        let state = fresh_state();
+        let err = handle_household_rm(&state, NameParam { name: "nope".into() })
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn household_show_classifies_each_entry() {
+        use tempfile::tempdir;
+        use reeve_protocol::RepoOnDisk;
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        std::fs::create_dir_all(meta.join("backend/.git")).unwrap(); // separate sibling, present
+        std::fs::create_dir_all(meta.join("lore")).unwrap(); // inline (no .git/)
+        // "frontend" declared but NOT created -> Missing
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{
+              "workspace": "ws",
+              "knowledge_base": "lore",
+              "repos": [
+                { "name": "ws" },
+                { "name": "backend" },
+                { "name": "lore" },
+                { "name": "frontend" }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let state = fresh_state();
+        handle_household_add(
+            &state,
+            HouseholdAddParams {
+                name: "test".into(),
+                source: HouseholdSource::Path { path: meta },
+                clone_into: None,
+            },
+        )
+        .await
+        .unwrap();
+        let detail_val = handle_household_show(&state, NameParam { name: "test".into() })
+            .await
+            .unwrap();
+        let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
+        assert_eq!(detail.repos.len(), 4);
+        let by = |n: &str| detail.repos.iter().find(|r| r.name == n).unwrap();
+        assert!(by("ws").is_workspace);
+        assert_eq!(by("ws").on_disk, RepoOnDisk::Workspace);
+        assert!(by("lore").is_knowledge_base);
+        assert_eq!(by("lore").on_disk, RepoOnDisk::Inline);
+        assert_eq!(by("backend").on_disk, RepoOnDisk::Sibling);
+        assert_eq!(by("frontend").on_disk, RepoOnDisk::Missing);
+    }
+
+    #[tokio::test]
+    async fn household_show_lists_referencing_cards() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        std::fs::write(
+            meta.join("repos.json"),
+            r#"{ "workspace": "ours", "repos": [{ "name": "ours" }] }"#,
+        )
+        .unwrap();
+        let state = fresh_state();
+        handle_household_add(
+            &state,
+            HouseholdAddParams {
+                name: "ours".into(),
+                source: HouseholdSource::Path { path: meta },
+                clone_into: None,
+            },
+        )
+        .await
+        .unwrap();
+        // Insert cards directly via db.
+        let make_card = |id: &str, brief: &str, column: Column, household: &str| Card {
+            id: id.into(),
+            household: household.into(),
+            brief: brief.into(),
+            column,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        };
+        {
+            let conn = state.db.lock().await;
+            db::insert_card(&conn, &make_card("card-1", "brief one", Column::Backlog, "ours"))
+                .unwrap();
+            db::insert_card(
+                &conn,
+                &make_card("card-2", "brief two", Column::Implementing, "ours"),
+            )
+            .unwrap();
+            db::insert_card(
+                &conn,
+                &make_card("card-3", "brief three", Column::Backlog, "someone-else"),
+            )
+            .unwrap();
+        }
+        let detail_val = handle_household_show(&state, NameParam { name: "ours".into() })
+            .await
+            .unwrap();
+        let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
+        let ids: Vec<&str> = detail.cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["card-1", "card-2"]);
     }
 
     #[tokio::test]
