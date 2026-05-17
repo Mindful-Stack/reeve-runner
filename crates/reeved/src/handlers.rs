@@ -815,6 +815,14 @@ mod tests {
         async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
             Ok(Some("test-container".to_string()))
         }
+        async fn exec_in_tmux(
+            &self,
+            _container_name: &str,
+            _session_name: &str,
+            _command: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     /// Dispatcher stub; transitions don't need to call back here in tests.

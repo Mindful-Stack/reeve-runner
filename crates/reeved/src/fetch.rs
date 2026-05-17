@@ -198,6 +198,14 @@ mod tests {
         async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
             Ok(None)
         }
+        async fn exec_in_tmux(
+            &self,
+            _container_name: &str,
+            _session_name: &str,
+            _command: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct NoopDispatcher;

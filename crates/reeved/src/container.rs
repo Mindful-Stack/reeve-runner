@@ -21,6 +21,19 @@ pub trait ContainerOps: Send + Sync {
     /// `reeve.card_id=<card-id>`. `Ok(None)` when no container is found yet
     /// (caller polls). `Err` when the query itself fails.
     async fn discover_container_name(&self, card_id: &str) -> Result<Option<String>>;
+
+    /// Start a detached tmux session inside an existing running container.
+    /// Shells `docker exec -u vscode <container> tmux new-session -d -s
+    /// <session> -- bash -lc <command>`. The vscode user is hardcoded
+    /// because the M3.5 smoke confirmed it matches the Microsoft devcontainer
+    /// base image's default remoteUser; per-household overrides are M6 work.
+    /// Errors propagate from the underlying `docker exec`.
+    async fn exec_in_tmux(
+        &self,
+        container_name: &str,
+        session_name: &str,
+        command: &str,
+    ) -> Result<()>;
 }
 
 /// Real Docker implementation. Shells out to `docker` via tokio.
@@ -118,6 +131,41 @@ impl ContainerOps for DockerOps {
             );
         }
         parse_discovered_name(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    async fn exec_in_tmux(
+        &self,
+        container_name: &str,
+        session_name: &str,
+        command: &str,
+    ) -> Result<()> {
+        let output = Command::new("docker")
+            .args([
+                "exec",
+                "-u",
+                "vscode",
+                container_name,
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "--",
+                "bash",
+                "-lc",
+                command,
+            ])
+            .output()
+            .await
+            .context("exec docker exec for tmux new-session")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "docker exec tmux new-session failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 }
 
@@ -412,6 +460,26 @@ mod docker_tests {
         assert_eq!(map_docker_state("restarting"), ContainerStatus::Spawning);
         assert_eq!(map_docker_state("exited"), ContainerStatus::Failed);
         assert_eq!(map_docker_state("dead"), ContainerStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn docker_ops_exec_in_tmux_argv_shape() {
+        if !docker_available() { eprintln!("skip: docker"); return; }
+        // This is a structural test that just verifies DockerOps::exec_in_tmux
+        // can be called and that on a missing container it returns a clear
+        // error. The full docker-side behavior is covered by the e2e test.
+        let ops = DockerOps;
+        let result = ops
+            .exec_in_tmux("nonexistent-container-xyz", "reeve", "true")
+            .await;
+        assert!(result.is_err(), "exec_in_tmux into missing container should error");
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.to_lowercase().contains("no such container")
+                || msg.to_lowercase().contains("not found")
+                || msg.contains("docker exec"),
+            "error should mention docker / not-found / missing container: {msg}"
+        );
     }
 }
 
