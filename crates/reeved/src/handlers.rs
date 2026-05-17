@@ -7,9 +7,10 @@ use crate::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
-    Card, CardReference, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams,
-    HouseholdSource, HouseholdSummary, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
-    NewParams, NewResult, RepoDetail, RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
+    BranchPushResult, BranchPushStatus, Card, CardReference, Column, HouseholdAddParams,
+    HouseholdDetail, HouseholdNewParams, HouseholdSource, HouseholdSummary, LsResult, MvParams,
+    MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, PushParams, PushResult, RepoDetail,
+    RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,10 @@ pub async fn dispatch(
             let card_id = require_card(&caller)?;
             let params = parse_params::<MvSelfParams>(req.params)?;
             handle_mv_self(state, card_id, params).await
+        }
+        "push" => {
+            let params = parse_params::<PushParams>(req.params)?;
+            handle_push(&state, params).await
         }
         "status-self" => {
             let card_id = require_card(&caller)?;
@@ -531,6 +536,89 @@ async fn handle_household_show(
         cards,
     };
     serde_json::to_value(detail).map_err(to_internal)
+}
+
+async fn handle_push(state: &DaemonState, params: PushParams) -> std::result::Result<Value, RpcError> {
+    // 1. Fetch the card from the DB.
+    let card_id = params.id.clone();
+    let db = state.db.clone();
+    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
+        let conn = db.blocking_lock();
+        crate::db::get_card(&conn, &card_id)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?
+    .ok_or_else(|| RpcError {
+        code: RpcError::NOT_FOUND,
+        message: format!("card '{}' not found", params.id),
+    })?;
+
+    // 2. Resolve the household from sqlite.
+    let household_name = card.household.clone();
+    let db = state.db.clone();
+    let row = tokio::task::spawn_blocking(move || -> Result<Option<crate::db::HouseholdRow>> {
+        let conn = db.blocking_lock();
+        crate::db::get_household(&conn, &household_name)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?
+    .ok_or_else(|| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("household '{}' not configured", card.household),
+    })?;
+    let household = crate::household::Household {
+        name: row.name,
+        meta_repo_path: row.meta_repo_path,
+    };
+
+    // 3. Load + validate the manifest.
+    let manifest = crate::household::load_household_manifest(&household).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("load manifest: {e:#}"),
+    })?;
+
+    // 4. For each repo, for each branch in the namespace, FF + push.
+    let mut branches = Vec::new();
+    for (repo_name, host_path) in crate::household::iter_card_repos(&household, &manifest) {
+        let listed = state
+            .git
+            .list_namespace_refs(&host_path, &card.id)
+            .await
+            .map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
+                message: format!(
+                    "list refs/reeve/{}/* in {}: {e:#}",
+                    card.id,
+                    host_path.display()
+                ),
+            })?;
+        for branch in listed {
+            let target = format!("refs/heads/{branch}");
+            let source = format!("refs/reeve/{}/{}", card.id, branch);
+            let status = match state.git.fast_forward(&host_path, &target, &source).await {
+                Ok(crate::clones::FfOutcome::Updated) => {
+                    match state.git.push(&host_path, &branch).await {
+                        Ok(()) => BranchPushStatus::Pushed,
+                        Err(e) => BranchPushStatus::PushFailed {
+                            message: format!("{e:#}"),
+                        },
+                    }
+                }
+                Ok(crate::clones::FfOutcome::NotFastForward) => BranchPushStatus::NotFastForward,
+                Err(e) => BranchPushStatus::PushFailed {
+                    message: format!("fast-forward check failed: {e:#}"),
+                },
+            };
+            branches.push(BranchPushResult {
+                repo: repo_name.to_string(),
+                branch,
+                status,
+            });
+        }
+    }
+    serde_json::to_value(PushResult { branches }).map_err(to_internal)
 }
 
 async fn handle_household_new(
@@ -1345,5 +1433,280 @@ mod tests {
         .await
         .unwrap_err();
         assert!(format!("{err:?}").contains("exists and is non-empty"));
+    }
+
+    use reeve_protocol::{BranchPushStatus, PushResult};
+
+    async fn insert_test_household(state: &DaemonState, name: &str, meta_repo_path: &std::path::Path) {
+        let conn = state.db.lock().await;
+        crate::db::insert_household(
+            &conn,
+            &crate::db::HouseholdRow {
+                name: name.to_string(),
+                meta_repo_path: meta_repo_path.to_path_buf(),
+                added_at: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    /// Write a minimal household.json at `meta_repo_path`.
+    fn write_test_manifest(meta_repo_path: &std::path::Path, workspace: &str, repos: &[&str]) {
+        let repos_json: Vec<String> = repos
+            .iter()
+            .map(|n| format!(r#"{{"name":"{n}"}}"#))
+            .collect();
+        let body = format!(
+            r#"{{"workspace":"{workspace}","repos":[{}]}}"#,
+            repos_json.join(",")
+        );
+        std::fs::write(meta_repo_path.join("household.json"), body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn push_with_no_branches_returns_empty_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(&meta).unwrap();
+        write_test_manifest(&meta, "ws", &["ws"]);
+
+        let state = fresh_state();
+        insert_test_household(&state, "h", &meta).await;
+
+        // Insert a card pointing at the household.
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &reeve_protocol::Card {
+                    id: "card-x".into(),
+                    household: "h".into(),
+                    brief: "x".into(),
+                    column: reeve_protocol::Column::Implementing,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "push".into(),
+            params: serde_json::json!({ "id": "card-x" }),
+        };
+        let value = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: PushResult = serde_json::from_value(value).unwrap();
+        assert!(result.branches.is_empty());
+    }
+
+    /// Test mock that returns configured branches from list_namespace_refs and
+    /// configured FfOutcome per call. Used to exercise handle_push's logic
+    /// without a real git.
+    struct ConfigurableGit {
+        branches_per_repo: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<String>>>,
+        ff_outcomes: std::sync::Mutex<Vec<crate::clones::FfOutcome>>,
+        push_failures: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        push_call_order: std::sync::Mutex<Vec<(std::path::PathBuf, String)>>,
+    }
+
+    impl ConfigurableGit {
+        fn new() -> Self {
+            Self {
+                branches_per_repo: std::sync::Mutex::new(std::collections::HashMap::new()),
+                ff_outcomes: std::sync::Mutex::new(vec![]),
+                push_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
+                push_call_order: std::sync::Mutex::new(vec![]),
+            }
+        }
+        fn set_branches(&self, repo: std::path::PathBuf, branches: Vec<String>) {
+            self.branches_per_repo.lock().unwrap().insert(repo, branches);
+        }
+        fn queue_ff_outcome(&self, outcome: crate::clones::FfOutcome) {
+            self.ff_outcomes.lock().unwrap().push(outcome);
+        }
+        #[allow(dead_code)]
+        fn fail_push(&self, branch: &str, message: &str) {
+            self.push_failures
+                .lock()
+                .unwrap()
+                .insert(branch.to_string(), message.to_string());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::clones::GitOps for ConfigurableGit {
+        async fn clone(&self, _s: &std::path::Path, _d: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+        async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+        async fn fetch(
+            &self,
+            _w: &std::path::Path,
+            _s: &std::path::Path,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn list_namespace_refs(
+            &self,
+            workdir: &std::path::Path,
+            _namespace: &str,
+        ) -> Result<Vec<String>> {
+            Ok(self
+                .branches_per_repo
+                .lock()
+                .unwrap()
+                .get(workdir)
+                .cloned()
+                .unwrap_or_default())
+        }
+        async fn fast_forward(
+            &self,
+            _workdir: &std::path::Path,
+            _target: &str,
+            _source: &str,
+        ) -> Result<crate::clones::FfOutcome> {
+            // Pop in order; default to Updated if queue empty.
+            let mut q = self.ff_outcomes.lock().unwrap();
+            Ok(if q.is_empty() {
+                crate::clones::FfOutcome::Updated
+            } else {
+                q.remove(0)
+            })
+        }
+        async fn push(&self, workdir: &std::path::Path, branch: &str) -> Result<()> {
+            self.push_call_order
+                .lock()
+                .unwrap()
+                .push((workdir.to_path_buf(), branch.to_string()));
+            if let Some(msg) = self.push_failures.lock().unwrap().get(branch) {
+                anyhow::bail!("{msg}");
+            }
+            Ok(())
+        }
+    }
+
+    fn fresh_state_with_configurable_git(
+        git: std::sync::Arc<ConfigurableGit>,
+    ) -> DaemonState {
+        let conn = crate::db::open(":memory:").unwrap();
+        let db: crate::server::DbHandle =
+            std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        DaemonState {
+            db: db.clone(),
+            containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
+            git: git as crate::clones::GitOpsHandle,
+            listeners: crate::listeners::ListenerRegistry::new(
+                db,
+                std::sync::Arc::new(NoopDispatcher),
+            ),
+            claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            api_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn push_records_per_branch_status_pushed_and_not_ff() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(&meta).unwrap();
+        write_test_manifest(&meta, "ws", &["ws"]);
+
+        let git = std::sync::Arc::new(ConfigurableGit::new());
+        git.set_branches(meta.clone(), vec!["feat-a".into(), "feat-b".into()]);
+        // First branch: Updated then push OK; Second: NotFastForward.
+        git.queue_ff_outcome(crate::clones::FfOutcome::Updated);
+        git.queue_ff_outcome(crate::clones::FfOutcome::NotFastForward);
+
+        let state = fresh_state_with_configurable_git(git);
+        insert_test_household(&state, "h", &meta).await;
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &Card {
+                    id: "card-y".into(),
+                    household: "h".into(),
+                    brief: "y".into(),
+                    column: Column::Implementing,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "push".into(),
+            params: serde_json::json!({ "id": "card-y" }),
+        };
+        let value = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: PushResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.branches.len(), 2);
+        assert!(matches!(result.branches[0].status, BranchPushStatus::Pushed));
+        assert!(matches!(
+            result.branches[1].status,
+            BranchPushStatus::NotFastForward
+        ));
+        assert_eq!(result.branches[0].branch, "feat-a");
+        assert_eq!(result.branches[1].branch, "feat-b");
+    }
+
+    #[tokio::test]
+    async fn push_iterates_meta_repo_then_manifest_repos_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(&meta).unwrap();
+        write_test_manifest(&meta, "ws", &["ws", "backend", "lore"]);
+
+        let git = std::sync::Arc::new(ConfigurableGit::new());
+        // Each repo path has one branch; assert push_call_order matches.
+        git.set_branches(meta.clone(), vec!["feat-meta".into()]);
+        git.set_branches(meta.join("backend"), vec!["feat-back".into()]);
+        git.set_branches(meta.join("lore"), vec!["feat-lore".into()]);
+
+        let state = fresh_state_with_configurable_git(git.clone());
+        insert_test_household(&state, "h", &meta).await;
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &Card {
+                    id: "card-z".into(),
+                    household: "h".into(),
+                    brief: "z".into(),
+                    column: Column::Implementing,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "push".into(),
+            params: serde_json::json!({ "id": "card-z" }),
+        };
+        let value = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: PushResult = serde_json::from_value(value).unwrap();
+        let repos: Vec<&str> = result.branches.iter().map(|b| b.repo.as_str()).collect();
+        assert_eq!(repos, vec!["ws", "backend", "lore"]);
+        let call_order = git.push_call_order.lock().unwrap();
+        let paths: Vec<&std::path::PathBuf> = call_order.iter().map(|(p, _)| p).collect();
+        assert_eq!(
+            paths,
+            vec![&meta, &meta.join("backend"), &meta.join("lore")]
+        );
     }
 }
