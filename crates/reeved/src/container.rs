@@ -464,7 +464,10 @@ mod docker_tests {
 
     #[tokio::test]
     async fn docker_ops_exec_in_tmux_argv_shape() {
-        if !docker_available() { eprintln!("skip: docker"); return; }
+        if !docker_available() {
+            eprintln!("skip: docker");
+            return;
+        }
         // This is a structural test that just verifies DockerOps::exec_in_tmux
         // can be called and that on a missing container it returns a clear
         // error. The full docker-side behavior is covered by the e2e test.
@@ -472,7 +475,10 @@ mod docker_tests {
         let result = ops
             .exec_in_tmux("nonexistent-container-xyz", "reeve", "true")
             .await;
-        assert!(result.is_err(), "exec_in_tmux into missing container should error");
+        assert!(
+            result.is_err(),
+            "exec_in_tmux into missing container should error"
+        );
         let msg = format!("{:#}", result.unwrap_err());
         assert!(
             msg.to_lowercase().contains("no such container")

@@ -1884,7 +1884,9 @@ mod tests {
             method: "attach".into(),
             params: serde_json::json!({ "id": "missing-card" }),
         };
-        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::NOT_FOUND);
         assert!(err.message.contains("not found"), "msg: {}", err.message);
     }
@@ -1916,13 +1918,11 @@ mod tests {
             method: "attach".into(),
             params: serde_json::json!({ "id": "card-b" }),
         };
-        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
-        assert!(
-            err.message.contains("Implementing"),
-            "msg: {}",
-            err.message
-        );
+        assert!(err.message.contains("Implementing"), "msg: {}", err.message);
     }
 
     #[tokio::test]
@@ -1954,7 +1954,9 @@ mod tests {
             method: "attach".into(),
             params: serde_json::json!({ "id": "card-c" }),
         };
-        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::INTERNAL);
         assert!(err.message.contains("not running"), "msg: {}", err.message);
     }
