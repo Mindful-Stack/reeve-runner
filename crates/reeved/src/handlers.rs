@@ -688,6 +688,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+        async fn list_namespace_refs(
+            &self,
+            _workdir: &std::path::Path,
+            _namespace: &str,
+        ) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
     }
 
     /// No-op container backend that pretends nothing exists.

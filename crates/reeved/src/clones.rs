@@ -30,6 +30,10 @@ pub trait GitOps: Send + Sync {
     /// `namespace` must be a valid git ref component (e.g. a UUID); the caller
     /// is responsible for ensuring it contains no whitespace or `..` sequences.
     async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()>;
+    /// Return branch names found under `refs/reeve/<namespace>/`. The
+    /// namespace prefix is stripped; consumers see plain branch names.
+    /// Empty vec when there are no refs in that namespace.
+    async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> Result<Vec<String>>;
 }
 
 /// Convenience handle used by the rest of the daemon.
@@ -102,6 +106,29 @@ impl GitOps for RealGitOps {
             );
         }
         Ok(())
+    }
+
+    async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> Result<Vec<String>> {
+        let prefix = format!("refs/reeve/{namespace}/");
+        let output = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname)", &prefix])
+            .current_dir(workdir)
+            .output()
+            .await
+            .context("exec git for-each-ref")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git for-each-ref failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let branches: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix(&prefix).map(|s| s.to_string()))
+            .collect();
+        Ok(branches)
     }
 }
 
@@ -198,6 +225,8 @@ mod tests {
     struct MockGitOps {
         calls: Mutex<Vec<(PathBuf, PathBuf)>>,
         fetches: Mutex<Vec<(PathBuf, PathBuf, String)>>,
+        list_namespace_calls: Mutex<Vec<(PathBuf, String)>>,
+        list_namespace_response: Mutex<Vec<String>>,
     }
 
     impl MockGitOps {
@@ -205,7 +234,13 @@ mod tests {
             Self {
                 calls: Mutex::new(vec![]),
                 fetches: Mutex::new(vec![]),
+                list_namespace_calls: Mutex::new(vec![]),
+                list_namespace_response: Mutex::new(vec![]),
             }
+        }
+
+        fn set_list_namespace_refs_response(&self, branches: Vec<String>) {
+            *self.list_namespace_response.lock().unwrap() = branches;
         }
     }
 
@@ -233,6 +268,14 @@ mod tests {
                 namespace.to_string(),
             ));
             Ok(())
+        }
+
+        async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> Result<Vec<String>> {
+            self.list_namespace_calls
+                .lock()
+                .unwrap()
+                .push((workdir.to_path_buf(), namespace.to_string()));
+            Ok(self.list_namespace_response.lock().unwrap().clone())
         }
     }
 
@@ -343,6 +386,10 @@ mod tests {
             async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> anyhow::Result<()> {
                 self.inner.fetch(workdir, source, namespace).await
             }
+
+            async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> anyhow::Result<Vec<String>> {
+                self.inner.list_namespace_refs(workdir, namespace).await
+            }
         }
         let ops = InlineSimulatingOps {
             inner: MockGitOps::new(),
@@ -420,6 +467,19 @@ mod tests {
         let fetches = ops.fetches.lock().unwrap();
         assert_eq!(fetches.len(), 1);
         assert_eq!(fetches[0], (workdir.clone(), source.clone(), "deadbeef".to_string()));
+    }
+
+    #[tokio::test]
+    async fn mock_list_namespace_refs_returns_recorded() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path().join("host");
+        let ops = MockGitOps::new();
+        ops.set_list_namespace_refs_response(vec!["feat-a".into(), "feat-b".into()]);
+        let result = ops.list_namespace_refs(&workdir, "card-x").await.unwrap();
+        assert_eq!(result, vec!["feat-a".to_string(), "feat-b".to_string()]);
+        let calls = ops.list_namespace_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], (workdir.clone(), "card-x".to_string()));
     }
 }
 
@@ -546,6 +606,45 @@ mod integration_tests {
             "workspace meta-repo cloned"
         );
         assert!(workspace.join("backend/.git").exists(), "sibling cloned");
+    }
+
+    #[tokio::test]
+    async fn real_list_namespace_refs_returns_branches() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+
+        // Manually create two refs in the namespace.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        assert!(head.status.success());
+        let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+        for branch in ["feat-a", "feat-b"] {
+            let refname = format!("refs/reeve/card-x/{branch}");
+            let status = std::process::Command::new("git")
+                .args(["update-ref", &refname, &head_sha])
+                .current_dir(&host)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let ops = RealGitOps;
+        let mut branches = ops.list_namespace_refs(&host, "card-x").await.unwrap();
+        branches.sort();
+        assert_eq!(branches, vec!["feat-a".to_string(), "feat-b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn real_list_namespace_refs_returns_empty_when_no_match() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+        let ops = RealGitOps;
+        let result = ops.list_namespace_refs(&host, "missing-card").await.unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
