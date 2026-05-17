@@ -14,6 +14,15 @@ use tracing::warn;
 use crate::household::Household;
 use crate::manifest::Manifest;
 
+/// Result of attempting a fast-forward update via `GitOps::fast_forward`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FfOutcome {
+    /// `target_ref` was updated to point at `source_ref`.
+    Updated,
+    /// `target_ref` is not an ancestor of `source_ref`; left unchanged.
+    NotFastForward,
+}
+
 /// Abstract git-subprocess backend. The trait exists so unit tests can mock
 /// out the subprocess and assert on the argv that would have been issued.
 #[async_trait]
@@ -34,6 +43,16 @@ pub trait GitOps: Send + Sync {
     /// namespace prefix is stripped; consumers see plain branch names.
     /// Empty vec when there are no refs in that namespace.
     async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> Result<Vec<String>>;
+    /// Update `target_ref` to point at `source_ref` only if the move is a
+    /// fast-forward (target is an ancestor of source). Returns `Updated` on
+    /// success or `NotFastForward` if the move would lose history. Other
+    /// failures (git crash, ref doesn't exist, etc.) return `Err`.
+    async fn fast_forward(
+        &self,
+        workdir: &Path,
+        target_ref: &str,
+        source_ref: &str,
+    ) -> Result<FfOutcome>;
 }
 
 /// Convenience handle used by the rest of the daemon.
@@ -129,6 +148,62 @@ impl GitOps for RealGitOps {
             .filter_map(|line| line.strip_prefix(&prefix).map(|s| s.to_string()))
             .collect();
         Ok(branches)
+    }
+
+    async fn fast_forward(
+        &self,
+        workdir: &Path,
+        target_ref: &str,
+        source_ref: &str,
+    ) -> Result<FfOutcome> {
+        // `git merge-base --is-ancestor` returns exit 0 if ancestor, exit 1 if not,
+        // exit >1 on a real error (e.g. one ref doesn't exist).
+        // If target_ref doesn't exist yet (newly-discovered branch), is-ancestor
+        // returns >1 too. We treat that case as "FF allowed" — there's no
+        // history to lose. Distinguish that via a separate `git rev-parse`
+        // existence probe before running is-ancestor.
+        let target_exists = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", target_ref])
+            .current_dir(workdir)
+            .output()
+            .await
+            .context("exec git rev-parse for target_ref")?;
+
+        if target_exists.status.success() {
+            // Target exists; require strict FF.
+            let ancestor = Command::new("git")
+                .args(["merge-base", "--is-ancestor", target_ref, source_ref])
+                .current_dir(workdir)
+                .output()
+                .await
+                .context("exec git merge-base --is-ancestor")?;
+            // Exit 0 = ancestor (FF OK); exit 1 = not ancestor (NotFF);
+            // any other = real error.
+            match ancestor.status.code() {
+                Some(0) => {}
+                Some(1) => return Ok(FfOutcome::NotFastForward),
+                other => anyhow::bail!(
+                    "git merge-base --is-ancestor exited {:?}: {}",
+                    other,
+                    String::from_utf8_lossy(&ancestor.stderr)
+                ),
+            }
+        }
+        // Either target didn't exist (new branch) or FF was OK — update.
+        let update = Command::new("git")
+            .args(["update-ref", target_ref, source_ref])
+            .current_dir(workdir)
+            .output()
+            .await
+            .context("exec git update-ref")?;
+        if !update.status.success() {
+            anyhow::bail!(
+                "git update-ref failed (exit {}): {}",
+                update.status,
+                String::from_utf8_lossy(&update.stderr)
+            );
+        }
+        Ok(FfOutcome::Updated)
     }
 }
 
@@ -227,6 +302,8 @@ mod tests {
         fetches: Mutex<Vec<(PathBuf, PathBuf, String)>>,
         list_namespace_calls: Mutex<Vec<(PathBuf, String)>>,
         list_namespace_response: Mutex<Vec<String>>,
+        fast_forward_calls: Mutex<Vec<(PathBuf, String, String)>>,
+        fast_forward_response: Mutex<FfOutcome>,
     }
 
     impl MockGitOps {
@@ -236,11 +313,17 @@ mod tests {
                 fetches: Mutex::new(vec![]),
                 list_namespace_calls: Mutex::new(vec![]),
                 list_namespace_response: Mutex::new(vec![]),
+                fast_forward_calls: Mutex::new(vec![]),
+                fast_forward_response: Mutex::new(FfOutcome::Updated),
             }
         }
 
         fn set_list_namespace_refs_response(&self, branches: Vec<String>) {
             *self.list_namespace_response.lock().unwrap() = branches;
+        }
+
+        fn set_fast_forward_response(&self, outcome: FfOutcome) {
+            *self.fast_forward_response.lock().unwrap() = outcome;
         }
     }
 
@@ -276,6 +359,20 @@ mod tests {
                 .unwrap()
                 .push((workdir.to_path_buf(), namespace.to_string()));
             Ok(self.list_namespace_response.lock().unwrap().clone())
+        }
+
+        async fn fast_forward(
+            &self,
+            workdir: &Path,
+            target_ref: &str,
+            source_ref: &str,
+        ) -> Result<FfOutcome> {
+            self.fast_forward_calls.lock().unwrap().push((
+                workdir.to_path_buf(),
+                target_ref.to_string(),
+                source_ref.to_string(),
+            ));
+            Ok(*self.fast_forward_response.lock().unwrap())
         }
     }
 
@@ -390,6 +487,15 @@ mod tests {
             async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> anyhow::Result<Vec<String>> {
                 self.inner.list_namespace_refs(workdir, namespace).await
             }
+
+            async fn fast_forward(
+                &self,
+                workdir: &Path,
+                target_ref: &str,
+                source_ref: &str,
+            ) -> anyhow::Result<FfOutcome> {
+                self.inner.fast_forward(workdir, target_ref, source_ref).await
+            }
         }
         let ops = InlineSimulatingOps {
             inner: MockGitOps::new(),
@@ -481,6 +587,29 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], (workdir.clone(), "card-x".to_string()));
     }
+
+    #[tokio::test]
+    async fn mock_fast_forward_returns_configured_outcome() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path().join("host");
+        let ops = MockGitOps::new();
+        ops.set_fast_forward_response(FfOutcome::Updated);
+        let result = ops
+            .fast_forward(&workdir, "refs/heads/main", "refs/reeve/card-x/main")
+            .await
+            .unwrap();
+        assert_eq!(result, FfOutcome::Updated);
+        let calls = ops.fast_forward_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            (
+                workdir.clone(),
+                "refs/heads/main".to_string(),
+                "refs/reeve/card-x/main".to_string()
+            )
+        );
+    }
 }
 
 #[cfg(test)]
@@ -506,10 +635,12 @@ mod integration_tests {
     }
 
     /// Initialise a host repo with one commit. Returns the repo path.
+    /// Always creates the default branch as `main` regardless of the
+    /// system-wide `init.defaultBranch` setting.
     fn host_repo(dir: &Path, name: &str) -> PathBuf {
         let repo = dir.join(name);
         std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "--quiet"]);
+        git(&repo, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
         git(&repo, &["config", "user.email", "test@example.com"]);
         git(&repo, &["config", "user.name", "test"]);
         std::fs::write(repo.join("README.md"), "hello\n").unwrap();
@@ -677,5 +808,101 @@ mod integration_tests {
             "rev-parse should find namespaced ref: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[tokio::test]
+    async fn real_fast_forward_advances_target_when_ancestor() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+
+        // Set up a `refs/reeve/card-x/main` one commit ahead of `refs/heads/main`.
+        std::fs::write(host.join("a.txt"), "a\n").unwrap();
+        git(&host, &["add", "a.txt"]);
+        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "a"]);
+        let advance_sha = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        let advance_sha = String::from_utf8_lossy(&advance_sha.stdout).trim().to_string();
+        git(&host, &["update-ref", "refs/reeve/card-x/main", &advance_sha]);
+        // Rewind heads/main to the previous commit (HEAD~1).
+        git(&host, &["update-ref", "refs/heads/main", "HEAD~1"]);
+
+        let ops = RealGitOps;
+        let outcome = ops
+            .fast_forward(&host, "refs/heads/main", "refs/reeve/card-x/main")
+            .await
+            .unwrap();
+        assert_eq!(outcome, FfOutcome::Updated);
+
+        let after = std::process::Command::new("git")
+            .args(["rev-parse", "refs/heads/main"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        let after_sha = String::from_utf8_lossy(&after.stdout).trim().to_string();
+        assert_eq!(after_sha, advance_sha, "main advanced to the namespaced ref");
+    }
+
+    #[tokio::test]
+    async fn real_fast_forward_rejects_non_ff() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+
+        // Create divergent histories: heads/main has one commit, refs/reeve/card-x/main
+        // points at a DIFFERENT commit on a parallel branch with no shared base beyond
+        // the initial commit.
+        git(&host, &["checkout", "-b", "parallel"]);
+        std::fs::write(host.join("p.txt"), "p\n").unwrap();
+        git(&host, &["add", "p.txt"]);
+        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "parallel"]);
+        let parallel_sha = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        let parallel_sha = String::from_utf8_lossy(&parallel_sha.stdout).trim().to_string();
+        git(&host, &["checkout", "main"]);
+        std::fs::write(host.join("m.txt"), "m\n").unwrap();
+        git(&host, &["add", "m.txt"]);
+        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "main2"]);
+        git(&host, &["update-ref", "refs/reeve/card-x/main", &parallel_sha]);
+
+        let ops = RealGitOps;
+        let outcome = ops
+            .fast_forward(&host, "refs/heads/main", "refs/reeve/card-x/main")
+            .await
+            .unwrap();
+        assert_eq!(outcome, FfOutcome::NotFastForward);
+    }
+
+    #[tokio::test]
+    async fn real_fast_forward_creates_new_branch_target() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+
+        // Add a namespaced ref for a branch that doesn't yet exist under refs/heads.
+        let head_sha = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        let head_sha = String::from_utf8_lossy(&head_sha.stdout).trim().to_string();
+        git(&host, &["update-ref", "refs/reeve/card-x/feat-new", &head_sha]);
+
+        let ops = RealGitOps;
+        let outcome = ops
+            .fast_forward(&host, "refs/heads/feat-new", "refs/reeve/card-x/feat-new")
+            .await
+            .unwrap();
+        assert_eq!(outcome, FfOutcome::Updated);
+
+        let result = std::process::Command::new("git")
+            .args(["rev-parse", "refs/heads/feat-new"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "new branch ref was created");
     }
 }

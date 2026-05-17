@@ -695,6 +695,14 @@ mod tests {
         ) -> Result<Vec<String>> {
             Ok(vec![])
         }
+        async fn fast_forward(
+            &self,
+            _workdir: &std::path::Path,
+            _target_ref: &str,
+            _source_ref: &str,
+        ) -> Result<crate::clones::FfOutcome> {
+            Ok(crate::clones::FfOutcome::Updated)
+        }
     }
 
     /// No-op container backend that pretends nothing exists.
