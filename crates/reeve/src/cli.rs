@@ -4,9 +4,9 @@ use crate::client;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use reeve_protocol::{
-    BranchPushStatus, Card, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams,
-    HouseholdSource, HouseholdSummary, LsResult, MvResult, MvSelfResult, NewResult, PushResult,
-    RepoOnDisk, StatusSelfResult, paths,
+    AttachResult, BranchPushStatus, Card, Column, HouseholdAddParams, HouseholdDetail,
+    HouseholdNewParams, HouseholdSource, HouseholdSummary, LsResult, MvResult, MvSelfResult,
+    NewResult, PushResult, RepoOnDisk, StatusSelfResult, paths,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -29,6 +29,10 @@ fn reeved_path() -> Result<PathBuf> {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Drop into the running claude session inside a card's container.
+    /// The card must be in Implementing. Uses tmux for detach/reattach.
+    /// Ctrl-B D detaches; claude keeps running.
+    Attach { id: String },
     /// List cards.
     Ls,
     /// Create a new card in the Backlog column.
@@ -111,6 +115,7 @@ fn parse_column(s: &str) -> Result<Column, String> {
 
 pub async fn run(cmd: Command) -> Result<()> {
     match cmd {
+        Command::Attach { id } => attach(id).await,
         Command::Ls => ls().await,
         Command::New {
             household,
@@ -123,6 +128,39 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::StatusSelf => status_self().await,
         Command::Household(cmd) => household_run(cmd).await,
         Command::Daemon(_) => unreachable!("Daemon commands are handled in main"),
+    }
+}
+
+async fn attach(id: String) -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "attach", serde_json::json!({ "id": id }))
+        .await
+        .context("calling attach")?;
+    match result {
+        Ok(value) => {
+            let result: AttachResult = serde_json::from_value(value)?;
+            println!(
+                "attaching to {}:{} (ctrl-b d to detach, claude keeps running)",
+                result.container_name, result.session_name
+            );
+            // Process-replace ourselves with `docker exec -it <container> tmux attach -t <session>`.
+            // `CommandExt::exec` either replaces the process (never returns) or
+            // returns the error that prevented exec from succeeding.
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    "-it",
+                    &result.container_name,
+                    "tmux",
+                    "attach",
+                    "-t",
+                    &result.session_name,
+                ])
+                .exec();
+            anyhow::bail!("docker exec failed to start: {err}");
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
     }
 }
 
