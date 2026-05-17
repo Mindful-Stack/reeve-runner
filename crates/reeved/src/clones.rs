@@ -23,6 +23,9 @@ pub trait GitOps: Send + Sync {
     /// Run `git clone <url> <dest>` — no --reference, no --dissociate.
     /// For adding a remote household whose meta-repo lives off-host.
     async fn clone_url(&self, url: &str, dest: &Path) -> Result<()>;
+    /// Run `git fetch <source> '+refs/heads/*:refs/reeve/<namespace>/*'` in `workdir`.
+    /// Used by the M4 fetch worker to surface in-container commits on the host.
+    async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()>;
 }
 
 /// Convenience handle used by the rest of the daemon.
@@ -68,6 +71,28 @@ impl GitOps for RealGitOps {
         if !output.status.success() {
             anyhow::bail!(
                 "git clone failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()> {
+        let refspec = format!("+refs/heads/*:refs/reeve/{namespace}/*");
+        let output = Command::new("git")
+            .args([
+                "fetch",
+                source.to_str().context("source path not utf-8")?,
+                &refspec,
+            ])
+            .current_dir(workdir)
+            .output()
+            .await
+            .context("exec git fetch")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git fetch failed (exit {}): {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -168,12 +193,14 @@ mod tests {
     /// Records every `clone` call.
     struct MockGitOps {
         calls: Mutex<Vec<(PathBuf, PathBuf)>>,
+        fetches: Mutex<Vec<(PathBuf, PathBuf, String)>>,
     }
 
     impl MockGitOps {
         fn new() -> Self {
             Self {
                 calls: Mutex::new(vec![]),
+                fetches: Mutex::new(vec![]),
             }
         }
     }
@@ -192,6 +219,15 @@ mod tests {
             let mut calls = self.calls.lock().unwrap();
             calls.push((PathBuf::from(url), dest.to_path_buf()));
             std::fs::create_dir_all(dest).unwrap();
+            Ok(())
+        }
+
+        async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()> {
+            self.fetches.lock().unwrap().push((
+                workdir.to_path_buf(),
+                source.to_path_buf(),
+                namespace.to_string(),
+            ));
             Ok(())
         }
     }
@@ -299,6 +335,10 @@ mod tests {
             async fn clone_url(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
                 self.inner.clone_url(url, dest).await
             }
+
+            async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> anyhow::Result<()> {
+                self.inner.fetch(workdir, source, namespace).await
+            }
         }
         let ops = InlineSimulatingOps {
             inner: MockGitOps::new(),
@@ -364,6 +404,18 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, meta);
         assert_eq!(calls[0].1, workspace);
+    }
+
+    #[tokio::test]
+    async fn mock_fetch_records_call() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path().join("host");
+        let source = dir.path().join("card-clone");
+        let ops = MockGitOps::new();
+        ops.fetch(&workdir, &source, "deadbeef").await.unwrap();
+        let fetches = ops.fetches.lock().unwrap();
+        assert_eq!(fetches.len(), 1);
+        assert_eq!(fetches[0], (workdir.clone(), source.clone(), "deadbeef".to_string()));
     }
 }
 
@@ -490,5 +542,47 @@ mod integration_tests {
             "workspace meta-repo cloned"
         );
         assert!(workspace.join("backend/.git").exists(), "sibling cloned");
+    }
+
+    #[tokio::test]
+    async fn real_fetch_populates_namespaced_refs() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+        let card_clone = dir.path().join("card-clone");
+
+        // Clone the host repo as the card workspace would.
+        let ops = RealGitOps;
+        ops.clone(&host, &card_clone).await.unwrap();
+
+        // Make a new commit in the card clone on a feature branch.
+        git_status(&card_clone, &["checkout", "-b", "feat-x"]);
+        std::fs::write(card_clone.join("new.txt"), "hi\n").unwrap();
+        git_status(&card_clone, &["add", "new.txt"]);
+        git_status(&card_clone, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "x"]);
+
+        // Fetch from host's perspective, populating refs/reeve/<id>/.
+        ops.fetch(&host, &card_clone, "card-deadbeef").await.unwrap();
+
+        // Assert host now has refs/reeve/card-deadbeef/feat-x pointing at the new commit.
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "refs/reeve/card-deadbeef/feat-x"])
+            .current_dir(&host)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rev-parse should find namespaced ref: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Run git and assert success; helper for tests.
+    fn git_status(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git invoke");
+        assert!(status.success(), "git {args:?} failed in {}", repo.display());
     }
 }

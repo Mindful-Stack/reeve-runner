@@ -680,6 +680,14 @@ mod tests {
             std::fs::create_dir_all(_dest).ok();
             Ok(())
         }
+        async fn fetch(
+            &self,
+            _workdir: &std::path::Path,
+            _source: &std::path::Path,
+            _namespace: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     /// No-op container backend that pretends nothing exists.
