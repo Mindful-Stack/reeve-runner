@@ -7,10 +7,10 @@ use crate::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
-    BranchPushResult, BranchPushStatus, Card, CardReference, Column, HouseholdAddParams,
-    HouseholdDetail, HouseholdNewParams, HouseholdSource, HouseholdSummary, LsResult, MvParams,
-    MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, PushParams, PushResult, RepoDetail,
-    RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
+    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, CardReference, Column,
+    HouseholdAddParams, HouseholdDetail, HouseholdNewParams, HouseholdSource, HouseholdSummary,
+    LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, PushParams,
+    PushResult, RepoDetail, RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,10 @@ pub async fn dispatch(
         "mv" => {
             let params = parse_params::<MvParams>(req.params)?;
             handle_mv(state, params).await
+        }
+        "attach" => {
+            let params = parse_params::<AttachParams>(req.params)?;
+            handle_attach(&state, params).await
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
@@ -622,6 +626,59 @@ async fn handle_push(
         }
     }
     serde_json::to_value(PushResult { branches }).map_err(to_internal)
+}
+
+async fn handle_attach(state: &DaemonState, params: AttachParams) -> Result<Value, RpcError> {
+    // 1. Fetch the card from the DB.
+    let card_id = params.id.clone();
+    let db = state.db.clone();
+    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
+        let conn = db.blocking_lock();
+        crate::db::get_card(&conn, &card_id)
+    })
+    .await
+    .map_err(to_internal)?
+    .map_err(to_internal)?
+    .ok_or_else(|| RpcError {
+        code: RpcError::NOT_FOUND,
+        message: format!("card '{}' not found", params.id),
+    })?;
+
+    // 2. Column check.
+    if card.column != Column::Implementing {
+        return Err(RpcError {
+            code: RpcError::INVALID_ARGUMENT,
+            message: format!(
+                "card is in {}; attach only works in Implementing",
+                card.column.label()
+            ),
+        });
+    }
+
+    // 3. Container discovery by label.
+    let container_name = state
+        .containers
+        .discover_container_name(&card.id)
+        .await
+        .map_err(|e| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("container discovery failed: {e:#}"),
+        })?
+        .ok_or_else(|| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!(
+                "container for card '{}' not running (try mv {} implementing again)",
+                card.id, card.id
+            ),
+        })?;
+
+    // 4. Return the address.
+    let result = AttachResult {
+        container_name,
+        session_name: "reeve".to_string(),
+        in_container_workspace: format!("/workspaces/{}", card.id),
+    };
+    serde_json::to_value(result).map_err(to_internal)
 }
 
 async fn handle_household_new(
@@ -1722,5 +1779,183 @@ mod tests {
             paths,
             vec![&meta, &meta.join("backend"), &meta.join("lore")]
         );
+    }
+
+    use reeve_protocol::AttachResult;
+
+    /// ContainerOps test mock that returns a configured discover response.
+    struct ConfigurableContainers {
+        discover_response: std::sync::Mutex<Option<String>>,
+    }
+    impl ConfigurableContainers {
+        fn new() -> Self {
+            Self {
+                discover_response: std::sync::Mutex::new(None),
+            }
+        }
+        fn set_discover(&self, name: Option<String>) {
+            *self.discover_response.lock().unwrap() = name;
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::container::ContainerOps for ConfigurableContainers {
+        async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        async fn teardown(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn inspect_status(&self, _name: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
+            Ok(self.discover_response.lock().unwrap().clone())
+        }
+        async fn exec_in_tmux(
+            &self,
+            _container_name: &str,
+            _session_name: &str,
+            _command: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn fresh_state_with_containers(
+        containers: std::sync::Arc<ConfigurableContainers>,
+    ) -> DaemonState {
+        let conn = crate::db::open(":memory:").unwrap();
+        let db: crate::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        DaemonState {
+            db: db.clone(),
+            containers: containers as crate::container::ContainerOpsHandle,
+            git: std::sync::Arc::new(NoopGit) as crate::clones::GitOpsHandle,
+            listeners: crate::listeners::ListenerRegistry::new(
+                db,
+                std::sync::Arc::new(NoopDispatcher),
+            ),
+            claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            api_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn attach_returns_container_and_session_for_implementing_card() {
+        let containers = std::sync::Arc::new(ConfigurableContainers::new());
+        containers.set_discover(Some("happy-cool-container".into()));
+        let state = fresh_state_with_containers(containers);
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &Card {
+                    id: "card-a".into(),
+                    household: "h".into(),
+                    brief: "a".into(),
+                    column: Column::Implementing,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "attach".into(),
+            params: serde_json::json!({ "id": "card-a" }),
+        };
+        let value = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: AttachResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.container_name, "happy-cool-container");
+        assert_eq!(result.session_name, "reeve");
+        assert_eq!(result.in_container_workspace, "/workspaces/card-a");
+    }
+
+    #[tokio::test]
+    async fn attach_returns_not_found_for_unknown_card() {
+        let containers = std::sync::Arc::new(ConfigurableContainers::new());
+        let state = fresh_state_with_containers(containers);
+
+        let req = RpcRequest {
+            id: 1,
+            method: "attach".into(),
+            params: serde_json::json!({ "id": "missing-card" }),
+        };
+        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        assert_eq!(err.code, RpcError::NOT_FOUND);
+        assert!(err.message.contains("not found"), "msg: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn attach_rejects_non_implementing_card() {
+        let containers = std::sync::Arc::new(ConfigurableContainers::new());
+        let state = fresh_state_with_containers(containers);
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &Card {
+                    id: "card-b".into(),
+                    household: "h".into(),
+                    brief: "b".into(),
+                    column: Column::Backlog,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "attach".into(),
+            params: serde_json::json!({ "id": "card-b" }),
+        };
+        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+        assert!(
+            err.message.contains("Implementing"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_errors_when_no_container_for_card() {
+        // Card in Implementing but discover_container_name returns None.
+        let containers = std::sync::Arc::new(ConfigurableContainers::new());
+        // Don't call set_discover — defaults to None.
+        let state = fresh_state_with_containers(containers);
+        {
+            let conn = state.db.lock().await;
+            crate::db::insert_card(
+                &conn,
+                &Card {
+                    id: "card-c".into(),
+                    household: "h".into(),
+                    brief: "c".into(),
+                    column: Column::Implementing,
+                    created_at: 0,
+                    updated_at: 0,
+                    needs_heavy: false,
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let req = RpcRequest {
+            id: 1,
+            method: "attach".into(),
+            params: serde_json::json!({ "id": "card-c" }),
+        };
+        let err = dispatch(req, state, CallerContext::host()).await.unwrap_err();
+        assert_eq!(err.code, RpcError::INTERNAL);
+        assert!(err.message.contains("not running"), "msg: {}", err.message);
     }
 }
