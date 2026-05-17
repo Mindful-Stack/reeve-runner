@@ -38,7 +38,8 @@ pub async fn tick(state: &DaemonState) -> Result<()> {
 }
 
 /// Fetch for a single card. Logs per-fetch errors at warn; returns Err only
-/// for unrecoverable per-card problems (e.g., card row missing entirely).
+/// on DB I/O failure or task panic. Missing card, missing household, and
+/// broken manifest are warn-and-continue rather than errors.
 async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
     // Look up the card to find its household.
     let card_id_for_query = card_id.to_string();
@@ -238,10 +239,15 @@ mod tests {
 
         let calls = git.calls.lock().unwrap();
         assert_eq!(calls.len(), 2, "one fetch per (running card × repo): {calls:?}");
-        // Workspace first, then sibling.
+        // Workspace first (host = meta, card_clone = workspace root), then
+        // sibling (host = meta/backend, card_clone = workspace/backend).
+        let workspace = reeve_protocol::paths::card_workspace_path("card-a");
         assert_eq!(calls[0].2, "card-a");
         assert_eq!(calls[0].0, meta);
+        assert_eq!(calls[0].1, workspace);
+        assert_eq!(calls[1].2, "card-a");
         assert_eq!(calls[1].0, meta.join("backend"));
+        assert_eq!(calls[1].1, workspace.join("backend"));
     }
 
     #[tokio::test]
