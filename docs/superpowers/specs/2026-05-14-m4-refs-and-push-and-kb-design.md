@@ -43,7 +43,7 @@ There is **no KB-specific code path**. The repo identified by the manifest's `kn
 
 ### New modules
 
-- `crates/reeved/src/fetch.rs` — `FetchWorker` struct and its tokio loop. Holds a clone of `DaemonState` to read the DB and call into `GitOps`. Started in `main.rs` after the daemon state is built; stopped via a oneshot channel on shutdown.
+- `crates/reeved/src/fetch.rs` — `FetchWorker` struct and its tokio loop. Holds a clone of `DaemonState` (cheap — `db` is `Arc<tokio::sync::Mutex<rusqlite::Connection>>` and `git` is `Arc<dyn GitOps>`) to read the DB and call into `GitOps`. The blocking-lock pattern used in the worker (`spawn_blocking` + `db.blocking_lock()`) mirrors the M3.5 handlers exactly — `db` is a `tokio::sync::Mutex` whose `blocking_lock()` is only safe to call inside `spawn_blocking`. Started in `main.rs` after the daemon state is built; stopped via a oneshot channel on shutdown.
 
 ### Modified modules
 
@@ -76,9 +76,18 @@ There is **no KB-specific code path**. The repo identified by the manifest's `kn
 A small helper in `manifest.rs` (or `household.rs`):
 
 ```rust
-/// Yields (repo_name, host_path) for every repo participating in a card:
-/// the meta-repo itself (workspace-named, returned first), then each
-/// entry in the manifest's `repos` array. Used by fetch + push.
+/// Yields (repo_name, host_path) for every repo participating in a card.
+/// Used by both the fetch worker and the push handler.
+///
+/// **Iteration order is part of the contract** (pinned for testability):
+/// 1. The workspace entry — `manifest.workspace` — first, with host_path
+///    = `household.meta_repo_path` itself.
+/// 2. Then every entry in `manifest.repos` in declaration order, skipping
+///    the one whose `name == manifest.workspace` (already yielded as #1).
+///    For each, host_path = `household.meta_repo_path.join(entry.name)`.
+///
+/// The order is consumed by `BranchPushResult.repo` reporting and asserted
+/// by `push_iterates_meta_repo_then_manifest_repos_in_order`.
 pub fn iter_card_repos<'a>(
     household: &'a Household,
     manifest: &'a Manifest,
@@ -133,6 +142,8 @@ FetchWorker
 The shutdown oneshot is held by `main.rs` and fires before the daemon exits. The select inside the loop means a pending sleep is interrupted by shutdown; total worker-exit latency is at most one in-flight fetch.
 
 The fetch interval (5s) is hardcoded as `const FETCH_INTERVAL: Duration = Duration::from_secs(5)`. Easy to make configurable later.
+
+**Coordination with M3.5 known-issue #4 (zombie daemons):** pre-M4, daemon processes that `reeve daemon stop` failed to reap (because the pidfile reference had been overwritten) were mostly inert. M4 makes them actively harmful — each surviving daemon spawns its own `FetchWorker` and races for the same host `.git/index.lock`, producing N× redundant `git fetch` traffic. Fix is M3.5 follow-up territory; M4 doesn't add prevention, but the writing-plans phase should consider whether `FetchWorker` startup should bail when a peer pid is alive.
 
 ### `reeve push <id>` semantics
 
@@ -266,5 +277,5 @@ A merged M4 must:
    5. `docker exec -u vscode -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`. Note `-u vscode`: the Microsoft base image's `remoteUser` is `vscode`, and that's the user whose git identity is configured for the workspace; container default user (root) lacks the necessary identity for commits. Also do a `cd /workspaces/<id>/lore && ... && git commit -m doc` and a meta-repo commit (`cd /workspaces/<id> && echo // note >> CLAUDE.md && git commit -am note`).
    6. Wait 6 seconds.
    7. `git -C ~/Source/reeve-household log refs/reeve/<id>/feat-m4-smoke -1 --oneline` shows the meta-repo commit; same for `~/Source/reeve-household/reeve/` and `~/Source/reeve-household/lore/`.
-   8. `reeve push <id>` → per-branch result table covering all three repos. With no `origin` remotes on the test repos, the pushes fail and that's the expected output; reporting matches.
+   8. **Negative smoke (push-failure rendering)**: `reeve push <id>` → per-branch result table covering all three repos. The reused M3.5 smoke setup has no `origin` remotes, so each push is expected to fail; what's being verified here is that the daemon iterates all branches across all repos and that the CLI renders the failure status legibly (not the success path). Happy-path push is exercised by `m4_fetch_and_push_round_trip` in the automated e2e, which sets up bare-repo origins.
    9. `reeve mv <id> done` → container down; all three `refs/reeve/<id>/feat-m4-smoke` still on disk; workspace still on disk.
