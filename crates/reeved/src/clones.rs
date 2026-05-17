@@ -24,7 +24,11 @@ pub trait GitOps: Send + Sync {
     /// For adding a remote household whose meta-repo lives off-host.
     async fn clone_url(&self, url: &str, dest: &Path) -> Result<()>;
     /// Run `git fetch <source> '+refs/heads/*:refs/reeve/<namespace>/*'` in `workdir`.
+    /// The leading `+` allows non-fast-forward updates so re-fetched namespace
+    /// refs are always overwritten.
     /// Used by the M4 fetch worker to surface in-container commits on the host.
+    /// `namespace` must be a valid git ref component (e.g. a UUID); the caller
+    /// is responsible for ensuring it contains no whitespace or `..` sequences.
     async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()>;
 }
 
@@ -555,10 +559,10 @@ mod integration_tests {
         ops.clone(&host, &card_clone).await.unwrap();
 
         // Make a new commit in the card clone on a feature branch.
-        git_status(&card_clone, &["checkout", "-b", "feat-x"]);
+        git(&card_clone, &["checkout", "-b", "feat-x"]);
         std::fs::write(card_clone.join("new.txt"), "hi\n").unwrap();
-        git_status(&card_clone, &["add", "new.txt"]);
-        git_status(&card_clone, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "x"]);
+        git(&card_clone, &["add", "new.txt"]);
+        git(&card_clone, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "x"]);
 
         // Fetch from host's perspective, populating refs/reeve/<id>/.
         ops.fetch(&host, &card_clone, "card-deadbeef").await.unwrap();
@@ -574,15 +578,5 @@ mod integration_tests {
             "rev-parse should find namespaced ref: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    /// Run git and assert success; helper for tests.
-    fn git_status(repo: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .status()
-            .expect("git invoke");
-        assert!(status.success(), "git {args:?} failed in {}", repo.display());
     }
 }
