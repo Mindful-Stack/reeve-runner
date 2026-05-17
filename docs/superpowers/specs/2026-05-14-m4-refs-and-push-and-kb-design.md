@@ -1,10 +1,12 @@
 # Reeve M4 — Namespaced refs + `reeve push`
 
-**Status:** Design (2026-05-14, trimmed 2026-05-15)
+**Status:** Design (2026-05-14, trimmed 2026-05-15, refreshed 2026-05-17)
 **Predecessor:** M3.5 households-as-meta-repos (`2026-05-15-m3-5-households-as-meta-repos-design.md`)
 **Parent design:** `docs/superpowers/specs/2026-04-29-reeve-design.md`
 
 > **Trim note (2026-05-15):** This spec was originally titled "Namespaced refs + `reeve push` + Lorekeeper KB" and folded the KB-clone integration into M4. Brainstorming on 2026-05-15 split that integration into M3.5 (households-as-meta-repos), where the KB became a peer of code repos in a unified manifest. M4 is now refs + push only — the KB participates as just another repo, no special case, no `[knowledge_base]` schema, no Lorekeeper-presence warning. The original framing is preserved in git history.
+>
+> **Refresh note (2026-05-17):** Touched up after M3.5 shipped and was manually smoked. Terminology fixes (`manifest.name` → `manifest.workspace`), DB-direct household lookup in fetch worker and push handler (matching M3.5 Task 12's fix in `ensure_running`), and a small note about git identity for in-container commits in the e2e plan.
 
 ## Context
 
@@ -83,7 +85,7 @@ pub fn iter_card_repos<'a>(
 ) -> impl Iterator<Item = (&'a str, PathBuf)> + 'a;
 ```
 
-The meta-repo's "name" for fetch/push purposes is `manifest.name` (the workspace name) — that's what shows up in `BranchPushResult.repo` for commits to the meta-repo. Code-repo and KB-repo names come from `repos[].name`.
+The meta-repo's "name" for fetch/push purposes is `manifest.workspace` (the workspace name) — that's what shows up in `BranchPushResult.repo` for commits to the meta-repo. Code-repo and KB-repo names come from `repos[].name`.
 
 ### Refspec topology
 
@@ -111,11 +113,20 @@ FetchWorker
 │           _ = tokio::time::sleep(Duration::from_secs(5)) => {},
 │       }
 │       for each Running/Spawning card:
-│           let manifest = load_manifest(card.household.meta_repo_path)?;
-│           for (repo_name, host_path) in iter_card_repos(&card.household, &manifest):
+│           // Look up the household directly from the DB. (M3.5 Task 12: do NOT
+│           // read from the in-memory state.households map — it's now removed,
+│           // and the DB is the only source of truth for runtime registrations.)
+│           let row = spawn_blocking(|| db::get_household(&db.blocking_lock(), &card.household))??;
+│           let Some(row) = row else { warn!("household '{}' not configured for card {}", card.household, card.id); continue };
+│           let household = Household { name: row.name, meta_repo_path: row.meta_repo_path };
+│           let manifest = match household::load_household_manifest(&household) {
+│               Ok(m) => m,
+│               Err(e) => { warn!("manifest for card {}: {e:#}", card.id); continue }
+│           };
+│           for (repo_name, host_path) in iter_card_repos(&household, &manifest):
 │               let card_clone = card_workspace.join_or_workspace_root(repo_name);
-│               state.git.fetch(host_path, card_clone, card_id).await
-│                 .unwrap_or_else(|e| warn!("fetch {card}/{repo_name}: {e:#}"))
+│               state.git.fetch(&host_path, &card_clone, &card.id).await
+│                 .unwrap_or_else(|e| warn!("fetch {}/{}: {e:#}", card.id, repo_name))
 │   })
 ```
 
@@ -128,8 +139,17 @@ The fetch interval (5s) is hardcoded as `const FETCH_INTERVAL: Duration = Durati
 Pseudocode for `handle_push`:
 
 ```
-let household = state.households.get(&card.household_name)?;
-let manifest = load_manifest(&household.meta_repo_path)?;
+// DB-direct household lookup (matches M3.5 Task 12's pattern in ensure_running;
+// the in-memory state.households map is gone).
+let row = spawn_blocking(|| db::get_household(&db.blocking_lock(), &card.household))
+    .await??
+    .ok_or_else(|| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("household '{}' not configured", card.household),
+    })?;
+let household = Household { name: row.name, meta_repo_path: row.meta_repo_path };
+let manifest = household::load_household_manifest(&household)
+    .map_err(|e| RpcError { code: RpcError::INTERNAL, message: format!("load manifest: {e:#}") })?;
 let mut results = Vec::new();
 
 for (repo_name, host_repo_path) in iter_card_repos(&household, &manifest) {
@@ -165,7 +185,7 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
 - **Push error (per-branch)**: captured in `BranchPushResult` with the git stderr; CLI prints it.
 - **Push error (per-repo)**: e.g., `list_namespace_refs` fails because the host repo path is gone. Returned to the CLI as an `INTERNAL` RpcError; the CLI exits non-zero with the message.
 - **Card not found**: `NOT_FOUND` RpcError; CLI prints "card X not found" and exits non-zero.
-- **Household no longer in the loaded map** (renamed since daemon start): `INTERNAL "household '<name>' not configured"`. User restarts daemon to re-load.
+- **Household removed from sqlite** (`reeve household rm` while a card still references it): `INTERNAL "household '<name>' not configured"`. The DB lookup returns `None` and the push returns that error; the fetch worker logs a warn and skips the card on subsequent ticks.
 - **Manifest re-read fails mid-fetch** (user broke `household.json` while the daemon is running): warn-log per fetch tick; worker skips the affected card until the manifest parses again.
 
 ## Testing
@@ -200,7 +220,7 @@ The cards-socket directory is mounted into containers at `/var/run/reeve-cards/`
   3. `reeve household add` the meta-repo.
   4. `reeve new --household ... --brief "smoke"` → `<id>`.
   5. `reeve mv <id> implementing`.
-  6. `docker exec` into the container, set git config user.email/name, switch to a new branch `feat-m4-smoke` in the sibling repo, write a file, commit. Also make a commit on the meta-repo (`echo // note >> CLAUDE.md && git commit`) to exercise repo-zero participation.
+  6. `docker exec` into the container. **Note:** the test must set `user.email`/`user.name` inline, because the M3.5 smoke confirmed that postCreate runs as `vscode` (per the Microsoft base image's default `remoteUser`) and the test container won't have global git identity configured. Pattern: `docker exec -u vscode <container> bash -lc 'cd /workspaces/<id>/<repo> && git -c user.email=t@t.com -c user.name=t checkout -b feat-m4-smoke && echo hi > smoke.txt && git -c user.email=t@t.com -c user.name=t add smoke.txt && git -c user.email=t@t.com -c user.name=t commit -m smoke'`. Also commit on the meta-repo (`echo // note >> CLAUDE.md && git commit -am note`) to exercise repo-zero participation.
   7. Wait for the fetch worker tick (up to 6s).
   8. Assert both host meta-repo and host sibling have `refs/reeve/<id>/feat-m4-smoke` (or the relevant branch name) pointing at the new commits.
   9. `reeve push <id>` from the host.
@@ -243,7 +263,7 @@ A merged M4 must:
    2. `reeve daemon start`.
    3. `reeve new --household reeve-self --brief "m4 smoke"` → `<id>`.
    4. `reeve mv <id> implementing` → meta-repo + every sibling lands in `~/reeve/cards/<id>/`.
-   5. `docker exec -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`. Also a `cd /workspaces/<id>/lore && ... && git commit -m doc` and a meta-repo commit (`cd /workspaces/<id> && echo // note >> CLAUDE.md && git commit -am note`).
+   5. `docker exec -u vscode -e REEVE_CARD_ID=<id> <container> bash -lc "cd /workspaces/<id>/reeve && git checkout -b feat-m4-smoke && echo hi > smoke.txt && git add smoke.txt && git commit -m smoke"`. Note `-u vscode`: the Microsoft base image's `remoteUser` is `vscode`, and that's the user whose git identity is configured for the workspace; container default user (root) lacks the necessary identity for commits. Also do a `cd /workspaces/<id>/lore && ... && git commit -m doc` and a meta-repo commit (`cd /workspaces/<id> && echo // note >> CLAUDE.md && git commit -am note`).
    6. Wait 6 seconds.
    7. `git -C ~/Source/reeve-household log refs/reeve/<id>/feat-m4-smoke -1 --oneline` shows the meta-repo commit; same for `~/Source/reeve-household/reeve/` and `~/Source/reeve-household/lore/`.
    8. `reeve push <id>` → per-branch result table covering all three repos. With no `origin` remotes on the test repos, the pushes fail and that's the expected output; reporting matches.
