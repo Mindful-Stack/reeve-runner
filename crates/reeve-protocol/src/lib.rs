@@ -285,6 +285,32 @@ pub struct HouseholdDetail {
     pub cards: Vec<CardReference>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushResult {
+    pub branches: Vec<BranchPushResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchPushResult {
+    /// `manifest.workspace` for the meta-repo; `repos[].name` for siblings.
+    pub repo: String,
+    pub branch: String,
+    pub status: BranchPushStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BranchPushStatus {
+    Pushed,
+    NotFastForward,
+    PushFailed { message: String },
+}
+
 /// Shared runtime-directory helpers (used by both the daemon and clients).
 pub mod paths {
     use std::path::PathBuf;
