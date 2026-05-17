@@ -348,6 +348,26 @@ fn commit_meta_changes(repo: &std::path::Path) {
     git_in(repo, &["commit", "-m", "manifest update", "--quiet"]);
 }
 
+/// Create a bare git repo at `path` and return its `file://` URL.
+fn init_bare_remote(path: &std::path::Path) -> String {
+    let status = std::process::Command::new("git")
+        .args(["init", "--bare", "--quiet"])
+        .arg(path)
+        .status()
+        .expect("git invoke");
+    assert!(
+        status.success(),
+        "git init --bare at {} failed",
+        path.display()
+    );
+    format!("file://{}", path.display())
+}
+
+/// Add an `origin` remote to `repo` pointing at `url`.
+fn add_origin(repo: &std::path::Path, url: &str) {
+    git_in(repo, &["remote", "add", "origin", url]);
+}
+
 // ---------------------------------------------------------------------------
 // M3.5 Task 12 — e2e: household new + → Implementing round-trip
 // ---------------------------------------------------------------------------
@@ -739,4 +759,283 @@ fn m3_5_lore_subdir_lands_in_workspace() {
     );
 
     // _cleanup dropped here — container removed.
+}
+
+// ---------------------------------------------------------------------------
+// M4 Task 12 — e2e: fetch + push round-trip with bare-repo origins
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m4_fetch_and_push_round_trip() {
+    if !is_docker_available() {
+        eprintln!("skip: docker");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skip: devcontainer");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    build_workspace();
+    let mut env = isolated_env_with_config(temp.path());
+    // The test isolates XDG_CONFIG_HOME so the daemon's internal `git commit`
+    // can't find the user's ~/.config/git/config. Supply a minimal author
+    // identity via env vars so the household-new initial commit succeeds.
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    // 1. Build the host template (meta-repo + lore inline), then add a "code"
+    //    sibling we'll commit through.
+    let template_src = temp.path().join("template-source");
+    build_test_template(&template_src);
+    let dest = temp.path().join("m4-household");
+
+    // 2. Daemon.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "socket not created");
+
+    // 3. household new from the local template.
+    let out = cmd("reeve", &env)
+        .args([
+            "household",
+            "new",
+            "m4-household",
+            "--path",
+            &dest.to_string_lossy(),
+            "--template",
+            &format!("file://{}", template_src.display()),
+        ])
+        .output()
+        .expect("run reeve household new");
+    assert!(
+        out.status.success(),
+        "household new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 4. Populate a "lore" knowledge-base sibling and a "code" sibling repo,
+    //    then wire bare-remote origins for all three repos so that `reeve push`
+    //    can push every branch it finds in the namespace.
+    let lore_sibling = dest.join("lore");
+    init_sibling(&lore_sibling);
+    let code_sibling = dest.join("code");
+    init_sibling(&code_sibling);
+    let bare_meta = temp.path().join("origin-meta.git");
+    let bare_lore = temp.path().join("origin-lore.git");
+    let bare_code = temp.path().join("origin-code.git");
+    let bare_meta_url = init_bare_remote(&bare_meta);
+    let bare_lore_url = init_bare_remote(&bare_lore);
+    let bare_code_url = init_bare_remote(&bare_code);
+    add_origin(&dest, &bare_meta_url);
+    add_origin(&lore_sibling, &bare_lore_url);
+    add_origin(&code_sibling, &bare_code_url);
+
+    // 5. Update manifest to declare code as a sibling; commit.
+    write_manifest(
+        &dest.join("household.json"),
+        &format!(
+            r#"{{
+      "workspace": "m4-household",
+      "knowledge_base": "lore",
+      "repos": [
+        {{ "name": "m4-household" }},
+        {{ "name": "code" }},
+        {{ "name": "lore" }}
+      ]
+    }}"#
+        ),
+    );
+    commit_meta_changes(&dest);
+
+    // 6. Create card + mv to implementing.
+    let out_new = cmd("reeve", &env)
+        .args([
+            "new",
+            "--household",
+            "m4-household",
+            "--brief",
+            "m4 round-trip",
+        ])
+        .output()
+        .expect("run reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new: {}",
+        String::from_utf8_lossy(&out_new.stderr)
+    );
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "implementing"])
+        .output()
+        .expect("run reeve mv");
+    assert!(
+        out_mv.status.success(),
+        "reeve mv: {}",
+        String::from_utf8_lossy(&out_mv.stderr)
+    );
+
+    let container_name =
+        discover_container_by_label(&card_id).expect("container should be discoverable by label");
+    let _cleanup = DockerCleanup(Some(container_name.clone()));
+
+    // 7. Commit inside the container as the `vscode` remoteUser, on both the
+    //    meta-repo (repo zero) and the code sibling. Inline git config because
+    //    the test container has no ambient identity.
+    let workspace_in_container = format!("/workspaces/{card_id}");
+    let exec = |args: &[&str]| -> std::process::Output {
+        std::process::Command::new("docker")
+            .args(["exec", "-u", "vscode", &container_name])
+            .args(args)
+            .output()
+            .expect("docker exec")
+    };
+
+    // Meta-repo commit.
+    let meta_commit = exec(&[
+        "bash",
+        "-lc",
+        &format!(
+            "set -e; cd {workspace_in_container} && \
+            git -c user.email=t@t.com -c user.name=t checkout -b feat-m4-meta && \
+            echo 'meta-edit' >> CLAUDE.md && \
+            git -c user.email=t@t.com -c user.name=t commit -am meta-edit"
+        ),
+    ]);
+    assert!(
+        meta_commit.status.success(),
+        "meta commit failed: {}",
+        String::from_utf8_lossy(&meta_commit.stderr)
+    );
+
+    // Code-sibling commit.
+    let code_commit = exec(&[
+        "bash",
+        "-lc",
+        &format!(
+            "set -e; cd {workspace_in_container}/code && \
+            git -c user.email=t@t.com -c user.name=t checkout -b feat-m4-code && \
+            echo 'hi' > smoke.txt && \
+            git -c user.email=t@t.com -c user.name=t add smoke.txt && \
+            git -c user.email=t@t.com -c user.name=t commit -m smoke"
+        ),
+    ]);
+    assert!(
+        code_commit.status.success(),
+        "code commit failed: {}",
+        String::from_utf8_lossy(&code_commit.stderr)
+    );
+
+    // 8. Wait at least one fetch tick.
+    sleep(Duration::from_secs(7));
+
+    // 9. Assert refs/reeve/<id>/* on the host.
+    let meta_ref = std::process::Command::new("git")
+        .args(["rev-parse", &format!("refs/reeve/{card_id}/feat-m4-meta")])
+        .current_dir(&dest)
+        .output()
+        .unwrap();
+    assert!(
+        meta_ref.status.success(),
+        "meta-repo namespaced ref: {}",
+        String::from_utf8_lossy(&meta_ref.stderr)
+    );
+
+    let code_ref = std::process::Command::new("git")
+        .args(["rev-parse", &format!("refs/reeve/{card_id}/feat-m4-code")])
+        .current_dir(&code_sibling)
+        .output()
+        .unwrap();
+    assert!(
+        code_ref.status.success(),
+        "code-sibling namespaced ref: {}",
+        String::from_utf8_lossy(&code_ref.stderr)
+    );
+
+    // 10. reeve push.
+    let out_push = cmd("reeve", &env)
+        .args(["push", &card_id])
+        .output()
+        .expect("run reeve push");
+    assert!(
+        out_push.status.success(),
+        "reeve push: stdout={} stderr={}",
+        String::from_utf8_lossy(&out_push.stdout),
+        String::from_utf8_lossy(&out_push.stderr)
+    );
+
+    // 11. Assert refs/heads/feat-m4-meta on host meta-repo AND in bare remote.
+    let head_meta_host = std::process::Command::new("git")
+        .args(["rev-parse", "refs/heads/feat-m4-meta"])
+        .current_dir(&dest)
+        .output()
+        .unwrap();
+    assert!(
+        head_meta_host.status.success(),
+        "host meta has refs/heads/feat-m4-meta"
+    );
+    let head_meta_remote = std::process::Command::new("git")
+        .args(["rev-parse", "refs/heads/feat-m4-meta"])
+        .current_dir(&bare_meta)
+        .output()
+        .unwrap();
+    assert!(
+        head_meta_remote.status.success(),
+        "bare-meta has refs/heads/feat-m4-meta"
+    );
+    // And code sibling.
+    let head_code_host = std::process::Command::new("git")
+        .args(["rev-parse", "refs/heads/feat-m4-code"])
+        .current_dir(&code_sibling)
+        .output()
+        .unwrap();
+    assert!(
+        head_code_host.status.success(),
+        "host code has refs/heads/feat-m4-code"
+    );
+    let head_code_remote = std::process::Command::new("git")
+        .args(["rev-parse", "refs/heads/feat-m4-code"])
+        .current_dir(&bare_code)
+        .output()
+        .unwrap();
+    assert!(
+        head_code_remote.status.success(),
+        "bare-code has refs/heads/feat-m4-code"
+    );
+
+    // 12. mv to done. Container is torn down. Namespaced refs persist.
+    let out_done = cmd("reeve", &env)
+        .args(["mv", &card_id, "done"])
+        .output()
+        .expect("run reeve mv done");
+    assert!(
+        out_done.status.success(),
+        "reeve mv done: {}",
+        String::from_utf8_lossy(&out_done.stderr)
+    );
+
+    let meta_ref_after = std::process::Command::new("git")
+        .args(["rev-parse", &format!("refs/reeve/{card_id}/feat-m4-meta")])
+        .current_dir(&dest)
+        .output()
+        .unwrap();
+    assert!(
+        meta_ref_after.status.success(),
+        "namespaced ref should still exist after Done"
+    );
 }
