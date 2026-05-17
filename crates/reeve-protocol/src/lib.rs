@@ -311,6 +311,21 @@ pub enum BranchPushStatus {
     PushFailed { message: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachResult {
+    /// docker-assigned container name (discoverable by `reeve.card_id` label).
+    pub container_name: String,
+    /// Fixed name `"reeve"` for M5. Reserved as a field for future per-card multi-session work.
+    pub session_name: String,
+    /// `/workspaces/<card-id>` — the in-container path the agent runs in.
+    pub in_container_workspace: String,
+}
+
 /// Shared runtime-directory helpers (used by both the daemon and clients).
 pub mod paths {
     use std::path::PathBuf;
