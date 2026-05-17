@@ -4,9 +4,9 @@ use crate::client;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use reeve_protocol::{
-    Card, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams, HouseholdSource,
-    HouseholdSummary, LsResult, MvResult, MvSelfResult, NewResult, RepoOnDisk, StatusSelfResult,
-    paths,
+    BranchPushStatus, Card, Column, HouseholdAddParams, HouseholdDetail, HouseholdNewParams,
+    HouseholdSource, HouseholdSummary, LsResult, MvResult, MvSelfResult, NewResult, PushResult,
+    RepoOnDisk, StatusSelfResult, paths,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -51,6 +51,8 @@ pub enum Command {
         #[arg(value_parser = parse_column)]
         column: Column,
     },
+    /// Promote namespaced card branches to refs/heads/ and push to origin.
+    Push { id: String },
     /// (in-container only) Print the calling card and its container status.
     StatusSelf,
     /// Household management subcommands.
@@ -117,6 +119,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         } => new(household, brief, needs_heavy).await,
         Command::Mv { id, column } => mv(id, column).await,
         Command::MvSelf { column } => mv_self(column).await,
+        Command::Push { id } => push(id).await,
         Command::StatusSelf => status_self().await,
         Command::Household(cmd) => household_run(cmd).await,
         Command::Daemon(_) => unreachable!("Daemon commands are handled in main"),
@@ -207,6 +210,46 @@ async fn status_self() -> Result<()> {
             match r.container_status {
                 Some(s) => println!("container: {}", s.as_wire_str()),
                 None => println!("container: (none)"),
+            }
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn push(id: String) -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "push", serde_json::json!({ "id": id }))
+        .await
+        .context("calling push")?;
+    match result {
+        Ok(value) => {
+            let result: PushResult = serde_json::from_value(value)?;
+            if result.branches.is_empty() {
+                println!(
+                    "(no branches in refs/reeve/{id}/* — has the agent committed anything yet?)"
+                );
+                return Ok(());
+            }
+            // Print a per-branch table.
+            println!("{:<24}  {:<32}  STATUS", "REPO", "BRANCH");
+            let mut any_failed = false;
+            for b in &result.branches {
+                let status_str = match &b.status {
+                    BranchPushStatus::Pushed => "pushed".to_string(),
+                    BranchPushStatus::NotFastForward => {
+                        any_failed = true;
+                        "not-fast-forward".to_string()
+                    }
+                    BranchPushStatus::PushFailed { message } => {
+                        any_failed = true;
+                        format!("push-failed: {message}")
+                    }
+                };
+                println!("{:<24}  {:<32}  {}", b.repo, b.branch, status_str);
+            }
+            if any_failed {
+                anyhow::bail!("one or more branches did not push successfully");
             }
             Ok(())
         }
