@@ -98,6 +98,25 @@ async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Start the fetch worker loop. Returns when the shutdown receiver fires.
+/// Each iteration calls `tick(state)`; sleeps `FETCH_INTERVAL` between
+/// iterations. Either the timer or shutdown can win the `select!`.
+pub async fn run(state: DaemonState, mut shutdown: tokio::sync::oneshot::Receiver<()>) {
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                tracing::info!("fetch worker: shutdown received");
+                return;
+            }
+            _ = tokio::time::sleep(FETCH_INTERVAL) => {
+                if let Err(e) = tick(&state).await {
+                    tracing::warn!("fetch worker tick: {e:#}");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +365,28 @@ mod tests {
         let calls = git.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "only card-b should produce a fetch");
         assert_eq!(calls[0].2, "card-b");
+    }
+
+    #[tokio::test]
+    async fn run_exits_on_shutdown_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        write_manifest(&meta, "ws", &["ws"]);
+
+        let git = Arc::new(RecordingGit::new());
+        let state = state_with(git);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        let handle = tokio::spawn(super::run(state, rx));
+
+        // Advance virtual time by less than one interval, then shut down.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(()).unwrap();
+
+        // The worker should exit cleanly.
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("worker did not exit within 1 second")
+            .expect("worker panicked");
     }
 }
