@@ -93,6 +93,11 @@ async fn main() -> Result<()> {
 
     container::reconcile_on_startup(&state).await?;
 
+    // Spawn the fetch worker. Hold its shutdown sender; we'll fire it after
+    // server::run returns.
+    let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let fetch_worker = tokio::spawn(fetch::run(state.clone(), fetch_shutdown_rx));
+
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {
         let state = state_for_dispatch.clone();
@@ -107,6 +112,13 @@ async fn main() -> Result<()> {
         dispatch,
     )
     .await;
+
+    // Shut the fetch worker down and wait for it to exit. Ignore send error
+    // (channel may already be closed if the worker died early — e.g. panicked).
+    let _ = fetch_shutdown_tx.send(());
+    if let Err(e) = fetch_worker.await {
+        warn!("fetch worker join error on shutdown: {e:#}");
+    }
 
     listeners.stop_all().await;
 
