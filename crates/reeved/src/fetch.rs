@@ -27,7 +27,10 @@ pub async fn tick(state: &DaemonState) -> Result<()> {
     };
 
     for container in containers {
-        if !matches!(container.status, ContainerStatus::Running | ContainerStatus::Spawning) {
+        if !matches!(
+            container.status,
+            ContainerStatus::Running | ContainerStatus::Spawning
+        ) {
             continue;
         }
         if let Err(e) = tick_one_card(state, &container.card_id).await {
@@ -63,7 +66,10 @@ async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
     })
     .await??;
     let Some(row) = row else {
-        warn!("fetch tick: household '{}' for card {} not configured", card.household, card_id);
+        warn!(
+            "fetch tick: household '{}' for card {} not configured",
+            card.household, card_id
+        );
         return Ok(());
     };
     let household = crate::household::Household {
@@ -130,14 +136,20 @@ mod tests {
 
     impl RecordingGit {
         fn new() -> Self {
-            Self { calls: std::sync::Mutex::new(vec![]) }
+            Self {
+                calls: std::sync::Mutex::new(vec![]),
+            }
         }
     }
 
     #[async_trait::async_trait]
     impl GitOps for RecordingGit {
-        async fn clone(&self, _s: &std::path::Path, _d: &std::path::Path) -> Result<()> { Ok(()) }
-        async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> { Ok(()) }
+        async fn clone(&self, _s: &std::path::Path, _d: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
+        async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> {
+            Ok(())
+        }
         async fn fetch(
             &self,
             workdir: &std::path::Path,
@@ -166,16 +178,26 @@ mod tests {
         ) -> Result<crate::clones::FfOutcome> {
             Ok(crate::clones::FfOutcome::Updated)
         }
-        async fn push(&self, _workdir: &std::path::Path, _branch: &str) -> Result<()> { Ok(()) }
+        async fn push(&self, _workdir: &std::path::Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct NoopOps;
     #[async_trait::async_trait]
     impl crate::container::ContainerOps for NoopOps {
-        async fn spawn(&self, _argv: Vec<String>) -> Result<()> { Ok(()) }
-        async fn teardown(&self, _name: &str) -> Result<()> { Ok(()) }
-        async fn inspect_status(&self, _name: &str) -> Result<Option<String>> { Ok(None) }
-        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> { Ok(None) }
+        async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        async fn teardown(&self, _name: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn inspect_status(&self, _name: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
     }
 
     struct NoopDispatcher;
@@ -185,15 +207,27 @@ mod tests {
             _req: reeve_protocol::RpcRequest,
             _db: crate::server::DbHandle,
             _caller: crate::server::CallerContext,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<serde_json::Value, reeve_protocol::RpcError>> + Send>> {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<serde_json::Value, reeve_protocol::RpcError>,
+                    > + Send,
+            >,
+        > {
             Box::pin(async { Ok(serde_json::Value::Null) })
         }
     }
 
     fn write_manifest(meta: &std::path::Path, workspace: &str, repos: &[&str]) {
         std::fs::create_dir_all(meta).unwrap();
-        let repos_json: Vec<String> = repos.iter().map(|n| format!(r#"{{"name":"{n}"}}"#)).collect();
-        let body = format!(r#"{{"workspace":"{workspace}","repos":[{}]}}"#, repos_json.join(","));
+        let repos_json: Vec<String> = repos
+            .iter()
+            .map(|n| format!(r#"{{"name":"{n}"}}"#))
+            .collect();
+        let body = format!(
+            r#"{{"workspace":"{workspace}","repos":[{}]}}"#,
+            repos_json.join(",")
+        );
         std::fs::write(meta.join("household.json"), body).unwrap();
     }
 
@@ -257,7 +291,11 @@ mod tests {
         tick(&state).await.unwrap();
 
         let calls = git.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "one fetch per (running card × repo): {calls:?}");
+        assert_eq!(
+            calls.len(),
+            2,
+            "one fetch per (running card × repo): {calls:?}"
+        );
         // Workspace first (host = meta, card_clone = workspace root), then
         // sibling (host = meta/backend, card_clone = workspace/backend).
         let workspace = reeve_protocol::paths::card_workspace_path("card-a");
@@ -303,14 +341,8 @@ mod tests {
                 },
             )
             .unwrap();
-            crate::db::upsert_container(
-                &conn,
-                "card-b",
-                "container-b",
-                ContainerStatus::Failed,
-                0,
-            )
-            .unwrap();
+            crate::db::upsert_container(&conn, "card-b", "container-b", ContainerStatus::Failed, 0)
+                .unwrap();
         }
 
         tick(&state).await.unwrap();
@@ -355,8 +387,14 @@ mod tests {
                     },
                 )
                 .unwrap();
-                crate::db::upsert_container(&conn, id, &format!("c-{id}"), ContainerStatus::Running, 0)
-                    .unwrap();
+                crate::db::upsert_container(
+                    &conn,
+                    id,
+                    &format!("c-{id}"),
+                    ContainerStatus::Running,
+                    0,
+                )
+                .unwrap();
             }
         }
 

@@ -382,7 +382,11 @@ mod tests {
             Ok(())
         }
 
-        async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> Result<Vec<String>> {
+        async fn list_namespace_refs(
+            &self,
+            workdir: &Path,
+            namespace: &str,
+        ) -> Result<Vec<String>> {
             self.list_namespace_calls
                 .lock()
                 .unwrap()
@@ -520,11 +524,20 @@ mod tests {
                 self.inner.clone_url(url, dest).await
             }
 
-            async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> anyhow::Result<()> {
+            async fn fetch(
+                &self,
+                workdir: &Path,
+                source: &Path,
+                namespace: &str,
+            ) -> anyhow::Result<()> {
                 self.inner.fetch(workdir, source, namespace).await
             }
 
-            async fn list_namespace_refs(&self, workdir: &Path, namespace: &str) -> anyhow::Result<Vec<String>> {
+            async fn list_namespace_refs(
+                &self,
+                workdir: &Path,
+                namespace: &str,
+            ) -> anyhow::Result<Vec<String>> {
                 self.inner.list_namespace_refs(workdir, namespace).await
             }
 
@@ -534,7 +547,9 @@ mod tests {
                 target_ref: &str,
                 source_ref: &str,
             ) -> anyhow::Result<FfOutcome> {
-                self.inner.fast_forward(workdir, target_ref, source_ref).await
+                self.inner
+                    .fast_forward(workdir, target_ref, source_ref)
+                    .await
             }
 
             async fn push(&self, workdir: &Path, branch: &str) -> anyhow::Result<()> {
@@ -616,7 +631,10 @@ mod tests {
         ops.fetch(&workdir, &source, "deadbeef").await.unwrap();
         let fetches = ops.fetches.lock().unwrap();
         assert_eq!(fetches.len(), 1);
-        assert_eq!(fetches[0], (workdir.clone(), source.clone(), "deadbeef".to_string()));
+        assert_eq!(
+            fetches[0],
+            (workdir.clone(), source.clone(), "deadbeef".to_string())
+        );
     }
 
     #[tokio::test]
@@ -829,7 +847,10 @@ mod integration_tests {
         let dir = tempdir().unwrap();
         let host = host_repo(dir.path(), "host");
         let ops = RealGitOps;
-        let result = ops.list_namespace_refs(&host, "missing-card").await.unwrap();
+        let result = ops
+            .list_namespace_refs(&host, "missing-card")
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -847,10 +868,23 @@ mod integration_tests {
         git(&card_clone, &["checkout", "-b", "feat-x"]);
         std::fs::write(card_clone.join("new.txt"), "hi\n").unwrap();
         git(&card_clone, &["add", "new.txt"]);
-        git(&card_clone, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "x"]);
+        git(
+            &card_clone,
+            &[
+                "-c",
+                "user.email=t@t.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "x",
+            ],
+        );
 
         // Fetch from host's perspective, populating refs/reeve/<id>/.
-        ops.fetch(&host, &card_clone, "card-deadbeef").await.unwrap();
+        ops.fetch(&host, &card_clone, "card-deadbeef")
+            .await
+            .unwrap();
 
         // Assert host now has refs/reeve/card-deadbeef/feat-x pointing at the new commit.
         let output = std::process::Command::new("git")
@@ -873,14 +907,30 @@ mod integration_tests {
         // Set up a `refs/reeve/card-x/main` one commit ahead of `refs/heads/main`.
         std::fs::write(host.join("a.txt"), "a\n").unwrap();
         git(&host, &["add", "a.txt"]);
-        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "a"]);
+        git(
+            &host,
+            &[
+                "-c",
+                "user.email=t@t.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "a",
+            ],
+        );
         let advance_sha = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(&host)
             .output()
             .unwrap();
-        let advance_sha = String::from_utf8_lossy(&advance_sha.stdout).trim().to_string();
-        git(&host, &["update-ref", "refs/reeve/card-x/main", &advance_sha]);
+        let advance_sha = String::from_utf8_lossy(&advance_sha.stdout)
+            .trim()
+            .to_string();
+        git(
+            &host,
+            &["update-ref", "refs/reeve/card-x/main", &advance_sha],
+        );
         // Rewind heads/main to the previous commit (HEAD~1).
         git(&host, &["update-ref", "refs/heads/main", "HEAD~1"]);
 
@@ -897,7 +947,10 @@ mod integration_tests {
             .output()
             .unwrap();
         let after_sha = String::from_utf8_lossy(&after.stdout).trim().to_string();
-        assert_eq!(after_sha, advance_sha, "main advanced to the namespaced ref");
+        assert_eq!(
+            after_sha, advance_sha,
+            "main advanced to the namespaced ref"
+        );
     }
 
     #[tokio::test]
@@ -911,18 +964,45 @@ mod integration_tests {
         git(&host, &["checkout", "-b", "parallel"]);
         std::fs::write(host.join("p.txt"), "p\n").unwrap();
         git(&host, &["add", "p.txt"]);
-        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "parallel"]);
+        git(
+            &host,
+            &[
+                "-c",
+                "user.email=t@t.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "parallel",
+            ],
+        );
         let parallel_sha = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(&host)
             .output()
             .unwrap();
-        let parallel_sha = String::from_utf8_lossy(&parallel_sha.stdout).trim().to_string();
+        let parallel_sha = String::from_utf8_lossy(&parallel_sha.stdout)
+            .trim()
+            .to_string();
         git(&host, &["checkout", "main"]);
         std::fs::write(host.join("m.txt"), "m\n").unwrap();
         git(&host, &["add", "m.txt"]);
-        git(&host, &["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-m", "main2"]);
-        git(&host, &["update-ref", "refs/reeve/card-x/main", &parallel_sha]);
+        git(
+            &host,
+            &[
+                "-c",
+                "user.email=t@t.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "main2",
+            ],
+        );
+        git(
+            &host,
+            &["update-ref", "refs/reeve/card-x/main", &parallel_sha],
+        );
 
         let ops = RealGitOps;
         let outcome = ops
@@ -944,7 +1024,10 @@ mod integration_tests {
             .output()
             .unwrap();
         let head_sha = String::from_utf8_lossy(&head_sha.stdout).trim().to_string();
-        git(&host, &["update-ref", "refs/reeve/card-x/feat-new", &head_sha]);
+        git(
+            &host,
+            &["update-ref", "refs/reeve/card-x/feat-new", &head_sha],
+        );
 
         let ops = RealGitOps;
         let outcome = ops
@@ -987,6 +1070,10 @@ mod integration_tests {
             .current_dir(&bare)
             .output()
             .unwrap();
-        assert!(result.status.success(), "bare repo has main: {}", String::from_utf8_lossy(&result.stderr));
+        assert!(
+            result.status.success(),
+            "bare repo has main: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 }

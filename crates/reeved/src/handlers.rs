@@ -538,7 +538,10 @@ async fn handle_household_show(
     serde_json::to_value(detail).map_err(to_internal)
 }
 
-async fn handle_push(state: &DaemonState, params: PushParams) -> std::result::Result<Value, RpcError> {
+async fn handle_push(
+    state: &DaemonState,
+    params: PushParams,
+) -> std::result::Result<Value, RpcError> {
     // 1. Fetch the card from the DB.
     let card_id = params.id.clone();
     let db = state.db.clone();
@@ -1437,7 +1440,11 @@ mod tests {
 
     use reeve_protocol::{BranchPushStatus, PushResult};
 
-    async fn insert_test_household(state: &DaemonState, name: &str, meta_repo_path: &std::path::Path) {
+    async fn insert_test_household(
+        state: &DaemonState,
+        name: &str,
+        meta_repo_path: &std::path::Path,
+    ) {
         let conn = state.db.lock().await;
         crate::db::insert_household(
             &conn,
@@ -1506,7 +1513,8 @@ mod tests {
     /// configured FfOutcome per call. Used to exercise handle_push's logic
     /// without a real git.
     struct ConfigurableGit {
-        branches_per_repo: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<String>>>,
+        branches_per_repo:
+            std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<String>>>,
         ff_outcomes: std::sync::Mutex<Vec<crate::clones::FfOutcome>>,
         push_failures: std::sync::Mutex<std::collections::HashMap<String, String>>,
         push_call_order: std::sync::Mutex<Vec<(std::path::PathBuf, String)>>,
@@ -1522,7 +1530,10 @@ mod tests {
             }
         }
         fn set_branches(&self, repo: std::path::PathBuf, branches: Vec<String>) {
-            self.branches_per_repo.lock().unwrap().insert(repo, branches);
+            self.branches_per_repo
+                .lock()
+                .unwrap()
+                .insert(repo, branches);
         }
         fn queue_ff_outcome(&self, outcome: crate::clones::FfOutcome) {
             self.ff_outcomes.lock().unwrap().push(outcome);
@@ -1544,12 +1555,7 @@ mod tests {
         async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> {
             Ok(())
         }
-        async fn fetch(
-            &self,
-            _w: &std::path::Path,
-            _s: &std::path::Path,
-            _n: &str,
-        ) -> Result<()> {
+        async fn fetch(&self, _w: &std::path::Path, _s: &std::path::Path, _n: &str) -> Result<()> {
             Ok(())
         }
         async fn list_namespace_refs(
@@ -1591,12 +1597,9 @@ mod tests {
         }
     }
 
-    fn fresh_state_with_configurable_git(
-        git: std::sync::Arc<ConfigurableGit>,
-    ) -> DaemonState {
+    fn fresh_state_with_configurable_git(git: std::sync::Arc<ConfigurableGit>) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
-        let db: crate::server::DbHandle =
-            std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        let db: crate::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         DaemonState {
             db: db.clone(),
             containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
@@ -1651,7 +1654,10 @@ mod tests {
         let value = dispatch(req, state, CallerContext::host()).await.unwrap();
         let result: PushResult = serde_json::from_value(value).unwrap();
         assert_eq!(result.branches.len(), 2);
-        assert!(matches!(result.branches[0].status, BranchPushStatus::Pushed));
+        assert!(matches!(
+            result.branches[0].status,
+            BranchPushStatus::Pushed
+        ));
         assert!(matches!(
             result.branches[1].status,
             BranchPushStatus::NotFastForward

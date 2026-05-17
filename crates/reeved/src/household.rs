@@ -95,7 +95,9 @@ mod tests {
             meta_repo_path: PathBuf::from("/tmp/meta"),
         };
         let m = manifest("ws", &["backend", "ws", "lore"]);
-        let yielded: Vec<String> = iter_card_repos(&h, &m).map(|(n, _)| n.to_string()).collect();
+        let yielded: Vec<String> = iter_card_repos(&h, &m)
+            .map(|(n, _)| n.to_string())
+            .collect();
         assert_eq!(yielded, vec!["ws", "backend", "lore"]);
     }
 
@@ -106,7 +108,9 @@ mod tests {
             meta_repo_path: PathBuf::from("/tmp/meta"),
         };
         let m = manifest("ws", &["ws"]);
-        let yielded: Vec<String> = iter_card_repos(&h, &m).map(|(n, _)| n.to_string()).collect();
+        let yielded: Vec<String> = iter_card_repos(&h, &m)
+            .map(|(n, _)| n.to_string())
+            .collect();
         assert_eq!(yielded, vec!["ws"]);
     }
 }
