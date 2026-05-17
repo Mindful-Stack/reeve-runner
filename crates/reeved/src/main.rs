@@ -2,6 +2,7 @@ mod clones;
 mod container;
 mod db;
 mod effects;
+mod fetch;
 mod handlers;
 mod household;
 mod lifecycle;

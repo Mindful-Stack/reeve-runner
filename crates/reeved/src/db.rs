@@ -165,6 +165,17 @@ pub fn list_containers_by_status(
     Ok(result?)
 }
 
+/// Return every container row, regardless of status.
+pub fn list_containers(conn: &Connection) -> Result<Vec<ContainerRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT card_id, container_name, status, started_at, updated_at
+         FROM containers ORDER BY card_id",
+    )?;
+    let rows = stmt.query_map([], row_to_container)?;
+    let result: Result<Vec<_>, _> = rows.collect();
+    Ok(result?)
+}
+
 pub fn remove_container(conn: &Connection, card_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM containers WHERE card_id = ?1",
