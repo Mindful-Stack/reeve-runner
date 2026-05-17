@@ -315,7 +315,14 @@ fn build_test_template(dst: &std::path::Path) {
     .unwrap();
     std::fs::write(
         dst.join(".devcontainer/devcontainer.json"),
-        r#"{ "name": "test", "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }"#,
+        r#"{
+  "name": "test",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y tmux"
+}"#,
     )
     .unwrap();
     std::fs::write(dst.join("CLAUDE.md"), "test workspace").unwrap();
@@ -1037,5 +1044,180 @@ fn m4_fetch_and_push_round_trip() {
     assert!(
         meta_ref_after.status.success(),
         "namespaced ref should still exist after Done"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M5 Task 6 — e2e: attach — tmux session present in container after mv → implementing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m5_attach_drops_into_running_tmux_session() {
+    if !is_docker_available() {
+        eprintln!("skip: docker");
+        return;
+    }
+    if !is_devcontainer_cli_available() {
+        eprintln!("skip: devcontainer");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    build_workspace();
+    let mut env = isolated_env_with_config(temp.path());
+    // The test isolates XDG_CONFIG_HOME so the daemon's internal `git commit`
+    // can't find the user's ~/.config/git/config. Supply a minimal author
+    // identity via env vars so the household-new initial commit succeeds.
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    // 1. Build the template (now with tmux via postCreate per Task 6 Step 1).
+    let template_src = temp.path().join("template-source");
+    build_test_template(&template_src);
+    let dest = temp.path().join("m5-household");
+
+    // 2. Daemon.
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "socket not created");
+
+    // 3. household new.
+    let out = cmd("reeve", &env)
+        .args([
+            "household",
+            "new",
+            "m5-household",
+            "--path",
+            &dest.to_string_lossy(),
+            "--template",
+            &format!("file://{}", template_src.display()),
+        ])
+        .output()
+        .expect("run reeve household new");
+    assert!(
+        out.status.success(),
+        "household new: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The template's household.json declares "lore" as a sibling.
+    // Initialise it next to the meta-repo so clone_all_for_card can clone it.
+    init_sibling(&dest.join("lore"));
+    commit_meta_changes(&dest);
+
+    // 4. Create card + mv to implementing.
+    let out_new = cmd("reeve", &env)
+        .args([
+            "new",
+            "--household",
+            "m5-household",
+            "--brief",
+            "m5 attach test",
+        ])
+        .output()
+        .expect("run reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new: {}",
+        String::from_utf8_lossy(&out_new.stderr)
+    );
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "implementing"])
+        .output()
+        .expect("run reeve mv");
+    assert!(
+        out_mv.status.success(),
+        "reeve mv: {}",
+        String::from_utf8_lossy(&out_mv.stderr)
+    );
+
+    let container_name =
+        discover_container_by_label(&card_id).expect("container should be discoverable by label");
+    let _cleanup = DockerCleanup(Some(container_name.clone()));
+
+    // 5. Assert tmux session named `reeve` exists in the container.
+    let tmux_ls = std::process::Command::new("docker")
+        .args(["exec", "-u", "vscode", &container_name, "tmux", "ls"])
+        .output()
+        .expect("docker exec tmux ls");
+    assert!(
+        tmux_ls.status.success(),
+        "tmux ls failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&tmux_ls.stdout),
+        String::from_utf8_lossy(&tmux_ls.stderr),
+    );
+    let tmux_ls_stdout = String::from_utf8_lossy(&tmux_ls.stdout);
+    assert!(
+        tmux_ls_stdout.starts_with("reeve:"),
+        "tmux ls should list 'reeve:' session, got: {tmux_ls_stdout}"
+    );
+
+    // 6. Send a marker line into the tmux session and read it back.
+    let marker = "M5_MARK_FOXTROT_9001";
+    let send = std::process::Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "vscode",
+            &container_name,
+            "tmux",
+            "send-keys",
+            "-t",
+            "reeve",
+            &format!("echo {marker}"),
+            "Enter",
+        ])
+        .status()
+        .expect("docker exec tmux send-keys");
+    assert!(send.success(), "tmux send-keys failed");
+
+    // Tmux sometimes needs a beat to flush.
+    sleep(Duration::from_millis(500));
+
+    let capture = std::process::Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "vscode",
+            &container_name,
+            "tmux",
+            "capture-pane",
+            "-t",
+            "reeve",
+            "-p",
+        ])
+        .output()
+        .expect("docker exec tmux capture-pane");
+    assert!(capture.status.success(), "tmux capture-pane failed");
+    let capture_stdout = String::from_utf8_lossy(&capture.stdout);
+    assert!(
+        capture_stdout.contains(marker),
+        "marker {marker} not found in pane: {capture_stdout}"
+    );
+
+    // 7. Tear down.
+    let out_done = cmd("reeve", &env)
+        .args(["mv", &card_id, "done"])
+        .output()
+        .expect("run reeve mv done");
+    assert!(
+        out_done.status.success(),
+        "reeve mv done: {}",
+        String::from_utf8_lossy(&out_done.stderr)
     );
 }
