@@ -703,6 +703,9 @@ mod tests {
         ) -> Result<crate::clones::FfOutcome> {
             Ok(crate::clones::FfOutcome::Updated)
         }
+        async fn push(&self, _workdir: &std::path::Path, _branch: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     /// No-op container backend that pretends nothing exists.

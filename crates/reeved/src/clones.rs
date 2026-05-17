@@ -53,6 +53,10 @@ pub trait GitOps: Send + Sync {
         target_ref: &str,
         source_ref: &str,
     ) -> Result<FfOutcome>;
+    /// Run `git push origin <branch>` in `workdir`. The remote `origin`
+    /// must be configured on the host repo; absence is reported as an
+    /// `Err` returned from this method.
+    async fn push(&self, workdir: &Path, branch: &str) -> Result<()>;
 }
 
 /// Convenience handle used by the rest of the daemon.
@@ -205,6 +209,23 @@ impl GitOps for RealGitOps {
         }
         Ok(FfOutcome::Updated)
     }
+
+    async fn push(&self, workdir: &Path, branch: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["push", "origin", branch])
+            .current_dir(workdir)
+            .output()
+            .await
+            .context("exec git push")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git push failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Clone the workspace meta-repo plus every separate-sibling repo declared in
@@ -304,6 +325,8 @@ mod tests {
         list_namespace_response: Mutex<Vec<String>>,
         fast_forward_calls: Mutex<Vec<(PathBuf, String, String)>>,
         fast_forward_response: Mutex<FfOutcome>,
+        push_calls: Mutex<Vec<(PathBuf, String)>>,
+        push_response: Mutex<std::result::Result<(), String>>,
     }
 
     impl MockGitOps {
@@ -315,6 +338,8 @@ mod tests {
                 list_namespace_response: Mutex::new(vec![]),
                 fast_forward_calls: Mutex::new(vec![]),
                 fast_forward_response: Mutex::new(FfOutcome::Updated),
+                push_calls: Mutex::new(vec![]),
+                push_response: Mutex::new(Ok(())),
             }
         }
 
@@ -324,6 +349,10 @@ mod tests {
 
         fn set_fast_forward_response(&self, outcome: FfOutcome) {
             *self.fast_forward_response.lock().unwrap() = outcome;
+        }
+
+        fn set_push_failure(&self, message: &str) {
+            *self.push_response.lock().unwrap() = Err(message.to_string());
         }
     }
 
@@ -373,6 +402,17 @@ mod tests {
                 source_ref.to_string(),
             ));
             Ok(*self.fast_forward_response.lock().unwrap())
+        }
+
+        async fn push(&self, workdir: &Path, branch: &str) -> Result<()> {
+            self.push_calls
+                .lock()
+                .unwrap()
+                .push((workdir.to_path_buf(), branch.to_string()));
+            match self.push_response.lock().unwrap().clone() {
+                Ok(()) => Ok(()),
+                Err(msg) => anyhow::bail!("{msg}"),
+            }
         }
     }
 
@@ -496,6 +536,10 @@ mod tests {
             ) -> anyhow::Result<FfOutcome> {
                 self.inner.fast_forward(workdir, target_ref, source_ref).await
             }
+
+            async fn push(&self, workdir: &Path, branch: &str) -> anyhow::Result<()> {
+                self.inner.push(workdir, branch).await
+            }
         }
         let ops = InlineSimulatingOps {
             inner: MockGitOps::new(),
@@ -609,6 +653,17 @@ mod tests {
                 "refs/reeve/card-x/main".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn mock_push_records_call() {
+        let dir = tempdir().unwrap();
+        let workdir = dir.path().join("host");
+        let ops = MockGitOps::new();
+        ops.push(&workdir, "feat-x").await.unwrap();
+        let calls = ops.push_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], (workdir.clone(), "feat-x".to_string()));
     }
 }
 
@@ -904,5 +959,34 @@ mod integration_tests {
             .output()
             .unwrap();
         assert!(result.status.success(), "new branch ref was created");
+    }
+
+    #[tokio::test]
+    async fn real_push_to_bare_remote_succeeds() {
+        let dir = tempdir().unwrap();
+        let host = host_repo(dir.path(), "host");
+
+        // Create a bare remote and wire it as `origin`.
+        let bare = dir.path().join("origin.git");
+        let status = std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git init --bare failed");
+
+        let bare_url = format!("file://{}", bare.display());
+        git(&host, &["remote", "add", "origin", &bare_url]);
+
+        let ops = RealGitOps;
+        ops.push(&host, "main").await.unwrap();
+
+        // Verify the bare repo received the branch.
+        let result = std::process::Command::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(&bare)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "bare repo has main: {}", String::from_utf8_lossy(&result.stderr));
     }
 }
