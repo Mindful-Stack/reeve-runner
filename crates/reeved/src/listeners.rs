@@ -2,7 +2,7 @@
 //! socket file at $XDG_RUNTIME_DIR/reeve/cards/<id>.sock; the daemon
 //! resolves caller identity from which listener received the request.
 
-use crate::server::{CallerContext, DbHandle, run};
+use crate::transport::server::{CallerContext, DbHandle, run};
 use anyhow::Result;
 use reeve_protocol::{RpcError, RpcRequest};
 use std::collections::HashMap;

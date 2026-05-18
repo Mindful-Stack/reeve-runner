@@ -3,7 +3,7 @@
 use crate::db;
 use crate::effects::{DaemonState, LiveEffects};
 use crate::manifest;
-use crate::server::{CallerContext, DbHandle};
+use crate::transport::server::{CallerContext, DbHandle};
 use crate::transitions;
 use anyhow::Result;
 use reeve_protocol::{
@@ -1664,7 +1664,7 @@ mod tests {
 
     fn fresh_state_with_configurable_git(git: std::sync::Arc<ConfigurableGit>) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
-        let db: crate::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         DaemonState {
             db: db.clone(),
             containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
@@ -1825,7 +1825,7 @@ mod tests {
         containers: std::sync::Arc<ConfigurableContainers>,
     ) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
-        let db: crate::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         DaemonState {
             db: db.clone(),
             containers: containers as crate::container::ContainerOpsHandle,

@@ -213,8 +213,8 @@ mod tests {
         fn dispatch(
             &self,
             _req: reeve_protocol::RpcRequest,
-            _db: crate::server::DbHandle,
-            _caller: crate::server::CallerContext,
+            _db: crate::transport::server::DbHandle,
+            _caller: crate::transport::server::CallerContext,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
@@ -241,7 +241,7 @@ mod tests {
 
     fn state_with(git: Arc<RecordingGit>) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
-        let db: crate::server::DbHandle = Arc::new(tokio::sync::Mutex::new(conn));
+        let db: crate::transport::server::DbHandle = Arc::new(tokio::sync::Mutex::new(conn));
         DaemonState {
             db: db.clone(),
             containers: Arc::new(NoopOps) as crate::container::ContainerOpsHandle,

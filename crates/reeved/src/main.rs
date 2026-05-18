@@ -8,7 +8,6 @@ mod household;
 mod lifecycle;
 mod listeners;
 mod manifest;
-mod server;
 mod transitions;
 
 mod app;
@@ -17,7 +16,7 @@ mod transport;
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use reeve_protocol::RpcRequest;
-use server::{CallerContext, DbHandle};
+use transport::server::{CallerContext, DbHandle};
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
@@ -107,10 +106,10 @@ async fn main() -> Result<()> {
         async move { handlers::dispatch(req, state, caller).await }
     };
 
-    let result = server::run(
+    let result = transport::server::run(
         &socket_path,
         db,
-        server::CallerContext::host(),
+        transport::server::CallerContext::host(),
         shutdown_rx,
         dispatch,
     )
@@ -179,8 +178,8 @@ impl listeners::Dispatcher for MainDispatcher {
     fn dispatch(
         &self,
         req: reeve_protocol::RpcRequest,
-        _db: server::DbHandle,
-        caller: server::CallerContext,
+        _db: transport::server::DbHandle,
+        caller: transport::server::CallerContext,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<

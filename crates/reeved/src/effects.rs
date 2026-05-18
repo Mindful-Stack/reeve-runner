@@ -6,7 +6,7 @@ use crate::container::{self, ContainerOpsHandle};
 use crate::db;
 use crate::household;
 use crate::listeners::ListenerRegistry;
-use crate::server::DbHandle;
+use crate::transport::server::DbHandle;
 use crate::transitions::TransitionEffects;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
