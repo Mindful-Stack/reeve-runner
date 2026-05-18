@@ -212,7 +212,7 @@ When the user presses `e` and saves a brief edit:
 - On TUI quit: drop the PTY master (EOF closes the docker exec cleanly via stdin closure); SIGTERM as a safety net only if the child doesn't exit within 500ms.
 - Closing a PTY does NOT close the in-container tmux session (the spawned `reeve attach` is a tmux client, not a server). Re-attaching later picks up where we left off.
 
-**Double-TTY consideration.** `reeve attach` (M5) runs `docker exec -it ... tmux attach -t reeve`. With portable-pty providing a TTY at the host end AND `-t` provisioning one container-side, we have a TTY at both ends of the docker exec pipeline. Empirically this is the same shape as M5's CLI (which is what tmux expects) and works. If during implementation the implementer observes echo doubling or escape-sequence mangling, the fix is to verify behavior with `-i` only (drop `-t`) — at which point tmux may need `TERM` and other env passed explicitly. The plan should include an explicit verification step.
+**Double-TTY consideration.** `reeve attach` (M5) runs `docker exec -it ... tmux attach -t reeve`. With portable-pty providing a TTY at the host end AND `-t` provisioning one container-side, we have a TTY at both ends of the docker exec pipeline. The full chain is: `portable-pty slave → reeve attach (stdio passthrough, no new TTY) → docker exec -it (container-side TTY)`. Net: two TTYs, exactly the same shape as M5's CLI (which works). If during implementation the implementer observes echo doubling or escape-sequence mangling, the fix is to verify behavior with `-i` only (drop `-t`) — at which point tmux may need `TERM` and other env passed explicitly. The plan should include an explicit verification step.
 
 **Rendering:**
 
@@ -220,7 +220,7 @@ The right pane (in `FocusedColumnPlusDetail` mode) renders either:
 
 1. The selected card's `vt100::Parser` screen via `tui_term::PseudoTerminalWidget`, IF the card is in Implementing AND its session is alive.
 2. The card's detail block (id / brief / household / column / created/updated_at / referenced repos) otherwise.
-3. The session error overlay (Section 6 below) if a session errored.
+3. The session error overlay (see "Error & status display" below) if a session errored.
 
 The session is *live* — output continues to update even when the user is interacting with the kanban. Switching selection to another Implementing card swaps the rendered pane to that session instantly.
 
@@ -232,7 +232,7 @@ On terminal resize, the App captures the new dimensions and calls `set_size` on 
 
 **Multi-client tmux.** A user can run `reeve attach <card>` from another terminal while the TUI also has a session pane for the same card. Both clients attach to the same in-container tmux server; tmux's native multi-client semantics apply (both see the same output; both can send input; size is the smaller of the two). This is by design — no detection / warn / refuse logic on Reeve's side.
 
-**Multi-card scaling.** The eager-attach model keeps a PTY+`reeve attach` child per Implementing card for the TUI's lifetime. 5 cards = trivial; 20 cards = 20 persistent children + 20 drainer tasks (~~10 MB additional RAM, negligible CPU). Trade-off: instant pane switch versus background process count.
+**Multi-card scaling.** The eager-attach model keeps a PTY+`reeve attach` child per Implementing card for the TUI's lifetime. 5 cards = trivial; 20 cards = 20 persistent children + 20 drainer tasks (~10 MB additional RAM, negligible CPU). Trade-off: instant pane switch versus background process count.
 
 *Alternative considered: lazy attach.* Spawn the PTY only when a card becomes the focused session; tear down on switch. Activity badge would come from periodic `tmux capture-pane` polls per Implementing card (one subprocess per poll). Pros: O(1) PTY pool. Cons: sub-second spawn latency on first focus, capture-pane polling has its own overhead, and the eager model's "live output in the background" property is lost. **M6 chooses eager.** If the daily-driver experience reveals scaling pain, lazy is a viable rewrite path that doesn't change the public RPC surface.
 
@@ -249,7 +249,11 @@ Activity badge persists in memory only; not in sqlite. New TUI session starts wi
 
 Both layer on top of the existing pending_attention set with no protocol change.
 
-**User-initiated detach (`Ctrl+B D` inside an embedded session).** Tmux's detach instructs the client to disconnect. Our `reeve attach` (the PTY's child) exits cleanly with status 0. Detection logic: if the PTY child exits with status 0, treat as a user-initiated detach — NOT a session error. Auto-respawn the session on the next render tick (since the in-container tmux server is still alive and the user almost certainly wanted to keep the session for later). The session error overlay (Section 6) is only shown for non-zero exits.
+**User-initiated detach (`Ctrl+B D` inside an embedded session).** Tmux's detach instructs the client to disconnect. Our `reeve attach` (the PTY's child) exits cleanly with status 0. Detection logic: if the PTY child exits with status 0, treat as a user-initiated detach — NOT a session error. Auto-respawn the session on the next render tick (since the in-container tmux server is still alive and the user almost certainly wanted to keep the session for later). The session error overlay (see "Error & status display" below) is only shown for non-zero exits.
+
+**Auto-respawn loop guard.** The auto-respawn path is one tick of cooldown away from a tight loop if `reeve attach` exits 0 for a non-detach reason (race with tmux startup, env quirk that resolves on retry but might not). Per-session counter: if a session has exited and respawned ≥3 times within a 5-second window, stop auto-respawning and surface the session error overlay with `r` to retry manually. The counter resets when the session runs for more than 5 seconds without exiting, so the long-lived steady state is unaffected.
+
+**Stdin EOF on PTY teardown.** Dropping the PTY master closes the slave, which delivers a stdin EOF to `reeve attach`. The plan must verify that M5's `reeve attach` exits cleanly on `Ok(0)` from stdin (i.e. doesn't block indefinitely after EOF) — if it doesn't, a small M5 patch lands as part of M6 to wire that path. Without it, every PTY teardown waits the full 500 ms SIGTERM safety net, which is harmless but wasteful and worth fixing upstream.
 
 ### Mutations UX details
 
@@ -366,7 +370,7 @@ Mutation paths from the TUI are covered by their handler unit tests + state-tran
 9. `Shift+Tab` → focus kanban; switch selection to another Implementing card; session pane swaps; `pending_attention` dot on the prior card clears once focused.
 10. Resize terminal; kanban and session pane reflow without artifacts.
 11. Second `reeve` in another terminal; both see the same cards; mutate from one, watch the other update on poll.
-12. `q` → quit; verify all docker-exec children are reaped (no leaks).
+12. `q` → quit; verify no `reeve attach` or `docker exec` children remain: `pgrep -af 'reeve attach' ; pgrep -af 'docker exec.*tmux'` should both return empty. (With `reeve attach` as the PTY child, an orphan there transitively leaks a `docker exec`; checking both surfaces both classes of leak.)
 
 ## Verification
 
