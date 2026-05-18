@@ -13,6 +13,7 @@ pub trait HouseholdScaffold: Send + Sync {
     async fn clone_template(&self, template_url: &str, dest: &Path) -> Result<()>;
     async fn init_repo(&self, dest: &Path) -> Result<()>;
     async fn commit_all(&self, dest: &Path, message: &str) -> Result<()>;
+    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()>;
 }
 
 pub(crate) struct RealHouseholdScaffold;
@@ -48,6 +49,22 @@ impl HouseholdScaffold for RealHouseholdScaffold {
     async fn commit_all(&self, dest: &Path, message: &str) -> Result<()> {
         git_in(dest, &["add", "-A"]).await?;
         git_in(dest, &["commit", "-m", message, "--quiet"]).await
+    }
+
+    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["clone", url, dest.to_str().context("dest path not utf-8")?])
+            .output()
+            .await
+            .context("exec git clone (url)")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git clone {url} failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 }
 
