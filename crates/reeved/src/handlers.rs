@@ -1,19 +1,21 @@
 //! Method dispatch and per-method handlers.
 
 use crate::db;
-use crate::effects::{DaemonState, LiveEffects};
+use crate::effects::DaemonState;
 use crate::manifest;
-use crate::transport::server::{CallerContext, DbHandle};
-use crate::transitions;
+use crate::stubs::{StubHouseholdLookup, StubWorkspaceLifecycle};
+use crate::transport::server::CallerContext;
 use anyhow::Result;
+use reeve_card::{make_card_repo, HouseholdLookup, WorkspaceLifecycle};
 use reeve_protocol::{
     AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, CardReference, Column,
     HouseholdAddParams, HouseholdDetail, HouseholdNewParams, HouseholdSource, HouseholdSummary,
-    LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult, PushParams,
-    PushResult, RepoDetail, RepoOnDisk, RpcError, RpcRequest, StatusSelfResult,
+    MvParams, MvSelfParams, NewParams, PushParams, PushResult, RepoDetail, RepoOnDisk, RpcError,
+    RpcRequest,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_TEMPLATE: &str = "https://github.com/Mindful-Stack/witan-household";
@@ -24,14 +26,21 @@ pub async fn dispatch(
     caller: CallerContext,
 ) -> std::result::Result<Value, RpcError> {
     match req.method.as_str() {
-        "ls" => handle_ls(state.db).await,
+        "ls" => {
+            let cards = make_card_repo(state.db.clone());
+            reeve_card::handle_ls(&*cards).await
+        }
         "new" => {
+            let cards = make_card_repo(state.db.clone());
             let params = parse_params::<NewParams>(req.params)?;
-            handle_new(state.db, params).await
+            reeve_card::handle_new(&*cards, params).await
         }
         "mv" => {
+            let cards = make_card_repo(state.db.clone());
+            let households = stub_household_lookup(state.db.clone());
+            let workspace = stub_workspace_lifecycle(state.clone());
             let params = parse_params::<MvParams>(req.params)?;
-            handle_mv(state, params).await
+            reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
         }
         "attach" => {
             let params = parse_params::<AttachParams>(req.params)?;
@@ -39,8 +48,11 @@ pub async fn dispatch(
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
+            let cards = make_card_repo(state.db.clone());
+            let households = stub_household_lookup(state.db.clone());
+            let workspace = stub_workspace_lifecycle(state.clone());
             let params = parse_params::<MvSelfParams>(req.params)?;
-            handle_mv_self(state, card_id, params).await
+            reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
         "push" => {
             let params = parse_params::<PushParams>(req.params)?;
@@ -48,7 +60,9 @@ pub async fn dispatch(
         }
         "status-self" => {
             let card_id = require_card(&caller)?;
-            handle_status_self(state.db, card_id).await
+            let cards = make_card_repo(state.db.clone());
+            let container_status = fetch_container_status(&state, &card_id).await?;
+            reeve_card::handle_status_self(&*cards, container_status, card_id).await
         }
         "household.add" => {
             let params = parse_params::<HouseholdAddParams>(req.params)?;
@@ -74,34 +88,38 @@ pub async fn dispatch(
     }
 }
 
-async fn precheck_household_for_implementing(
-    state: &DaemonState,
-    household_name: &str,
-) -> std::result::Result<(), RpcError> {
-    // M3.5 Task 9 will rewrite this to read the meta-repo's manifest:
-    //   - <meta_repo_path>/.devcontainer/devcontainer.json must be a file
-    //   - For each repos[] entry other than the workspace: the on-disk dir
-    //     must exist (either as a sibling clone with .git/ or inline)
-    //
-    // Query the DB directly rather than the stale in-memory map so that
-    // households registered after daemon start (via `household new/add`) are
-    // visible immediately.
-    let name = household_name.to_string();
+fn stub_household_lookup(
+    db: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) -> Arc<dyn HouseholdLookup> {
+    Arc::new(StubHouseholdLookup { db })
+}
+
+fn stub_workspace_lifecycle(
+    state: crate::effects::DaemonState,
+) -> Arc<dyn WorkspaceLifecycle> {
+    Arc::new(StubWorkspaceLifecycle { state })
+}
+
+async fn fetch_container_status(
+    state: &crate::effects::DaemonState,
+    card_id: &str,
+) -> std::result::Result<Option<reeve_protocol::ContainerStatus>, reeve_protocol::RpcError> {
     let db = state.db.clone();
-    let found = tokio::task::spawn_blocking(move || -> Result<bool> {
+    let id = card_id.to_string();
+    let row = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<crate::db::ContainerRow>> {
         let conn = db.blocking_lock();
-        Ok(db::get_household(&conn, &name)?.is_some())
+        crate::db::get_container(&conn, &id)
     })
     .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?;
-    if !found {
-        return Err(RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("household '{household_name}' not configured"),
-        });
-    }
-    Ok(())
+    .map_err(|e| reeve_protocol::RpcError {
+        code: reeve_protocol::RpcError::INTERNAL,
+        message: e.to_string(),
+    })?
+    .map_err(|e| reeve_protocol::RpcError {
+        code: reeve_protocol::RpcError::INTERNAL,
+        message: e.to_string(),
+    })?;
+    Ok(row.map(|r| r.status))
 }
 
 fn require_card(caller: &CallerContext) -> std::result::Result<String, RpcError> {
@@ -130,166 +148,6 @@ fn to_internal<E: std::fmt::Display>(e: E) -> RpcError {
         code: RpcError::INTERNAL,
         message: e.to_string(),
     }
-}
-
-async fn handle_ls(db: DbHandle) -> std::result::Result<Value, RpcError> {
-    let cards = tokio::task::spawn_blocking(move || -> Result<Vec<Card>> {
-        let conn = db.blocking_lock();
-        db::list_cards(&conn)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?;
-    serde_json::to_value(LsResult { cards }).map_err(to_internal)
-}
-
-async fn handle_new(db: DbHandle, params: NewParams) -> std::result::Result<Value, RpcError> {
-    let now = now_secs();
-    let card = Card {
-        id: uuid::Uuid::new_v4().to_string(),
-        household: params.household,
-        brief: params.brief,
-        column: Column::Backlog,
-        created_at: now,
-        updated_at: now,
-        needs_heavy: params.needs_heavy,
-        parent_id: None,
-    };
-    let card_for_insert = card.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let conn = db.blocking_lock();
-        db::insert_card(&conn, &card_for_insert)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?;
-    serde_json::to_value(NewResult { card }).map_err(to_internal)
-}
-
-async fn handle_mv(state: DaemonState, params: MvParams) -> std::result::Result<Value, RpcError> {
-    let id = params.id.clone();
-    let new_column = params.column;
-    let now = now_secs();
-
-    // Read the existing card so we know the old column AND the household name.
-    let db = state.db.clone();
-    let id_for_query = id.clone();
-    let existing = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        db::get_card(&conn, &id_for_query)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card not found: {}", params.id),
-    })?;
-    let old_column = existing.column;
-
-    // Precheck: a move that requires a container must have a configured household.
-    // Reject BEFORE the column is mutated so the user can fix their config and retry.
-    if new_column == Column::Implementing {
-        precheck_household_for_implementing(&state, &existing.household).await?;
-    }
-
-    let db = state.db.clone();
-    let id_for_update = id.clone();
-    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        db::update_card_column(&conn, &id_for_update, new_column, now)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card not found: {}", params.id),
-    })?;
-
-    let fx = LiveEffects::new(state);
-    transitions::on_column_change(old_column, new_column, &card, &fx)
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("{e:#}"),
-        })?;
-    serde_json::to_value(MvResult { card }).map_err(to_internal)
-}
-
-async fn handle_mv_self(
-    state: DaemonState,
-    card_id: String,
-    params: MvSelfParams,
-) -> std::result::Result<Value, RpcError> {
-    let new_column = params.column;
-    let now = now_secs();
-
-    let db = state.db.clone();
-    let id_for_query = card_id.clone();
-    let existing = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        db::get_card(&conn, &id_for_query)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card not found: {card_id}"),
-    })?;
-    let old_column = existing.column;
-
-    if new_column == Column::Implementing {
-        precheck_household_for_implementing(&state, &existing.household).await?;
-    }
-
-    let db = state.db.clone();
-    let id_for_update = card_id.clone();
-    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        db::update_card_column(&conn, &id_for_update, new_column, now)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card not found: {card_id}"),
-    })?;
-
-    let fx = LiveEffects::new(state);
-    transitions::on_column_change(old_column, new_column, &card, &fx)
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("{e:#}"),
-        })?;
-    serde_json::to_value(MvSelfResult { card }).map_err(to_internal)
-}
-
-async fn handle_status_self(db: DbHandle, card_id: String) -> std::result::Result<Value, RpcError> {
-    let id = card_id.clone();
-    let (card, container) = tokio::task::spawn_blocking(
-        move || -> Result<(Option<Card>, Option<db::ContainerRow>)> {
-            let conn = db.blocking_lock();
-            let card = db::get_card(&conn, &id)?;
-            let container = db::get_container(&conn, &id)?;
-            Ok((card, container))
-        },
-    )
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?;
-    let card = card.ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card not found: {card_id}"),
-    })?;
-    serde_json::to_value(StatusSelfResult {
-        card,
-        container_status: container.map(|c| c.status),
-    })
-    .map_err(to_internal)
 }
 
 fn default_source_dir() -> PathBuf {
@@ -808,8 +666,10 @@ mod tests {
     use crate::container::{ContainerOps, ContainerOpsHandle};
     use crate::effects::DaemonState;
     use crate::transport::listener::{Dispatcher, ListenerRegistry};
+    use crate::transport::server::DbHandle;
     use anyhow::Result;
     use async_trait::async_trait;
+    use reeve_protocol::{LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::Arc;

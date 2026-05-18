@@ -9,6 +9,8 @@ mod lifecycle;
 mod manifest;
 mod transitions;
 
+mod stubs;
+
 mod app;
 mod transport;
 
