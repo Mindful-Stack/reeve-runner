@@ -807,7 +807,7 @@ mod tests {
     use super::*;
     use crate::container::{ContainerOps, ContainerOpsHandle};
     use crate::effects::DaemonState;
-    use crate::listeners::{Dispatcher, ListenerRegistry};
+    use crate::transport::listener::{Dispatcher, ListenerRegistry};
     use anyhow::Result;
     use async_trait::async_trait;
     use std::path::PathBuf;
@@ -1669,7 +1669,7 @@ mod tests {
             db: db.clone(),
             containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
             git: git as crate::clones::GitOpsHandle,
-            listeners: crate::listeners::ListenerRegistry::new(
+            listeners: crate::transport::listener::ListenerRegistry::new(
                 db,
                 std::sync::Arc::new(NoopDispatcher),
             ),
@@ -1830,7 +1830,7 @@ mod tests {
             db: db.clone(),
             containers: containers as crate::container::ContainerOpsHandle,
             git: std::sync::Arc::new(NoopGit) as crate::clones::GitOpsHandle,
-            listeners: crate::listeners::ListenerRegistry::new(
+            listeners: crate::transport::listener::ListenerRegistry::new(
                 db,
                 std::sync::Arc::new(NoopDispatcher),
             ),

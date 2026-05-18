@@ -728,11 +728,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "reeve-card"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reeve-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "reeve-e2e"
 version = "0.1.0"
 dependencies = [
  "nix",
  "tempfile",
+]
+
+[[package]]
+name = "reeve-household"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reeve-card",
+ "reeve-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -744,6 +776,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "reeve-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reeve-card",
+ "reeve-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

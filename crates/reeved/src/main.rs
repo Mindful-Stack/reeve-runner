@@ -6,7 +6,6 @@ mod fetch;
 mod handlers;
 mod household;
 mod lifecycle;
-mod listeners;
 mod manifest;
 mod transitions;
 
@@ -17,6 +16,7 @@ use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use reeve_protocol::RpcRequest;
 use transport::server::{CallerContext, DbHandle};
+use transport::listener;
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     });
 
     let containers: container::ContainerOpsHandle = Arc::new(container::DockerOps);
-    let listeners = listeners::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
+    let listeners = listener::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
     let claude_dir = std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".claude"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
@@ -174,7 +174,7 @@ struct MainDispatcher {
     state: std::sync::OnceLock<effects::DaemonState>,
 }
 
-impl listeners::Dispatcher for MainDispatcher {
+impl listener::Dispatcher for MainDispatcher {
     fn dispatch(
         &self,
         req: reeve_protocol::RpcRequest,

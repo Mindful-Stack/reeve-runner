@@ -298,7 +298,7 @@ fn docker_available() -> bool {
 
 use crate::db::ContainerRow;
 use crate::effects::DaemonState;
-use crate::listeners::ListenerRegistry;
+use crate::transport::listener::ListenerRegistry;
 use reeve_protocol::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

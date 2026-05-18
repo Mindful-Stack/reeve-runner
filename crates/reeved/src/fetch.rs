@@ -209,7 +209,7 @@ mod tests {
     }
 
     struct NoopDispatcher;
-    impl crate::listeners::Dispatcher for NoopDispatcher {
+    impl crate::transport::listener::Dispatcher for NoopDispatcher {
         fn dispatch(
             &self,
             _req: reeve_protocol::RpcRequest,
@@ -246,7 +246,7 @@ mod tests {
             db: db.clone(),
             containers: Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
             git: git as crate::clones::GitOpsHandle,
-            listeners: crate::listeners::ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
+            listeners: crate::transport::listener::ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
         }

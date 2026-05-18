@@ -5,7 +5,7 @@ use crate::clones::{self, GitOpsHandle};
 use crate::container::{self, ContainerOpsHandle};
 use crate::db;
 use crate::household;
-use crate::listeners::ListenerRegistry;
+use crate::transport::listener::ListenerRegistry;
 use crate::transport::server::DbHandle;
 use crate::transitions::TransitionEffects;
 use anyhow::{Context, Result};
