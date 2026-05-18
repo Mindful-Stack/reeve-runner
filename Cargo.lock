@@ -801,6 +801,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "nix",
+ "reeve-card",
  "reeve-protocol",
  "rusqlite",
  "serde",
