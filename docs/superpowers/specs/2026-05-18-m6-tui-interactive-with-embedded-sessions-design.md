@@ -30,7 +30,7 @@ An activity badge marks cards whose session received output since the user last 
 
 Two new RPCs (`edit`, `delete`) plus reuse of existing ones (`ls`, `new`, `mv`, `attach`).
 
-The CLI surface (`reeve ls`, `reeve new`, `reeve mv`, `reeve attach`, etc.) is **unchanged**.
+The CLI surface (`reeve ls`, `reeve new`, `reeve mv`, `reeve attach`, etc.) is **unchanged**. `reeve` with no subcommand continues to launch the TUI (existing M1 behavior).
 
 M6 deliberately does *not* yet:
 
@@ -108,19 +108,33 @@ All three are stable, used by wezterm and other production TUIs.
 | `e` | edit selected card's brief |
 | `n` | new card (Backlog) |
 | `d` | delete selected card (confirm modal) |
-| `a` | shorthand: `Enter` + `Tab` — open drill-in and focus the session pane |
+| `a` | shorthand: `Enter` + `Tab` if the card is in Implementing AND has a live session. Otherwise: open drill-in only (no `Tab`) and write a status-bar message — e.g. `"no live session: card is in Planning"` or `"session not yet attached (try `r`)"`. Matches the action-menu's disabled state for non-Implementing cards. |
 
 **Session-pane focus:**
 
 | Key | Action |
 |---|---|
 | `Shift+Tab` | return focus to kanban (only special-cased binding) |
-| `Ctrl+\` | emergency: force focus back to kanban (fallback if Shift+Tab is captured) |
+| `Ctrl+G` | emergency: force focus back to kanban (fallback if Shift+Tab is captured by an in-session app). `Ctrl+G` chosen over `Ctrl+\` because the latter is SIGQUIT on most terminals and feels loaded; `Ctrl+G` (BEL) is innocuous to most TUIs. |
 | Everything else | forwarded to the PTY (claude receives it inside the container's tmux) |
 
 Inside the session, tmux's own bindings apply: `Ctrl+B [` for scrollback, `Ctrl+B D` for "detach" — but note that detach from the inner tmux just disconnects our PTY attach; the session inside the container stays alive. The TUI re-attaches on next refresh.
 
-**Help overlay (`?`)** shows the full table; auto-generated from `events.rs` so it never drifts from the actual bindings.
+**Help overlay (`?`)** shows the full table, auto-generated from a structured binding registry. The "registry" is a single source of truth consumed by both the event matcher and the help renderer:
+
+```rust
+struct Binding {
+    key: KeyMatcher,                   // e.g. KeyMatcher::Char('H') or KeyMatcher::Shift(KeyCode::Left)
+    action: Action,                    // dispatched by actions.rs
+    description: &'static str,         // shown in help and action menu
+    enabled_when: fn(&App) -> bool,    // for help dimming + action menu disable state
+    section: HelpSection,              // groups bindings in the overlay
+}
+
+const BINDINGS: &[Binding] = &[ ... ];
+```
+
+`events.rs` matches `KeyEvent` against the registry to produce an `Action`. The help renderer iterates the registry grouped by `section`. The action menu (`space`) also reads the registry to build its context-aware list. One add — same shape everywhere.
 
 ### Layout modes
 
@@ -147,7 +161,7 @@ struct App {
     sessions: SessionManager,                  // PTY pool, vt100 parsers, drainer tasks
     status: Option<StatusMessage>,             // bottom-row text + level + expiry
     pending_attention: HashSet<CardId>,        // cards with unread output since last viewed
-    households: Vec<HouseholdSummary>,         // cached for the `new` modal
+    households: Vec<HouseholdSummary>,         // cached; refreshed via household.ls on `new` modal open (not just at startup) so CLI-added households mid-session are visible
     daemon_unreachable: bool,                  // true → full-screen banner instead of kanban
 }
 
@@ -167,7 +181,7 @@ enum ModalKind {
 }
 ```
 
-Selection persists by card-id across `ls` refreshes — if the selected card was deleted from another frontend, focus falls back to the nearest neighbor by previous-index.
+Selection persists by card-id across `ls` refreshes — if the selected card was deleted from another frontend, focus falls back to the nearest neighbor by previous-index. **Cross-frontend mv**: when another frontend moves the selected card to a different column, the kanban focus *follows the card* — the focused column changes to wherever the card landed. Avoids "where did my card go" disorientation.
 
 ### Refresh strategy
 
@@ -192,10 +206,13 @@ When the user presses `e` and saves a brief edit:
 
 **Lifecycle:**
 
-- On TUI startup, after the first `ls`: for each card in Implementing, call the `attach` RPC to get the container name + session name. Spawn a `portable_pty::CommandBuilder::new("docker").args(["exec", "-it", &container, "tmux", "attach", "-t", &session])` onto a fresh PTY. Initial size: derived from the right-pane Rect width/height.
+- On TUI startup, after the first `ls`: for each card in Implementing, spawn `portable_pty::CommandBuilder::new("reeve").args(["attach", &card_id])` onto a fresh PTY. **Why `reeve attach` as the child, not `docker exec` directly?** Centralizes M5's "card → container → tmux session" resolution in one place; when the auth model (parent design) or session-spawn semantics evolve, only M5's code changes. The cost is one extra process in the chain (reeve → docker exec → tmux attach); negligible at human-paced typing.
+- Initial PTY size: derived from the right-pane Rect width/height as it would be in `FocusedColumnPlusDetail` mode, even if the TUI is currently in `KanbanFull` (we know the proportions from the current terminal size). See "PTY size policy" below.
 - On `ls` refresh, diff implementing cards vs running sessions: spawn for new, close for removed.
-- On TUI quit: close all PTYs; SIGTERM the child docker-execs; await reap.
-- Closing a PTY does NOT close the in-container tmux session (we were attaching, not owning). Re-attaching later picks up where we left off.
+- On TUI quit: drop the PTY master (EOF closes the docker exec cleanly via stdin closure); SIGTERM as a safety net only if the child doesn't exit within 500ms.
+- Closing a PTY does NOT close the in-container tmux session (the spawned `reeve attach` is a tmux client, not a server). Re-attaching later picks up where we left off.
+
+**Double-TTY consideration.** `reeve attach` (M5) runs `docker exec -it ... tmux attach -t reeve`. With portable-pty providing a TTY at the host end AND `-t` provisioning one container-side, we have a TTY at both ends of the docker exec pipeline. Empirically this is the same shape as M5's CLI (which is what tmux expects) and works. If during implementation the implementer observes echo doubling or escape-sequence mangling, the fix is to verify behavior with `-i` only (drop `-t`) — at which point tmux may need `TERM` and other env passed explicitly. The plan should include an explicit verification step.
 
 **Rendering:**
 
@@ -211,11 +228,28 @@ The session is *live* — output continues to update even when the user is inter
 
 On terminal resize, the App captures the new dimensions and calls `set_size` on each PTY. The vt100 parser handles the resize internally; tmux inside the container gets a SIGWINCH naturally and reflows.
 
+**PTY size policy.** All sessions — including background ones whose pane isn't currently rendered — get a size derived from "what the right pane WOULD be at the current terminal dimensions in `FocusedColumnPlusDetail` mode." Recomputed only on terminal resize, not on layout-mode change or selection change. Rationale: tmux inside the container reflows on every `set_size`, which is visually disruptive; keeping background sessions at their last-known size means switching selection produces no reflow. The 35/65 split is fixed, so the "background size" is deterministic from current window dimensions.
+
+**Multi-client tmux.** A user can run `reeve attach <card>` from another terminal while the TUI also has a session pane for the same card. Both clients attach to the same in-container tmux server; tmux's native multi-client semantics apply (both see the same output; both can send input; size is the smaller of the two). This is by design — no detection / warn / refuse logic on Reeve's side.
+
+**Multi-card scaling.** The eager-attach model keeps a PTY+`reeve attach` child per Implementing card for the TUI's lifetime. 5 cards = trivial; 20 cards = 20 persistent children + 20 drainer tasks (~~10 MB additional RAM, negligible CPU). Trade-off: instant pane switch versus background process count.
+
+*Alternative considered: lazy attach.* Spawn the PTY only when a card becomes the focused session; tear down on switch. Activity badge would come from periodic `tmux capture-pane` polls per Implementing card (one subprocess per poll). Pros: O(1) PTY pool. Cons: sub-second spawn latency on first focus, capture-pane polling has its own overhead, and the eager model's "live output in the background" property is lost. **M6 chooses eager.** If the daily-driver experience reveals scaling pain, lazy is a viable rewrite path that doesn't change the public RPC surface.
+
 **Activity badge:**
 
-Each card's drainer task tracks "last output bytes count." The main task: when output arrives AND that card isn't currently the focused session, set `pending_attention.insert(card_id)`. The kanban render shows a `•` (cyan) next to cards in `pending_attention`. When the user makes a card the focused session (`Tab` into it OR moves selection to it under `FocusedColumnPlusDetail`), `pending_attention.remove(&card_id)`.
+Each card's drainer task tracks "last output bytes count." The main task: when output arrives AND that card isn't currently the focused session, set `pending_attention.insert(card_id)`. The kanban render shows a `•` (cyan) next to cards in `pending_attention`. When the user makes a card the focused session (`Tab` into it OR moves selection to it under `FocusedColumnPlusDetail`), `pending_attention.remove(&card_id)`. `delete` also clears the entry.
 
 Activity badge persists in memory only; not in sqlite. New TUI session starts with all cards un-flagged.
+
+**Known limitation: initial state on TUI startup.** If claude in card X is blocked waiting for input (no recent output) when the TUI launches, the activity badge stays dark — there's no signal until output arrives, which won't happen because claude is blocked. The current design relies on the user opening each Implementing session at least once per TUI launch to discover its state. Two future improvements (out of M6 scope but compatible with this design):
+
+1. **Capture-pane on startup**: for each Implementing card, run `tmux capture-pane -p -t reeve -S -10` to grab the last 10 lines of the session's screen. Render the most recent visible line as a subtitle in the kanban row. The user sees "Awaiting `(y/n) >`" or similar without opening the pane.
+2. **Waiting-for-input heuristic**: pattern-match the captured pane's bottom line against known prompt shapes (`(y/n)`, `Press Enter`, trailing `?`/`>`); flag with a `!` glyph. Imperfect but useful.
+
+Both layer on top of the existing pending_attention set with no protocol change.
+
+**User-initiated detach (`Ctrl+B D` inside an embedded session).** Tmux's detach instructs the client to disconnect. Our `reeve attach` (the PTY's child) exits cleanly with status 0. Detection logic: if the PTY child exits with status 0, treat as a user-initiated detach — NOT a session error. Auto-respawn the session on the next render tick (since the in-container tmux server is still alive and the user almost certainly wanted to keep the session for later). The session error overlay (Section 6) is only shown for non-zero exits.
 
 ### Mutations UX details
 
@@ -281,6 +315,7 @@ Activity badge persists in memory only; not in sqlite. New TUI session starts wi
 - After `ls` refresh, selection-by-card-id is preserved across reorders
 - `pending_attention.insert` happens when drainer reports new bytes for non-focused card
 - `pending_attention.remove` happens when that card becomes focused session
+- `pending_attention.remove` happens when a card is deleted (no stale entry)
 - Modal state machines: edit-brief buffer mutates correctly on each keypress; cursor stays in bounds
 - Context-aware action menu: given a card in Backlog, "mv left" disabled; given a card in Implementing, "attach" enabled
 
@@ -350,5 +385,5 @@ If the manual smoke surfaces an issue (vt100 rendering quirk, tmux nesting edge 
 - Whether `SessionManager` lives in `tui/sessions.rs` or gets its own crate. Lean: inline in the tui module for now; can extract if the parent design's "multiple frontends" vision needs it shared.
 - Whether `vt100::Parser` should be wrapped in a thin `SessionScreen` newtype to insulate consumers from the vt100 API surface, or whether direct use is fine. Lean: direct use; vt100 is stable and well-documented.
 - Exact help-overlay rendering style (full table vs grouped sections).
-- Whether the "danger key" (`Ctrl+\`) for forcing focus back to kanban needs more thought — could be `Ctrl+G` or similar. Pick at implementation; document in help.
+- Whether `Ctrl+G` as the emergency focus-return key conflicts with any common in-session app (vim, claude, less). If so, fall back to `F10` or `Esc Esc` (double-press). Document the resolution in help.
 - Scrollback ergonomics inside the session pane: do we expose a TUI-side scrollback key (e.g. `PageUp`), or rely entirely on tmux's `Ctrl+B [`? Lean: rely on tmux for M6; TUI-side scroll is M7+ polish.
