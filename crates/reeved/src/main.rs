@@ -11,6 +11,9 @@ mod manifest;
 mod server;
 mod transitions;
 
+mod app;
+mod transport;
+
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use reeve_protocol::RpcRequest;
