@@ -2,7 +2,7 @@
 //! The manifest is read from the meta-repo on demand (see `manifest.rs`); no
 //! cached state lives in this module. M3's TOML-based `HouseholdProfile` is gone.
 
-use crate::manifest::Manifest;
+use reeve_household::manifest::Manifest;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -16,7 +16,7 @@ pub struct Household {
 /// `manifest::load_manifest`. Used by handlers that want the manifest
 /// in their hot path.
 pub fn load_household_manifest(household: &Household) -> Result<Manifest> {
-    crate::manifest::load_manifest(&household.meta_repo_path)
+    reeve_household::manifest::load_manifest(&household.meta_repo_path)
         .with_context(|| format!("load manifest for household '{}'", household.name))
 }
 
@@ -47,7 +47,7 @@ pub fn iter_card_repos<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{Manifest, RepoEntry};
+    use reeve_household::manifest::{Manifest, RepoEntry};
     use std::path::PathBuf;
 
     fn manifest(workspace: &str, repos: &[&str]) -> Manifest {

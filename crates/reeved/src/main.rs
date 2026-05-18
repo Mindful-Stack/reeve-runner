@@ -6,7 +6,6 @@ mod fetch;
 mod handlers;
 mod household;
 mod lifecycle;
-mod manifest;
 mod transitions;
 
 mod stubs;

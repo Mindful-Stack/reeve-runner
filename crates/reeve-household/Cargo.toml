@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[dev-dependencies]
+tempfile = "3.13"
+
 [dependencies]
 reeve-protocol = { path = "../reeve-protocol" }
 reeve-card = { path = "../reeve-card" }

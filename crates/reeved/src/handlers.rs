@@ -2,7 +2,7 @@
 
 use crate::db;
 use crate::effects::DaemonState;
-use crate::manifest;
+use reeve_household::manifest;
 use crate::stubs::{StubHouseholdLookup, StubWorkspaceLifecycle};
 use crate::transport::server::CallerContext;
 use anyhow::Result;

@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 reeve-protocol = { path = "../reeve-protocol" }
 reeve-card = { path = "../reeve-card" }
+reeve-household = { path = "../reeve-household" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
