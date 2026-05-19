@@ -1,6 +1,8 @@
 use crate::client;
+use crate::tui::events::{self, Action};
+use crate::tui::render;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -11,12 +13,27 @@ use reeve_protocol::{Card, LsResult, paths};
 use std::io::{Stdout, stdout};
 use std::time::{Duration, Instant};
 
-pub(super) type Term = Terminal<CrosstermBackend<Stdout>>;
+pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
-pub fn run() -> Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
+pub struct App {
+    pub cards: Vec<Card>,
+    pub last_refresh: Instant,
+    pub quit: bool,
+}
+
+impl App {
+    pub fn new() -> Self {
+        Self {
+            cards: Vec::new(),
+            last_refresh: Instant::now(),
+            quit: false,
+        }
+    }
+}
+
+pub async fn run_loop() -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = runtime.block_on(run_loop(&mut terminal));
+    let result = drive(&mut terminal).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -36,33 +53,38 @@ fn restore_terminal(terminal: &mut Term) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn run_loop(terminal: &mut Term) -> Result<()> {
-    let mut cards: Vec<Card> = fetch_cards().await.unwrap_or_default();
-    let mut last_refresh = Instant::now();
+async fn drive(terminal: &mut Term) -> Result<()> {
+    let mut app = App::new();
+    app.cards = fetch_cards().await.unwrap_or_default();
+    app.last_refresh = Instant::now();
 
-    loop {
-        terminal.draw(|f| super::render::render(f, &cards))?;
+    while !app.quit {
+        terminal.draw(|f| render::render(f, &app.cards))?;
 
-        // Poll for input with a short timeout so we can refresh periodically.
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => {
-                        cards = fetch_cards().await.unwrap_or_default();
-                        last_refresh = Instant::now();
+                if key.kind == KeyEventKind::Press {
+                    if let Some(action) = events::translate(key) {
+                        handle_action(&mut app, action).await;
                     }
-                    _ => {}
                 }
             }
         }
 
-        if last_refresh.elapsed() > Duration::from_millis(500) {
-            cards = fetch_cards().await.unwrap_or_default();
-            last_refresh = Instant::now();
+        if app.last_refresh.elapsed() > Duration::from_millis(500) {
+            app.cards = fetch_cards().await.unwrap_or_default();
+            app.last_refresh = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+async fn handle_action(app: &mut App, action: Action) {
+    match action {
+        Action::Quit => app.quit = true,
+        Action::ForceRefresh => {
+            app.cards = fetch_cards().await.unwrap_or_default();
+            app.last_refresh = Instant::now();
         }
     }
 }

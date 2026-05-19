@@ -1,10 +1,10 @@
-//! Minimal read-only Ratatui kanban viewer for M1.
-
 mod app;
+mod events;
 mod render;
 
 use anyhow::Result;
 
 pub fn run() -> Result<()> {
-    app::run()
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(app::run_loop())
 }
