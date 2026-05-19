@@ -705,7 +705,7 @@ mod tests {
         assert!(dest.join("household.json").exists());
         let manifest_body = std::fs::read_to_string(dest.join("household.json")).unwrap();
         assert!(
-            manifest_body.contains("\"workspace\": \"my-ws\""),
+            manifest_body.contains("\"meta_repo\": \"my-ws\""),
             "workspace pointer substituted: {manifest_body}"
         );
         assert!(

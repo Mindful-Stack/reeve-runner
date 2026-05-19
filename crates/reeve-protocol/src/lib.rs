@@ -297,7 +297,7 @@ pub struct PushResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchPushResult {
-    /// `manifest.workspace` for the meta-repo; `repos[].name` for siblings.
+    /// `manifest.meta_repo` for the meta-repo; `repos[].name` for siblings.
     pub repo: String,
     pub branch: String,
     pub status: BranchPushStatus,

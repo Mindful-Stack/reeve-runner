@@ -91,7 +91,7 @@ async fn tick_one_card(
         // The card-side source path mirrors the host topology:
         //   - workspace repo: <workspace>/
         //   - sibling repo:   <workspace>/<name>/
-        let card_clone = if repo_name == manifest.workspace {
+        let card_clone = if repo_name == manifest.meta_repo {
             workspace.clone()
         } else {
             workspace.join(repo_name)

@@ -216,7 +216,7 @@ mod tests {
 
     fn workspace_manifest(workspace_name: &str, repos: &[&str], kb: Option<&str>) -> Manifest {
         Manifest {
-            workspace: workspace_name.into(),
+            meta_repo: workspace_name.into(),
             knowledge_base: kb.map(str::to_string),
             repos: repos
                 .iter()
@@ -493,7 +493,7 @@ mod integration_tests {
             meta_repo_path: meta.clone(),
         };
         let manifest = Manifest {
-            workspace: "meta".into(),
+            meta_repo: "meta".into(),
             knowledge_base: None,
             repos: vec![
                 RepoEntry { name: "meta".into(), url: None, tags: vec![], description: None },

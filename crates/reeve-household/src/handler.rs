@@ -38,7 +38,7 @@ fn summary_from(row: &HouseholdRow, m: &Manifest) -> HouseholdSummary {
     HouseholdSummary {
         name: row.name.clone(),
         meta_repo_path: row.meta_repo_path.clone(),
-        workspace_name: m.workspace.clone(),
+        workspace_name: m.meta_repo.clone(),
         knowledge_base: m.knowledge_base.clone(),
         repo_count: m.repos.len(),
     }
@@ -171,7 +171,7 @@ pub async fn handle_household_new(
         code: RpcError::INTERNAL,
         message: format!("parse template manifest: {e:#}"),
     })?;
-    let old_workspace = m.workspace.clone();
+    let old_workspace = m.meta_repo.clone();
     if let Some(entry) = m.repos.iter_mut().find(|r| r.name == old_workspace) {
         entry.name = params.name.clone();
     } else {
@@ -182,7 +182,7 @@ pub async fn handle_household_new(
             ),
         });
     }
-    m.workspace = params.name.clone();
+    m.meta_repo = params.name.clone();
     let body = serde_json::to_string_pretty(&m).map_err(|e| RpcError {
         code: RpcError::INTERNAL,
         message: format!("re-serialize manifest: {e:#}"),
@@ -223,7 +223,7 @@ pub async fn handle_household_ls(
     let mut out: Vec<HouseholdSummary> = Vec::with_capacity(rows.len());
     for row in rows {
         let m = manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| Manifest {
-            workspace: row.name.clone(),
+            meta_repo: row.name.clone(),
             knowledge_base: None,
             repos: vec![],
         });
@@ -281,7 +281,7 @@ pub async fn handle_household_show(
         .repos
         .iter()
         .map(|entry| {
-            let is_workspace = entry.name == m.workspace;
+            let is_workspace = entry.name == m.meta_repo;
             let is_knowledge_base = m.knowledge_base.as_deref() == Some(entry.name.as_str());
             let on_disk = if is_workspace {
                 RepoOnDisk::Workspace
