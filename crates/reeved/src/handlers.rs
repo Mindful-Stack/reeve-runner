@@ -1,17 +1,15 @@
 //! Method dispatch and per-method handlers.
 
 use crate::effects::DaemonState;
-use crate::stubs::StubWorkspaceLifecycle;
 use crate::transport::server::CallerContext;
 use anyhow::Result;
-use reeve_card::{make_card_repo, WorkspaceLifecycle};
+use reeve_card::make_card_repo;
 use reeve_protocol::{
     AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, Column,
     MvParams, MvSelfParams, NewParams, PushParams, PushResult, RpcError,
     RpcRequest,
 };
 use serde_json::Value;
-use std::sync::Arc;
 
 pub async fn dispatch(
     req: RpcRequest,
@@ -31,7 +29,7 @@ pub async fn dispatch(
         "mv" => {
             let cards = make_card_repo(state.db.clone());
             let households = state.household_lookup.clone();
-            let workspace = stub_workspace_lifecycle(state.clone());
+            let workspace = state.workspace_lifecycle.clone();
             let params = parse_params::<MvParams>(req.params)?;
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
         }
@@ -43,7 +41,7 @@ pub async fn dispatch(
             let card_id = require_card(&caller)?;
             let cards = make_card_repo(state.db.clone());
             let households = state.household_lookup.clone();
-            let workspace = stub_workspace_lifecycle(state.clone());
+            let workspace = state.workspace_lifecycle.clone();
             let params = parse_params::<MvSelfParams>(req.params)?;
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
@@ -97,12 +95,6 @@ pub async fn dispatch(
             message: format!("method not found: {other}"),
         }),
     }
-}
-
-fn stub_workspace_lifecycle(
-    state: crate::effects::DaemonState,
-) -> Arc<dyn WorkspaceLifecycle> {
-    Arc::new(StubWorkspaceLifecycle { state })
 }
 
 async fn fetch_container_status(
@@ -377,20 +369,51 @@ mod tests {
         }
     }
 
+    fn make_workspace_lifecycle(
+        db: &DbHandle,
+        household_repo: Arc<dyn reeve_household::HouseholdRepo>,
+        git: GitOpsHandle,
+        containers: ContainerOpsHandle,
+        listeners: &ListenerRegistry,
+    ) -> Arc<dyn reeve_card::WorkspaceLifecycle> {
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
+        Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
+            workspaces,
+            household_repo,
+            git,
+            containers,
+            listeners_arc,
+            PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            None,
+        ))
+    }
+
     fn fresh_state() -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
+        let containers: ContainerOpsHandle = Arc::new(NoopOps);
+        let git: GitOpsHandle = Arc::new(NoopGit);
+        let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
+        let workspace_lifecycle = make_workspace_lifecycle(
+            &db,
+            household_repo.clone(),
+            git.clone(),
+            containers.clone(),
+            &listeners,
+        );
         DaemonState {
-            db: db.clone(),
-            containers: Arc::new(NoopOps) as ContainerOpsHandle,
-            git: Arc::new(NoopGit) as GitOpsHandle,
-            listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
+            db,
+            containers,
+            git,
+            listeners,
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
             household_repo,
             household_lookup,
+            workspace_lifecycle,
         }
     }
 
@@ -399,15 +422,25 @@ mod tests {
         let db: DbHandle = Arc::new(Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
+        let containers: ContainerOpsHandle = Arc::new(NoopOps);
+        let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
+        let workspace_lifecycle = make_workspace_lifecycle(
+            &db,
+            household_repo.clone(),
+            git.clone(),
+            containers.clone(),
+            &listeners,
+        );
         DaemonState {
-            db: db.clone(),
-            containers: Arc::new(NoopOps) as ContainerOpsHandle,
+            db,
+            containers,
             git,
-            listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
+            listeners,
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
             household_repo,
             household_lookup,
+            workspace_lifecycle,
         }
     }
 
@@ -1193,18 +1226,29 @@ mod tests {
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
+        let containers: reeve_workspace::ContainerOpsHandle = std::sync::Arc::new(NoopOps);
+        let git_arc: crate::clones::GitOpsHandle = git;
+        let listeners = crate::transport::listener::ListenerRegistry::new(
+            db.clone(),
+            std::sync::Arc::new(NoopDispatcher),
+        );
+        let workspace_lifecycle = make_workspace_lifecycle(
+            &db,
+            household_repo.clone(),
+            git_arc.clone(),
+            containers.clone(),
+            &listeners,
+        );
         DaemonState {
-            db: db.clone(),
-            containers: std::sync::Arc::new(NoopOps) as reeve_workspace::ContainerOpsHandle,
-            git: git as crate::clones::GitOpsHandle,
-            listeners: crate::transport::listener::ListenerRegistry::new(
-                db,
-                std::sync::Arc::new(NoopDispatcher),
-            ),
+            db,
+            containers,
+            git: git_arc,
+            listeners,
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
             household_repo,
             household_lookup,
+            workspace_lifecycle,
         }
     }
 
@@ -1358,18 +1402,29 @@ mod tests {
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
+        let containers_arc: reeve_workspace::ContainerOpsHandle = containers;
+        let git: crate::clones::GitOpsHandle = std::sync::Arc::new(NoopGit);
+        let listeners = crate::transport::listener::ListenerRegistry::new(
+            db.clone(),
+            std::sync::Arc::new(NoopDispatcher),
+        );
+        let workspace_lifecycle = make_workspace_lifecycle(
+            &db,
+            household_repo.clone(),
+            git.clone(),
+            containers_arc.clone(),
+            &listeners,
+        );
         DaemonState {
-            db: db.clone(),
-            containers: containers as reeve_workspace::ContainerOpsHandle,
-            git: std::sync::Arc::new(NoopGit) as crate::clones::GitOpsHandle,
-            listeners: crate::transport::listener::ListenerRegistry::new(
-                db,
-                std::sync::Arc::new(NoopDispatcher),
-            ),
+            db,
+            containers: containers_arc,
+            git,
+            listeners,
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
             household_repo,
             household_lookup,
+            workspace_lifecycle,
         }
     }
 

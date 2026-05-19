@@ -124,6 +124,16 @@ impl ListenerRegistry {
     }
 }
 
+#[async_trait::async_trait]
+impl reeve_workspace::ListenerOps for ListenerRegistry {
+    async fn spawn(&self, card_id: &str, socket: std::path::PathBuf) {
+        ListenerRegistry::spawn(self, card_id, socket).await;
+    }
+    async fn stop(&self, card_id: &str) -> anyhow::Result<()> {
+        ListenerRegistry::stop(self, card_id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,9 +4,6 @@ mod effects;
 mod handlers;
 mod lifecycle;
 mod reconcile;
-mod transitions;
-
-mod stubs;
 
 mod app;
 mod transport;
@@ -81,6 +78,22 @@ async fn main() -> Result<()> {
     let git: clones::GitOpsHandle = reeve_workspace::make_git_ops();
     let (household_repo, household_lookup) =
         reeve_household::make_household_components(db.clone());
+
+    let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+    let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
+
+    let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> = Arc::new(
+        reeve_workspace::LiveWorkspaceLifecycle::new(
+            workspaces,
+            household_repo.clone(),
+            git.clone(),
+            containers.clone(),
+            listeners_arc,
+            claude_dir.clone(),
+            api_key.clone(),
+        )
+    );
+
     let state = effects::DaemonState {
         db: db.clone(),
         containers,
@@ -90,6 +103,7 @@ async fn main() -> Result<()> {
         api_key,
         household_repo,
         household_lookup,
+        workspace_lifecycle,
     };
     dispatcher_holder
         .state
