@@ -49,7 +49,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('k'), action: Action::SelectUp, description: "select previous card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Code(KeyCode::Up), action: Action::SelectUp, description: "select previous card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Char('g'), action: Action::SelectFirst, description: "select first card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::PageUp), action: Action::SelectFirst, description: "select first card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Shift(KeyCode::Char('g')), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::PageDown), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {
@@ -125,5 +127,17 @@ mod tests {
     fn plain_g_without_shift_translates_to_select_first() {
         let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
         assert_eq!(translate(key), Some(Action::SelectFirst));
+    }
+
+    #[test]
+    fn page_up_translates_to_select_first() {
+        let key = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::SelectFirst));
+    }
+
+    #[test]
+    fn page_down_translates_to_select_last() {
+        let key = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::SelectLast));
     }
 }
