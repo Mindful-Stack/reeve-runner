@@ -118,6 +118,9 @@ pub async fn handle(app: &mut App, action: Action) {
                 });
             }
         }
+        Action::Edit => open_edit_modal(app),
+        Action::New => open_new_modal(app).await,
+        Action::Delete => open_delete_modal(app),
     }
 }
 
@@ -202,7 +205,324 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 _ => {}
             }
         }
+        crate::tui::modal::ModalKind::EditBrief { card_id, buffer, cursor, error: _ } => {
+            let mut buffer = buffer;
+            let mut cursor = cursor;
+            match key.code {
+                KeyCode::Esc => {
+                    app.modal = None;
+                }
+                KeyCode::Enter => {
+                    let params = reeve_protocol::EditParams {
+                        id: card_id.clone(),
+                        brief: buffer.clone(),
+                    };
+                    match crate::tui::client_ext::rpc_edit(params).await {
+                        Ok(Ok(result)) => {
+                            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                                *c = result.card;
+                            }
+                            app.modal = None;
+                            set_status_info(app, "saved".into());
+                        }
+                        Ok(Err(e)) => {
+                            app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                                card_id,
+                                buffer,
+                                cursor,
+                                error: Some(e.message),
+                            });
+                        }
+                        Err(e) => {
+                            app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                                card_id,
+                                buffer,
+                                cursor,
+                                error: Some(format!("{e:#}")),
+                            });
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if cursor > 0 {
+                        let idx = char_byte_index(&buffer, cursor - 1);
+                        let end = char_byte_index(&buffer, cursor);
+                        buffer.drain(idx..end);
+                        cursor -= 1;
+                    }
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::Left => {
+                    if cursor > 0 {
+                        cursor -= 1;
+                    }
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::Right => {
+                    if cursor < buffer.chars().count() {
+                        cursor += 1;
+                    }
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::Home => {
+                    cursor = 0;
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::End => {
+                    cursor = buffer.chars().count();
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::Char(c) => {
+                    let byte_idx = char_byte_index(&buffer, cursor);
+                    buffer.insert(byte_idx, c);
+                    cursor += 1;
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        crate::tui::modal::ModalKind::DeleteConfirm { card_id } => {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    app.modal = None;
+                    let params = reeve_protocol::DeleteParams { id: card_id.clone() };
+                    match crate::tui::client_ext::rpc_delete(params).await {
+                        Ok(Ok(())) => {
+                            app.cards.retain(|c| c.id != card_id);
+                            crate::tui::actions::ensure_selection_valid(app);
+                            set_status_info(app, "deleted".into());
+                        }
+                        Ok(Err(e)) => {
+                            set_status_error(app, format!("delete failed: {}", e.message));
+                        }
+                        Err(e) => {
+                            set_status_error(app, format!("delete error: {e:#}"));
+                        }
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    app.modal = None;
+                }
+                _ => {}
+            }
+        }
+        crate::tui::modal::ModalKind::NewCard {
+            household,
+            brief,
+            cursor,
+            household_picker_index,
+            error: _,
+        } => {
+            let mut household = household;
+            let mut brief = brief;
+            let mut cursor = cursor;
+            let mut household_picker_index = household_picker_index;
+
+            // If no household chosen yet and multiple exist → household picker step.
+            if household.is_none() && app.households.len() > 1 {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.modal = None;
+                    }
+                    KeyCode::Up => {
+                        if household_picker_index > 0 {
+                            household_picker_index -= 1;
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household: None,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Down => {
+                        let max = app.households.len().saturating_sub(1);
+                        household_picker_index = (household_picker_index + 1).min(max);
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household: None,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        if let Some(h) = app.households.get(household_picker_index) {
+                            household = Some(h.name.clone());
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    _ => {}
+                }
+            } else {
+                // Brief input step.
+                match key.code {
+                    KeyCode::Esc => {
+                        app.modal = None;
+                    }
+                    KeyCode::Enter => {
+                        if brief.trim().is_empty() {
+                            app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                                household,
+                                brief,
+                                cursor,
+                                household_picker_index,
+                                error: Some("brief cannot be empty".into()),
+                            });
+                        } else {
+                            let hh = household.clone().unwrap_or_default();
+                            let params = reeve_protocol::NewParams {
+                                household: hh,
+                                brief: brief.clone(),
+                                needs_heavy: false,
+                            };
+                            match crate::tui::client_ext::rpc_new(params).await {
+                                Ok(Ok(_)) => {
+                                    app.modal = None;
+                                    set_status_info(app, "created".into());
+                                }
+                                Ok(Err(e)) => {
+                                    app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                                        household,
+                                        brief,
+                                        cursor,
+                                        household_picker_index,
+                                        error: Some(e.message),
+                                    });
+                                }
+                                Err(e) => {
+                                    app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                                        household,
+                                        brief,
+                                        cursor,
+                                        household_picker_index,
+                                        error: Some(format!("{e:#}")),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if cursor > 0 {
+                            let idx = char_byte_index(&brief, cursor - 1);
+                            let end = char_byte_index(&brief, cursor);
+                            brief.drain(idx..end);
+                            cursor -= 1;
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Left => {
+                        if cursor > 0 {
+                            cursor -= 1;
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Right => {
+                        if cursor < brief.chars().count() {
+                            cursor += 1;
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Home => {
+                        cursor = 0;
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::End => {
+                        cursor = brief.chars().count();
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Char(c) => {
+                        let byte_idx = char_byte_index(&brief, cursor);
+                        brief.insert(byte_idx, c);
+                        cursor += 1;
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
+}
+
+/// Given a string and a character-position cursor, return the byte index.
+fn char_byte_index(s: &str, char_pos: usize) -> usize {
+    s.char_indices()
+        .nth(char_pos)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
 }
 
 fn selected_card_column(app: &App) -> Option<Column> {
@@ -235,11 +555,11 @@ async fn execute_menu_kind(app: &mut App, kind: crate::tui::modal::ActionMenuKin
                 });
             }
         }
-        ActionMenuKind::Edit
-        | ActionMenuKind::Attach
-        | ActionMenuKind::Delete
-        | ActionMenuKind::NewCard => {
-            // Wired in Task 12.
+        ActionMenuKind::Edit => open_edit_modal(app),
+        ActionMenuKind::Delete => open_delete_modal(app),
+        ActionMenuKind::NewCard => open_new_modal(app).await,
+        ActionMenuKind::Attach => {
+            // Wired in Task 13/14.
         }
     }
 }
@@ -272,7 +592,68 @@ async fn mv_relative(app: &mut App, delta: i32) {
 }
 
 fn set_status_error(app: &mut App, msg: String) {
-    let _ = (app, msg); // wired up in Task 12 (status bar)
+    app.set_status(msg, crate::tui::app::StatusLevel::Error);
+}
+
+fn set_status_info(app: &mut App, msg: String) {
+    app.set_status(msg, crate::tui::app::StatusLevel::Info);
+}
+
+fn open_edit_modal(app: &mut App) {
+    let Some(card_id) = app.selected_card_id.clone() else {
+        set_status_error(app, "no card selected".into());
+        return;
+    };
+    let Some(card) = app.cards.iter().find(|c| c.id == card_id) else {
+        return;
+    };
+    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+        card_id,
+        buffer: card.brief.clone(),
+        cursor: card.brief.chars().count(),
+        error: None,
+    });
+}
+
+async fn open_new_modal(app: &mut App) {
+    match crate::tui::client_ext::rpc_household_ls().await {
+        Ok(Ok(list)) => app.households = list,
+        Ok(Err(e)) => {
+            set_status_error(app, format!("household.ls failed: {}", e.message));
+            return;
+        }
+        Err(e) => {
+            set_status_error(app, format!("household.ls error: {e:#}"));
+            return;
+        }
+    }
+    if app.households.is_empty() {
+        set_status_error(
+            app,
+            "no households. run `reeve household add` or `reeve household new` first.".into(),
+        );
+        return;
+    }
+    let single = if app.households.len() == 1 {
+        Some(app.households[0].name.clone())
+    } else {
+        None
+    };
+    app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+        household: single,
+        brief: String::new(),
+        cursor: 0,
+        household_picker_index: 0,
+        error: None,
+    });
+}
+
+fn open_delete_modal(app: &mut App) {
+    let Some(card_id) = app.selected_card_id.clone() else {
+        set_status_error(app, "no card selected".into());
+        return;
+    };
+    app.modal = Some(crate::tui::modal::ModalKind::DeleteConfirm { card_id });
 }
 
 /// Pick first card in focused column as the selection. Called after column

@@ -12,6 +12,18 @@ pub enum ModalKind {
     Help,
     /// Column picker: move the given card to the highlighted column.
     MoveColumn { card_id: String, choice: reeve_protocol::Column },
+    /// Edit the brief of an existing card.
+    EditBrief { card_id: String, buffer: String, cursor: usize, error: Option<String> },
+    /// Create a new card: optionally pick a household first, then enter brief.
+    NewCard {
+        household: Option<String>,
+        brief: String,
+        cursor: usize,
+        household_picker_index: usize,
+        error: Option<String>,
+    },
+    /// Confirm deletion of a card.
+    DeleteConfirm { card_id: String },
 }
 
 #[derive(Debug, Clone)]

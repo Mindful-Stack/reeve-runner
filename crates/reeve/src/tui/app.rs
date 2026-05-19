@@ -15,6 +15,20 @@ use std::time::{Duration, Instant};
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
+#[derive(Debug, Clone, Copy)]
+pub enum StatusLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub level: StatusLevel,
+    pub expires_at: Instant,
+}
+
 pub struct App {
     pub cards: Vec<Card>,
     pub last_refresh: Instant,
@@ -23,6 +37,8 @@ pub struct App {
     pub selected_card_id: Option<String>,
     pub layout: crate::tui::layout::LayoutMode,
     pub modal: Option<crate::tui::modal::ModalKind>,
+    pub status: Option<StatusMessage>,
+    pub households: Vec<reeve_protocol::HouseholdSummary>,
 }
 
 impl App {
@@ -35,6 +51,24 @@ impl App {
             selected_card_id: None,
             layout: crate::tui::layout::LayoutMode::default(),
             modal: None,
+            status: None,
+            households: Vec::new(),
+        }
+    }
+
+    pub fn set_status(&mut self, text: String, level: StatusLevel) {
+        self.status = Some(StatusMessage {
+            text,
+            level,
+            expires_at: Instant::now() + Duration::from_secs(3),
+        });
+    }
+
+    pub fn clear_expired_status(&mut self) {
+        if let Some(s) = &self.status {
+            if s.expires_at <= Instant::now() {
+                self.status = None;
+            }
         }
     }
 
@@ -81,6 +115,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
     }
 
     while !app.quit {
+        app.clear_expired_status();
         terminal.draw(|f| render::render(f, &app))?;
 
         if event::poll(Duration::from_millis(200))? {

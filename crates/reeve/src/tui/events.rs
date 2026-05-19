@@ -24,6 +24,9 @@ pub enum Action {
     MoveLeft,
     MoveRight,
     OpenMovePicker,
+    Edit,
+    New,
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +75,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Shift(KeyCode::Char('l')), action: Action::MoveRight, description: "move card right", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Shift(KeyCode::Right), action: Action::MoveRight, description: "move card right", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Char('m'), action: Action::OpenMovePicker, description: "move with column picker", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Char('e'), action: Action::Edit, description: "edit brief", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Char('n'), action: Action::New, description: "new card", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Char('d'), action: Action::Delete, description: "delete card", section: HelpSection::Mutations },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {

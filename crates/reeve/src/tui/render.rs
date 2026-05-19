@@ -9,11 +9,10 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
-    let title = title_line(app);
-    f.render_widget(title, chunks[0]);
+    f.render_widget(title_line(app), chunks[0]);
 
     match app.layout {
         crate::tui::layout::LayoutMode::KanbanFull => render_kanban_full(f, chunks[1], app),
@@ -21,7 +20,20 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
             render_focused_plus_detail(f, chunks[1], app)
         }
     }
+    render_status_bar(f, chunks[2], app);
     render_modal(f, area, app);
+}
+
+fn render_status_bar(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    if let Some(s) = &app.status {
+        let color = match s.level {
+            crate::tui::app::StatusLevel::Info => Color::White,
+            crate::tui::app::StatusLevel::Warn => Color::Yellow,
+            crate::tui::app::StatusLevel::Error => Color::Red,
+        };
+        let p = Paragraph::new(Span::styled(s.text.clone(), Style::default().fg(color)));
+        f.render_widget(p, area);
+    }
 }
 
 fn title_line(app: &App) -> Paragraph<'static> {
@@ -159,6 +171,36 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         crate::tui::modal::ModalKind::MoveColumn { choice, .. } => {
             render_move_picker(f, area, *choice);
         }
+        crate::tui::modal::ModalKind::EditBrief { buffer, cursor, error, .. } => {
+            render_edit_modal(f, area, buffer, *cursor, error.as_deref());
+        }
+        crate::tui::modal::ModalKind::DeleteConfirm { card_id } => {
+            let brief = app
+                .cards
+                .iter()
+                .find(|c| &c.id == card_id)
+                .map(|c| c.brief.as_str())
+                .unwrap_or("");
+            render_delete_confirm(f, area, card_id, brief);
+        }
+        crate::tui::modal::ModalKind::NewCard {
+            household,
+            brief,
+            cursor,
+            household_picker_index,
+            error,
+        } => {
+            render_new_modal(
+                f,
+                area,
+                household.as_deref(),
+                brief,
+                *cursor,
+                *household_picker_index,
+                error.as_deref(),
+                &app.households,
+            );
+        }
     }
 }
 
@@ -274,6 +316,174 @@ fn render_help(f: &mut ratatui::Frame<'_>, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title("help  (esc/?/q to close)"));
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(para, area);
+}
+
+fn render_edit_modal(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    buffer: &str,
+    cursor: usize,
+    error: Option<&str>,
+) {
+    let popup_area = centered_rect(60, 30, area);
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+
+    let mut lines: Vec<Line> = vec![Line::from(Span::raw(""))];
+    lines.push(build_buffer_line(buffer, cursor));
+    if let Some(err) = error {
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            format!("  error: {err}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  Enter save  Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let para = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("edit brief"));
+    f.render_widget(para, popup_area);
+}
+
+fn render_delete_confirm(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    _card_id: &str,
+    brief: &str,
+) {
+    let popup_area = centered_rect(50, 25, area);
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+
+    let lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled("  delete: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(brief),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  y/Enter confirm  n/Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("delete card?"),
+        );
+    f.render_widget(para, popup_area);
+}
+
+fn render_new_modal(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    household: Option<&str>,
+    brief: &str,
+    cursor: usize,
+    household_picker_index: usize,
+    error: Option<&str>,
+    households: &[reeve_protocol::HouseholdSummary],
+) {
+    let popup_area = centered_rect(60, 40, area);
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+
+    // Household picker step.
+    if household.is_none() && households.len() > 1 {
+        let items: Vec<ListItem> = households
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let style = if i == household_picker_index {
+                    Style::default().bg(Color::Yellow).fg(Color::Black)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("  {}", h.name),
+                    style,
+                )))
+            })
+            .collect();
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("new card — pick household  (Enter select, Esc cancel)"),
+        );
+        f.render_widget(list, popup_area);
+        return;
+    }
+
+    // Brief input step.
+    let hh_label = household.unwrap_or("(none)");
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled("  household: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(hh_label),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::styled("  brief: ", Style::default().fg(Color::DarkGray)),
+        ]),
+        build_buffer_line(brief, cursor),
+    ];
+    if let Some(err) = error {
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            format!("  error: {err}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  Enter create  Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let para = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("new card"));
+    f.render_widget(para, popup_area);
+}
+
+/// Build a `Line` that shows `buffer` with a yellow-bg cursor cell at `cursor`.
+fn build_buffer_line(buffer: &str, cursor: usize) -> Line<'static> {
+    let chars: Vec<char> = buffer.chars().collect();
+    let len = chars.len();
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    // Leading spaces for indentation.
+    spans.push(Span::raw("  "));
+
+    if len == 0 {
+        // Empty buffer: show cursor as a single space.
+        spans.push(Span::styled(" ", Style::default().bg(Color::Yellow).fg(Color::Black)));
+    } else {
+        // Characters before cursor.
+        if cursor > 0 {
+            spans.push(Span::raw(chars[..cursor].iter().collect::<String>()));
+        }
+        if cursor < len {
+            // Character under cursor.
+            spans.push(Span::styled(
+                chars[cursor].to_string(),
+                Style::default().bg(Color::Yellow).fg(Color::Black),
+            ));
+            // Characters after cursor.
+            if cursor + 1 < len {
+                spans.push(Span::raw(chars[cursor + 1..].iter().collect::<String>()));
+            }
+        } else {
+            // Cursor is past end — append a trailing-space cursor cell.
+            spans.push(Span::styled(" ", Style::default().bg(Color::Yellow).fg(Color::Black)));
+        }
+    }
+
+    Line::from(spans)
 }
 
 fn card_to_listitem(card: &Card, selected: bool) -> ListItem<'_> {
