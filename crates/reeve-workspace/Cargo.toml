@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 reeve-protocol = { path = "../reeve-protocol" }
 reeve-card = { path = "../reeve-card" }
+reeve-household = { path = "../reeve-household" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 serde = { workspace = true }

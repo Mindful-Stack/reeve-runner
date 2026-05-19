@@ -1,7 +1,6 @@
 mod clones;
 mod db;
 mod effects;
-mod fetch;
 mod handlers;
 mod lifecycle;
 mod reconcile;
@@ -79,7 +78,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
-    let git: clones::GitOpsHandle = Arc::new(clones::RealGitOps);
+    let git: clones::GitOpsHandle = reeve_workspace::make_git_ops();
     let (household_repo, household_lookup) =
         reeve_household::make_household_components(db.clone());
     let state = effects::DaemonState {
@@ -102,7 +101,7 @@ async fn main() -> Result<()> {
     // Spawn the fetch worker. Hold its shutdown sender; we'll fire it after
     // server::run returns.
     let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let fetch_worker = tokio::spawn(fetch::run(state.clone(), fetch_shutdown_rx));
+    let fetch_worker = tokio::spawn(reeve_workspace::fetch::run(state.clone(), fetch_shutdown_rx));
 
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {

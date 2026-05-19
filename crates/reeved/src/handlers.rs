@@ -780,7 +780,7 @@ mod tests {
             .unwrap();
 
         let dest = dir.path().join("my-ws");
-        let state = fresh_state_with_git(Arc::new(crate::clones::RealGitOps) as GitOpsHandle);
+        let state = fresh_state_with_git(reeve_workspace::make_git_ops() as GitOpsHandle);
         let result = dispatch(
             RpcRequest {
                 id: 1,
