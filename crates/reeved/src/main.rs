@@ -1,10 +1,10 @@
 mod clones;
-mod container;
 mod db;
 mod effects;
 mod fetch;
 mod handlers;
 mod lifecycle;
+mod reconcile;
 mod transitions;
 
 mod stubs;
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
         state: std::sync::OnceLock::new(),
     });
 
-    let containers: container::ContainerOpsHandle = Arc::new(container::DockerOps);
+    let containers: reeve_workspace::ContainerOpsHandle = reeve_workspace::make_container_ops();
     let listeners = listener::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
     let claude_dir = std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".claude"))
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         .set(state.clone())
         .map_err(|_| anyhow::anyhow!("dispatcher state already initialised"))?;
 
-    container::reconcile_on_startup(&state).await?;
+    reconcile::reconcile_on_startup(&state).await?;
 
     // Spawn the fetch worker. Hold its shutdown sender; we'll fire it after
     // server::run returns.

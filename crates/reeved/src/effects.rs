@@ -2,7 +2,7 @@
 //! Bundled with the `DaemonState` that the dispatcher closure captures.
 
 use crate::clones::{self, GitOpsHandle};
-use crate::container::{self, ContainerOpsHandle};
+use reeve_workspace::{self as workspace, ContainerOpsHandle};
 use crate::db;
 use crate::transport::listener::ListenerRegistry;
 use crate::transport::server::DbHandle;
@@ -120,7 +120,7 @@ impl TransitionEffects for LiveEffects {
             );
         }
 
-        let argv = container::devcontainer_up_command(
+        let argv = workspace::container::devcontainer_up_command(
             &card_id,
             &workspace,
             &devcontainer_path,

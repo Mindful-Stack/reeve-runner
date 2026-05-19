@@ -283,7 +283,7 @@ async fn handle_attach(state: &DaemonState, params: AttachParams) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::{ContainerOps, ContainerOpsHandle};
+    use reeve_workspace::{ContainerOps, ContainerOpsHandle};
     use crate::db;
     use crate::effects::DaemonState;
     use crate::transport::listener::{Dispatcher, ListenerRegistry};
@@ -1195,7 +1195,7 @@ mod tests {
             reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
-            containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
+            containers: std::sync::Arc::new(NoopOps) as reeve_workspace::ContainerOpsHandle,
             git: git as crate::clones::GitOpsHandle,
             listeners: crate::transport::listener::ListenerRegistry::new(
                 db,
@@ -1328,7 +1328,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl crate::container::ContainerOps for ConfigurableContainers {
+    impl reeve_workspace::ContainerOps for ConfigurableContainers {
         async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
             Ok(())
         }
@@ -1360,7 +1360,7 @@ mod tests {
             reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
-            containers: containers as crate::container::ContainerOpsHandle,
+            containers: containers as reeve_workspace::ContainerOpsHandle,
             git: std::sync::Arc::new(NoopGit) as crate::clones::GitOpsHandle,
             listeners: crate::transport::listener::ListenerRegistry::new(
                 db,

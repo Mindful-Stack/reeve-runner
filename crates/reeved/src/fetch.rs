@@ -176,7 +176,7 @@ mod tests {
 
     struct NoopOps;
     #[async_trait::async_trait]
-    impl crate::container::ContainerOps for NoopOps {
+    impl reeve_workspace::ContainerOps for NoopOps {
         async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
             Ok(())
         }
@@ -237,7 +237,7 @@ mod tests {
             reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
-            containers: Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
+            containers: Arc::new(NoopOps) as reeve_workspace::ContainerOpsHandle,
             git: git as crate::clones::GitOpsHandle,
             listeners: crate::transport::listener::ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
