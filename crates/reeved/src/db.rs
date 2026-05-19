@@ -15,19 +15,7 @@ pub fn open(path: &str) -> Result<Connection> {
 pub fn migrate(conn: &Connection) -> Result<()> {
     reeve_card::init_schema(conn)?;
     reeve_household::init_schema(conn)?;
-    // workspace schema-init joins in Stage 4
-    // (containers table init still inline in db.rs until then)
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS containers (
-            card_id        TEXT PRIMARY KEY,
-            container_name TEXT NOT NULL,
-            status         TEXT NOT NULL CHECK (status IN ('spawning','running','stopped','failed')),
-            started_at     INTEGER NOT NULL,
-            updated_at     INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_containers_status ON containers(status);
-         PRAGMA foreign_keys = ON;",
-    )?;
+    reeve_workspace::init_schema(conn)?;
     Ok(())
 }
 

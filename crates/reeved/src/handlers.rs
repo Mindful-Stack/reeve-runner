@@ -2,11 +2,9 @@
 
 use crate::effects::DaemonState;
 use crate::transport::server::CallerContext;
-use anyhow::Result;
 use reeve_card::make_card_repo;
 use reeve_protocol::{
-    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, Column,
-    MvParams, MvSelfParams, NewParams, PushParams, PushResult, RpcError,
+    MvParams, MvSelfParams, NewParams, RpcError,
     RpcRequest,
 };
 use serde_json::Value;
@@ -34,8 +32,13 @@ pub async fn dispatch(
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
         }
         "attach" => {
-            let params = parse_params::<AttachParams>(req.params)?;
-            handle_attach(&state, params).await
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<reeve_protocol::AttachParams>(req.params)?;
+            reeve_workspace::handle_attach(
+                &*cards,
+                &*state.containers,
+                params,
+            ).await
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
@@ -46,8 +49,14 @@ pub async fn dispatch(
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
         "push" => {
-            let params = parse_params::<PushParams>(req.params)?;
-            handle_push(&state, params).await
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<reeve_protocol::PushParams>(req.params)?;
+            reeve_workspace::handle_push(
+                &*cards,
+                &*state.household_repo,
+                &*state.git,
+                params,
+            ).await
         }
         "status-self" => {
             let card_id = require_card(&caller)?;
@@ -133,144 +142,6 @@ fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcEr
     })
 }
 
-fn to_internal<E: std::fmt::Display>(e: E) -> RpcError {
-    RpcError {
-        code: RpcError::INTERNAL,
-        message: e.to_string(),
-    }
-}
-
-async fn handle_push(
-    state: &DaemonState,
-    params: PushParams,
-) -> std::result::Result<Value, RpcError> {
-    // 1. Fetch the card from the DB.
-    let card_id = params.id.clone();
-    let db = state.db.clone();
-    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        crate::db::get_card(&conn, &card_id)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card '{}' not found", params.id),
-    })?;
-
-    // 2. Resolve the household from the household_repo.
-    let row = state.household_repo.get(&card.household).await
-        .map_err(to_internal)?
-        .ok_or_else(|| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("household '{}' not configured", card.household),
-        })?;
-    let household = reeve_household::Household {
-        name: row.name,
-        meta_repo_path: row.meta_repo_path,
-    };
-
-    // 3. Load + validate the manifest.
-    let manifest = reeve_household::load_household_manifest(&household).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("load manifest: {e:#}"),
-    })?;
-
-    // 4. For each repo, for each branch in the namespace, FF + push.
-    let mut branches = Vec::new();
-    for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
-        let listed = state
-            .git
-            .list_namespace_refs(&host_path, &card.id)
-            .await
-            .map_err(|e| RpcError {
-                code: RpcError::INTERNAL,
-                message: format!(
-                    "list refs/reeve/{}/* in {}: {e:#}",
-                    card.id,
-                    host_path.display()
-                ),
-            })?;
-        for branch in listed {
-            let target = format!("refs/heads/{branch}");
-            let source = format!("refs/reeve/{}/{}", card.id, branch);
-            let status = match state.git.fast_forward(&host_path, &target, &source).await {
-                Ok(crate::clones::FfOutcome::Updated) => {
-                    match state.git.push(&host_path, &branch).await {
-                        Ok(()) => BranchPushStatus::Pushed,
-                        Err(e) => BranchPushStatus::PushFailed {
-                            message: format!("{e:#}"),
-                        },
-                    }
-                }
-                Ok(crate::clones::FfOutcome::NotFastForward) => BranchPushStatus::NotFastForward,
-                Err(e) => BranchPushStatus::PushFailed {
-                    message: format!("fast-forward check failed: {e:#}"),
-                },
-            };
-            branches.push(BranchPushResult {
-                repo: repo_name.to_string(),
-                branch,
-                status,
-            });
-        }
-    }
-    serde_json::to_value(PushResult { branches }).map_err(to_internal)
-}
-
-async fn handle_attach(state: &DaemonState, params: AttachParams) -> Result<Value, RpcError> {
-    // 1. Fetch the card from the DB.
-    let card_id = params.id.clone();
-    let db = state.db.clone();
-    let card = tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
-        let conn = db.blocking_lock();
-        crate::db::get_card(&conn, &card_id)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::NOT_FOUND,
-        message: format!("card '{}' not found", params.id),
-    })?;
-
-    // 2. Column check.
-    if card.column != Column::Implementing {
-        return Err(RpcError {
-            code: RpcError::INVALID_ARGUMENT,
-            message: format!(
-                "card is in {}; attach only works in Implementing",
-                card.column.label()
-            ),
-        });
-    }
-
-    // 3. Container discovery by label.
-    let container_name = state
-        .containers
-        .discover_container_name(&card.id)
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("container discovery failed: {e:#}"),
-        })?
-        .ok_or_else(|| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!(
-                "container for card '{}' not running (try mv {} implementing again)",
-                card.id, card.id
-            ),
-        })?;
-
-    // 4. Return the address.
-    let result = AttachResult {
-        container_name,
-        session_name: "reeve".to_string(),
-        in_container_workspace: format!("/workspaces/{}", card.id),
-    };
-    serde_json::to_value(result).map_err(to_internal)
-}
 
 #[cfg(test)]
 mod tests {
@@ -282,7 +153,7 @@ mod tests {
     use crate::transport::server::DbHandle;
     use anyhow::Result;
     use async_trait::async_trait;
-    use reeve_protocol::{LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
+    use reeve_protocol::{Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::Arc;
