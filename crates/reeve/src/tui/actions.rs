@@ -106,6 +106,18 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::SelectMenuUp | Action::SelectMenuDown | Action::ConfirmMenuItem => {
             // Routed via handle_modal_key; non-modal context is no-op.
         }
+        Action::MoveLeft => mv_relative(app, -1).await,
+        Action::MoveRight => mv_relative(app, 1).await,
+        Action::OpenMovePicker => {
+            if app.selected_card_id.is_some() {
+                let current =
+                    selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
+                app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
+                    card_id: app.selected_card_id.clone().unwrap(),
+                    choice: current,
+                });
+            }
+        }
     }
 }
 
@@ -152,6 +164,44 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.modal = None;
             }
         }
+        crate::tui::modal::ModalKind::MoveColumn { card_id, choice } => {
+            use reeve_protocol::Column;
+            let cols = Column::ALL;
+            let cur_idx = cols.iter().position(|c| *c == choice).unwrap_or(0);
+            match key.code {
+                KeyCode::Esc => app.modal = None,
+                KeyCode::Up => {
+                    let new = cur_idx.saturating_sub(1);
+                    app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
+                        card_id: card_id.clone(),
+                        choice: cols[new],
+                    });
+                }
+                KeyCode::Down => {
+                    let new = (cur_idx + 1).min(cols.len() - 1);
+                    app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
+                        card_id: card_id.clone(),
+                        choice: cols[new],
+                    });
+                }
+                KeyCode::Enter => {
+                    app.modal = None;
+                    let params =
+                        reeve_protocol::MvParams { id: card_id.clone(), column: choice };
+                    match crate::tui::client_ext::rpc_mv(params).await {
+                        Ok(Ok(updated)) => {
+                            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                                *c = updated;
+                            }
+                            app.focused_column = choice;
+                        }
+                        Ok(Err(e)) => set_status_error(app, format!("mv failed: {}", e.message)),
+                        Err(e) => set_status_error(app, format!("mv error: {e:#}")),
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -171,9 +221,58 @@ async fn handle_menu_letter(app: &mut App, c: char) {
 }
 
 async fn execute_menu_kind(app: &mut App, kind: crate::tui::modal::ActionMenuKind) {
-    // Tasks 11/12/13 wire these to real RPCs / modal opens.
-    // For Task 10, just no-op (the user sees the modal close and nothing else happens).
-    let _ = (app, kind);
+    use crate::tui::modal::ActionMenuKind;
+    match kind {
+        ActionMenuKind::MoveLeft => mv_relative(app, -1).await,
+        ActionMenuKind::MoveRight => mv_relative(app, 1).await,
+        ActionMenuKind::MovePicker => {
+            if let Some(card_id) = app.selected_card_id.clone() {
+                let cur =
+                    selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
+                app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
+                    card_id,
+                    choice: cur,
+                });
+            }
+        }
+        ActionMenuKind::Edit
+        | ActionMenuKind::Attach
+        | ActionMenuKind::Delete
+        | ActionMenuKind::NewCard => {
+            // Wired in Task 12.
+        }
+    }
+}
+
+async fn mv_relative(app: &mut App, delta: i32) {
+    let Some(card_id) = app.selected_card_id.clone() else {
+        return;
+    };
+    let Some(card) = app.cards.iter().find(|c| c.id == card_id).cloned() else {
+        return;
+    };
+    let cols = reeve_protocol::Column::ALL;
+    let cur = cols.iter().position(|c| *c == card.column).unwrap_or(0);
+    let new_idx = (cur as i32 + delta).clamp(0, cols.len() as i32 - 1) as usize;
+    if cols[new_idx] == card.column {
+        return; // no-op (already at edge)
+    }
+    let target = cols[new_idx];
+    let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
+    match crate::tui::client_ext::rpc_mv(params).await {
+        Ok(Ok(updated)) => {
+            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                *c = updated;
+            }
+            app.focused_column = target;
+        }
+        Ok(Err(e)) => set_status_error(app, format!("mv failed: {}", e.message)),
+        Err(e) => set_status_error(app, format!("mv error: {e:#}")),
+    }
+}
+
+fn set_status_error(app: &mut App, msg: String) {
+    let _ = (app, msg); // wired up in Task 12 (status bar)
 }
 
 /// Pick first card in focused column as the selection. Called after column

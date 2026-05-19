@@ -21,6 +21,9 @@ pub enum Action {
     SelectMenuUp,
     SelectMenuDown,
     ConfirmMenuItem,
+    MoveLeft,
+    MoveRight,
+    OpenMovePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +37,7 @@ pub enum KeyMatcher {
 pub enum HelpSection {
     Global,
     Navigation,
+    Mutations,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,6 +67,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Code(KeyCode::PageDown), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Char(' '), action: Action::OpenActionMenu, description: "open action menu", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Char('?'), action: Action::OpenHelp, description: "help", section: HelpSection::Global },
+    Binding { key: KeyMatcher::Shift(KeyCode::Char('h')), action: Action::MoveLeft, description: "move card left", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Shift(KeyCode::Left), action: Action::MoveLeft, description: "move card left", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Shift(KeyCode::Char('l')), action: Action::MoveRight, description: "move card right", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Shift(KeyCode::Right), action: Action::MoveRight, description: "move card right", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Char('m'), action: Action::OpenMovePicker, description: "move with column picker", section: HelpSection::Mutations },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {
@@ -79,7 +88,9 @@ fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
         KeyMatcher::Char(c) => {
             event.code == KeyCode::Char(c) && !event.modifiers.contains(KeyModifiers::SHIFT)
         }
-        KeyMatcher::Code(code) => event.code == code,
+        KeyMatcher::Code(code) => {
+            event.code == code && !event.modifiers.contains(KeyModifiers::SHIFT)
+        }
         KeyMatcher::Shift(code) => {
             if !event.modifiers.contains(KeyModifiers::SHIFT) {
                 return false;
@@ -150,5 +161,54 @@ mod tests {
     fn page_down_translates_to_select_last() {
         let key = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
         assert_eq!(translate(key), Some(Action::SelectLast));
+    }
+
+    #[test]
+    fn shift_h_uppercase_translates_to_move_left() {
+        // Crossterm reports Shift+H as Char('H') with SHIFT modifier.
+        let key = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::MoveLeft));
+    }
+
+    #[test]
+    fn shift_h_lowercase_with_modifier_translates_to_move_left() {
+        let key = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::MoveLeft));
+    }
+
+    #[test]
+    fn plain_h_without_shift_translates_to_focus_prev_column() {
+        let key = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::FocusPrevColumn));
+    }
+
+    #[test]
+    fn shift_l_uppercase_translates_to_move_right() {
+        let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::MoveRight));
+    }
+
+    #[test]
+    fn plain_l_without_shift_translates_to_focus_next_column() {
+        let key = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::FocusNextColumn));
+    }
+
+    #[test]
+    fn shift_left_translates_to_move_left() {
+        let key = KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::MoveLeft));
+    }
+
+    #[test]
+    fn shift_right_translates_to_move_right() {
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::MoveRight));
+    }
+
+    #[test]
+    fn m_translates_to_open_move_picker() {
+        let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::OpenMovePicker));
     }
 }

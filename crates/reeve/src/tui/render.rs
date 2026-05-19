@@ -156,6 +156,9 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         crate::tui::modal::ModalKind::Help => {
             render_help(f, area);
         }
+        crate::tui::modal::ModalKind::MoveColumn { choice, .. } => {
+            render_move_picker(f, area, *choice);
+        }
     }
 }
 
@@ -215,6 +218,31 @@ fn render_action_menu(
         .collect();
     let list = List::new(list_items)
         .block(Block::default().borders(Borders::ALL).title("actions  (esc to close)"));
+    f.render_widget(ratatui::widgets::Clear, area);
+    f.render_widget(list, area);
+}
+
+fn render_move_picker(f: &mut ratatui::Frame<'_>, area: Rect, choice: Column) {
+    let area = centered_rect(30, 40, area);
+    let items: Vec<ListItem> = Column::ALL
+        .iter()
+        .map(|col| {
+            let style = if *col == choice {
+                Style::default().bg(Color::Yellow).fg(Color::Black)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!("  {}", col.label()),
+                style,
+            )))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("move to column  (enter/esc)"),
+    );
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(list, area);
 }

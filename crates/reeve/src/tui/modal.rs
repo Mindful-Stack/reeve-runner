@@ -10,7 +10,8 @@ pub enum ModalKind {
     ActionMenu { selected_index: usize },
     /// Help cheatsheet.
     Help,
-    // Tasks 11/12 add: MoveColumn, EditBrief, NewCard, DeleteConfirm.
+    /// Column picker: move the given card to the highlighted column.
+    MoveColumn { card_id: String, choice: reeve_protocol::Column },
 }
 
 #[derive(Debug, Clone)]
