@@ -6,7 +6,7 @@ pub mod manifest;
 mod repo;
 mod scaffold;
 
-pub use domain::{load_household_manifest, Household};
+pub use domain::{iter_card_repos, load_household_manifest, Household};
 pub use handler::{
     handle_household_add, handle_household_ls, handle_household_new,
     handle_household_rm, handle_household_show, NameParam,

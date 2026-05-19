@@ -2,23 +2,17 @@
 
 use crate::db;
 use crate::effects::DaemonState;
-use reeve_household::manifest;
-use crate::stubs::{StubHouseholdLookup, StubWorkspaceLifecycle};
+use crate::stubs::StubWorkspaceLifecycle;
 use crate::transport::server::CallerContext;
 use anyhow::Result;
-use reeve_card::{make_card_repo, HouseholdLookup, WorkspaceLifecycle};
+use reeve_card::{make_card_repo, WorkspaceLifecycle};
 use reeve_protocol::{
-    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, CardReference, Column,
-    HouseholdAddParams, HouseholdDetail, HouseholdNewParams, HouseholdSource, HouseholdSummary,
-    MvParams, MvSelfParams, NewParams, PushParams, PushResult, RepoDetail, RepoOnDisk, RpcError,
+    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Card, Column,
+    MvParams, MvSelfParams, NewParams, PushParams, PushResult, RpcError,
     RpcRequest,
 };
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-const DEFAULT_TEMPLATE: &str = "https://github.com/Mindful-Stack/witan-household";
 
 pub async fn dispatch(
     req: RpcRequest,
@@ -37,7 +31,7 @@ pub async fn dispatch(
         }
         "mv" => {
             let cards = make_card_repo(state.db.clone());
-            let households = stub_household_lookup(state.db.clone());
+            let households = state.household_lookup.clone();
             let workspace = stub_workspace_lifecycle(state.clone());
             let params = parse_params::<MvParams>(req.params)?;
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
@@ -49,7 +43,7 @@ pub async fn dispatch(
         "mv-self" => {
             let card_id = require_card(&caller)?;
             let cards = make_card_repo(state.db.clone());
-            let households = stub_household_lookup(state.db.clone());
+            let households = state.household_lookup.clone();
             let workspace = stub_workspace_lifecycle(state.clone());
             let params = parse_params::<MvSelfParams>(req.params)?;
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
@@ -65,33 +59,45 @@ pub async fn dispatch(
             reeve_card::handle_status_self(&*cards, container_status, card_id).await
         }
         "household.add" => {
-            let params = parse_params::<HouseholdAddParams>(req.params)?;
-            handle_household_add(&state, params).await
+            let scaffold = reeve_household::make_scaffold();
+            let params = parse_params::<reeve_protocol::HouseholdAddParams>(req.params)?;
+            reeve_household::handle_household_add(
+                &*state.household_repo,
+                &*scaffold,
+                params,
+            ).await
         }
         "household.new" => {
-            let params = parse_params::<HouseholdNewParams>(req.params)?;
-            handle_household_new(&state, params).await
+            let scaffold = reeve_household::make_scaffold();
+            let params = parse_params::<reeve_protocol::HouseholdNewParams>(req.params)?;
+            reeve_household::handle_household_new(
+                &*state.household_repo,
+                &*scaffold,
+                params,
+            ).await
         }
-        "household.ls" => handle_household_ls(&state).await,
+        "household.ls" => {
+            reeve_household::handle_household_ls(&*state.household_repo).await
+        }
         "household.rm" => {
-            let params = parse_params::<NameParam>(req.params)?;
-            handle_household_rm(&state, params).await
+            let params = parse_params::<reeve_household::NameParam>(req.params)?;
+            reeve_household::handle_household_rm(&*state.household_repo, params).await
         }
         "household.show" => {
-            let params = parse_params::<NameParam>(req.params)?;
-            handle_household_show(&state, params).await
+            let params = parse_params::<reeve_household::NameParam>(req.params)?;
+            // pre-resolve referencing cards via CardRepo
+            let cards_repo = reeve_card::make_card_repo(state.db.clone());
+            let cards = cards_repo.for_household(&params.name).await.map_err(|e| reeve_protocol::RpcError {
+                code: reeve_protocol::RpcError::INTERNAL,
+                message: e.to_string(),
+            })?;
+            reeve_household::handle_household_show(&*state.household_repo, cards, params).await
         }
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
             message: format!("method not found: {other}"),
         }),
     }
-}
-
-fn stub_household_lookup(
-    db: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-) -> Arc<dyn HouseholdLookup> {
-    Arc::new(StubHouseholdLookup { db })
 }
 
 fn stub_workspace_lifecycle(
@@ -136,268 +142,11 @@ fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcEr
     })
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 fn to_internal<E: std::fmt::Display>(e: E) -> RpcError {
     RpcError {
         code: RpcError::INTERNAL,
         message: e.to_string(),
     }
-}
-
-fn default_source_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join("Source"))
-        .unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn summary_from(row: &db::HouseholdRow, m: &manifest::Manifest) -> HouseholdSummary {
-    HouseholdSummary {
-        name: row.name.clone(),
-        meta_repo_path: row.meta_repo_path.clone(),
-        workspace_name: m.workspace.clone(),
-        knowledge_base: m.knowledge_base.clone(),
-        repo_count: m.repos.len(),
-    }
-}
-
-async fn handle_household_add(
-    state: &DaemonState,
-    params: HouseholdAddParams,
-) -> std::result::Result<Value, RpcError> {
-    let meta_repo_path = match &params.source {
-        HouseholdSource::Path { path } => {
-            if params.clone_into.is_some() {
-                return Err(RpcError {
-                    code: RpcError::INVALID_PARAMS,
-                    message: "--clone-into is only valid for URL sources".into(),
-                });
-            }
-            if !path.exists() {
-                return Err(RpcError {
-                    code: RpcError::NOT_FOUND,
-                    message: format!("path {} does not exist", path.display()),
-                });
-            }
-            if !path.join(".git").exists() {
-                return Err(RpcError {
-                    code: RpcError::INVALID_ARGUMENT,
-                    message: format!("path {} is not a git repository", path.display()),
-                });
-            }
-            path.clone()
-        }
-        HouseholdSource::Url { url } => {
-            let dest = params
-                .clone_into
-                .clone()
-                .unwrap_or_else(|| default_source_dir().join(&params.name));
-            if dest.exists() {
-                return Err(RpcError {
-                    code: RpcError::CONFLICT,
-                    message: format!("target directory {} already exists", dest.display()),
-                });
-            }
-            state
-                .git
-                .clone_url(url, &dest)
-                .await
-                .map_err(|e| RpcError {
-                    code: RpcError::INTERNAL,
-                    message: format!("clone {url}: {e:#}"),
-                })?;
-            // TODO: on manifest or DB-insert failure below, the cloned directory at
-            // `dest` is left orphaned (no DB row, no cleanup). Acceptable for M3.5;
-            // follow-up issue should add best-effort dest removal on error paths.
-            dest
-        }
-    };
-
-    // Validate the manifest BEFORE inserting into sqlite.
-    let m = manifest::load_manifest(&meta_repo_path).map_err(|e| RpcError {
-        code: RpcError::INVALID_ARGUMENT,
-        message: format!("manifest invalid: {e:#}"),
-    })?;
-
-    let added_at = now_secs();
-    let row = db::HouseholdRow {
-        name: params.name.clone(),
-        meta_repo_path: meta_repo_path.clone(),
-        added_at,
-    };
-    let db = state.db.clone();
-    let row_clone = row.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let conn = db.blocking_lock();
-        db::insert_household(&conn, &row_clone)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(|e| RpcError {
-        code: RpcError::CONFLICT,
-        message: format!("insert household: {e:#}"),
-    })?;
-
-    serde_json::to_value(summary_from(&row, &m)).map_err(to_internal)
-}
-
-async fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .await?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git {args:?} failed in {} (exit {}): {}",
-            dir.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    Ok(())
-}
-
-fn git_remote_url(meta_repo: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(meta_repo)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-#[derive(serde::Deserialize)]
-pub struct NameParam {
-    pub name: String,
-}
-
-async fn handle_household_ls(state: &DaemonState) -> std::result::Result<Value, RpcError> {
-    let conn = state.db.lock().await;
-    let rows = db::list_households(&conn).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("list households: {e:#}"),
-    })?;
-    drop(conn);
-    let mut out: Vec<HouseholdSummary> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let m =
-            manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| manifest::Manifest {
-                workspace: row.name.clone(),
-                knowledge_base: None,
-                repos: vec![],
-            });
-        out.push(summary_from(&row, &m));
-    }
-    serde_json::to_value(out).map_err(to_internal)
-}
-
-async fn handle_household_rm(
-    state: &DaemonState,
-    params: NameParam,
-) -> std::result::Result<Value, RpcError> {
-    let conn = state.db.lock().await;
-    let removed = db::remove_household(&conn, &params.name).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("remove household: {e:#}"),
-    })?;
-    drop(conn);
-    if !removed {
-        return Err(RpcError {
-            code: RpcError::NOT_FOUND,
-            message: format!("household '{}' not found", params.name),
-        });
-    }
-    serde_json::to_value(()).map_err(to_internal)
-}
-
-async fn handle_household_show(
-    state: &DaemonState,
-    params: NameParam,
-) -> std::result::Result<Value, RpcError> {
-    // First locked section: fetch the row.
-    let row = {
-        let conn = state.db.lock().await;
-        db::get_household(&conn, &params.name)
-            .map_err(|e| RpcError {
-                code: RpcError::INTERNAL,
-                message: format!("get household: {e:#}"),
-            })?
-            .ok_or_else(|| RpcError {
-                code: RpcError::NOT_FOUND,
-                message: format!("household '{}' not found", params.name),
-            })?
-    };
-
-    // Unlocked: file I/O and subprocess work.
-    let m = manifest::load_manifest(&row.meta_repo_path).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("load manifest: {e:#}"),
-    })?;
-
-    let workspace_url = m
-        .workspace_entry()
-        .url
-        .clone()
-        .or_else(|| git_remote_url(&row.meta_repo_path));
-
-    let repos: Vec<RepoDetail> = m
-        .repos
-        .iter()
-        .map(|entry| {
-            let is_workspace = entry.name == m.workspace;
-            let is_knowledge_base = m.knowledge_base.as_deref() == Some(entry.name.as_str());
-            let on_disk = if is_workspace {
-                RepoOnDisk::Workspace
-            } else {
-                let dir = row.meta_repo_path.join(&entry.name);
-                if dir.join(".git").exists() {
-                    RepoOnDisk::Sibling
-                } else if dir.exists() {
-                    RepoOnDisk::Inline
-                } else {
-                    RepoOnDisk::Missing
-                }
-            };
-            RepoDetail {
-                name: entry.name.clone(),
-                url: entry.url.clone(),
-                tags: entry.tags.clone(),
-                description: entry.description.clone(),
-                is_workspace,
-                is_knowledge_base,
-                on_disk,
-            }
-        })
-        .collect();
-
-    // Second locked section: fetch referencing cards.
-    let cards = {
-        let conn = state.db.lock().await;
-        db::cards_for_household(&conn, &params.name).map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("list cards: {e:#}"),
-        })?
-    }
-    .into_iter()
-    .map(|(id, brief, column)| CardReference { id, brief, column })
-    .collect();
-
-    let detail = HouseholdDetail {
-        summary: summary_from(&row, &m),
-        workspace_url,
-        repos,
-        cards,
-    };
-    serde_json::to_value(detail).map_err(to_internal)
 }
 
 async fn handle_push(
@@ -419,34 +168,27 @@ async fn handle_push(
         message: format!("card '{}' not found", params.id),
     })?;
 
-    // 2. Resolve the household from sqlite.
-    let household_name = card.household.clone();
-    let db = state.db.clone();
-    let row = tokio::task::spawn_blocking(move || -> Result<Option<crate::db::HouseholdRow>> {
-        let conn = db.blocking_lock();
-        crate::db::get_household(&conn, &household_name)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(to_internal)?
-    .ok_or_else(|| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("household '{}' not configured", card.household),
-    })?;
-    let household = crate::household::Household {
+    // 2. Resolve the household from the household_repo.
+    let row = state.household_repo.get(&card.household).await
+        .map_err(to_internal)?
+        .ok_or_else(|| RpcError {
+            code: RpcError::INTERNAL,
+            message: format!("household '{}' not configured", card.household),
+        })?;
+    let household = reeve_household::Household {
         name: row.name,
         meta_repo_path: row.meta_repo_path,
     };
 
     // 3. Load + validate the manifest.
-    let manifest = crate::household::load_household_manifest(&household).map_err(|e| RpcError {
+    let manifest = reeve_household::load_household_manifest(&household).map_err(|e| RpcError {
         code: RpcError::INTERNAL,
         message: format!("load manifest: {e:#}"),
     })?;
 
     // 4. For each repo, for each branch in the namespace, FF + push.
     let mut branches = Vec::new();
-    for (repo_name, host_path) in crate::household::iter_card_repos(&household, &manifest) {
+    for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
         let listed = state
             .git
             .list_namespace_refs(&host_path, &card.id)
@@ -537,127 +279,6 @@ async fn handle_attach(state: &DaemonState, params: AttachParams) -> Result<Valu
         in_container_workspace: format!("/workspaces/{}", card.id),
     };
     serde_json::to_value(result).map_err(to_internal)
-}
-
-async fn handle_household_new(
-    state: &DaemonState,
-    params: HouseholdNewParams,
-) -> std::result::Result<Value, RpcError> {
-    let dest = params
-        .path
-        .clone()
-        .unwrap_or_else(|| default_source_dir().join(&params.name));
-
-    if dest.exists()
-        && dest
-            .read_dir()
-            .map(|mut i| i.next().is_some())
-            .unwrap_or(true)
-    {
-        return Err(RpcError {
-            code: RpcError::CONFLICT,
-            message: format!(
-                "target directory {} exists and is non-empty",
-                dest.display()
-            ),
-        });
-    }
-
-    let template = params
-        .template
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TEMPLATE.into());
-
-    // 1. Shallow-clone the template via URL.
-    state
-        .git
-        .clone_url(&template, &dest)
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("clone template {template}: {e:#}"),
-        })?;
-
-    // TODO: from here on, any failure leaves `dest` orphaned (re-init aborted,
-    // manifest rewrite failed, git commit failed, or DB insert failed). Mirror
-    // the cleanup decision from handle_household_add's URL branch in a follow-up.
-
-    // 2. Detach from the template's history: rm .git, re-init, single commit.
-    std::fs::remove_dir_all(dest.join(".git")).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("remove .git: {e:#}"),
-    })?;
-    git_in(&dest, &["init", "-b", "main", "--quiet"])
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("git init: {e:#}"),
-        })?;
-
-    // 3. Substitute the workspace name in household.json.
-    let manifest_path = dest.join("household.json");
-    let body = std::fs::read_to_string(&manifest_path).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("read manifest: {e:#}"),
-    })?;
-    let mut m: manifest::Manifest = serde_json::from_str(&body).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("parse template manifest: {e:#}"),
-    })?;
-    let old_workspace = m.workspace.clone();
-    if let Some(entry) = m.repos.iter_mut().find(|r| r.name == old_workspace) {
-        entry.name = params.name.clone();
-    } else {
-        return Err(RpcError {
-            code: RpcError::INTERNAL,
-            message: format!(
-                "template manifest's workspace = '{old_workspace}' has no matching repos[] entry"
-            ),
-        });
-    }
-    m.workspace = params.name.clone();
-    let body = serde_json::to_string_pretty(&m).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("re-serialize manifest: {e:#}"),
-    })?;
-    std::fs::write(&manifest_path, body).map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("write manifest: {e:#}"),
-    })?;
-
-    // 4. Initial commit.
-    git_in(&dest, &["add", "-A"]).await.map_err(|e| RpcError {
-        code: RpcError::INTERNAL,
-        message: format!("git add: {e:#}"),
-    })?;
-    git_in(&dest, &["commit", "-m", "Initial workspace", "--quiet"])
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("git commit: {e:#}"),
-        })?;
-
-    // 5. Register in the database.
-    let added_at = now_secs();
-    let row = db::HouseholdRow {
-        name: params.name.clone(),
-        meta_repo_path: dest.clone(),
-        added_at,
-    };
-    let db = state.db.clone();
-    let row_clone = row.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let conn = db.blocking_lock();
-        db::insert_household(&conn, &row_clone)
-    })
-    .await
-    .map_err(to_internal)?
-    .map_err(|e| RpcError {
-        code: RpcError::CONFLICT,
-        message: format!("insert household: {e:#}"),
-    })?;
-
-    serde_json::to_value(summary_from(&row, &m)).map_err(to_internal)
 }
 
 #[cfg(test)]
@@ -763,6 +384,8 @@ mod tests {
     fn fresh_state() -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
             containers: Arc::new(NoopOps) as ContainerOpsHandle,
@@ -770,12 +393,16 @@ mod tests {
             listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
+            household_repo,
+            household_lookup,
         }
     }
 
     fn fresh_state_with_git(git: GitOpsHandle) -> DaemonState {
         let conn = db::open(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
             containers: Arc::new(NoopOps) as ContainerOpsHandle,
@@ -783,6 +410,8 @@ mod tests {
             listeners: ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
             claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
+            household_repo,
+            household_lookup,
         }
     }
 
@@ -1068,17 +697,21 @@ mod tests {
         )
         .unwrap();
         let state = fresh_state();
-        let result = handle_household_add(
-            &state,
-            HouseholdAddParams {
-                name: "test".into(),
-                source: HouseholdSource::Path { path: meta.clone() },
-                clone_into: None,
+        let result = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.add".into(),
+                params: serde_json::json!({
+                    "name": "test",
+                    "source": { "kind": "path", "path": meta.to_str().unwrap() },
+                }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap();
-        let summary: HouseholdSummary = serde_json::from_value(result).unwrap();
+        let summary: reeve_protocol::HouseholdSummary = serde_json::from_value(result).unwrap();
         assert_eq!(summary.name, "test");
         assert_eq!(summary.meta_repo_path, meta);
     }
@@ -1095,13 +728,17 @@ mod tests {
         )
         .unwrap();
         let state = fresh_state();
-        let err = handle_household_add(
-            &state,
-            HouseholdAddParams {
-                name: "test".into(),
-                source: HouseholdSource::Path { path: meta },
-                clone_into: None,
+        let err = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.add".into(),
+                params: serde_json::json!({
+                    "name": "test",
+                    "source": { "kind": "path", "path": meta.to_str().unwrap() },
+                }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap_err();
@@ -1148,18 +785,23 @@ mod tests {
 
         let dest = dir.path().join("my-ws");
         let state = fresh_state_with_git(Arc::new(crate::clones::RealGitOps) as GitOpsHandle);
-        let result = handle_household_new(
-            &state,
-            HouseholdNewParams {
-                name: "my-ws".into(),
-                path: Some(dest.clone()),
-                template: Some(format!("file://{}", template.display())),
+        let result = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.new".into(),
+                params: serde_json::json!({
+                    "name": "my-ws",
+                    "path": dest.to_str().unwrap(),
+                    "template": format!("file://{}", template.display()),
+                }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap();
 
-        let summary: HouseholdSummary = serde_json::from_value(result).unwrap();
+        let summary: reeve_protocol::HouseholdSummary = serde_json::from_value(result).unwrap();
         assert_eq!(
             summary.workspace_name, "my-ws",
             "manifest workspace pointer rewritten"
@@ -1182,7 +824,7 @@ mod tests {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let state = fresh_state();
-        // Insert two via add.
+        // Insert two via add dispatch.
         for n in ["alpha", "beta"] {
             let meta = dir.path().join(n);
             std::fs::create_dir_all(meta.join(".git")).unwrap();
@@ -1191,19 +833,33 @@ mod tests {
                 format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
             )
             .unwrap();
-            handle_household_add(
-                &state,
-                HouseholdAddParams {
-                    name: n.into(),
-                    source: HouseholdSource::Path { path: meta },
-                    clone_into: None,
+            dispatch(
+                RpcRequest {
+                    id: 1,
+                    method: "household.add".into(),
+                    params: serde_json::json!({
+                        "name": n,
+                        "source": { "kind": "path", "path": meta.to_str().unwrap() },
+                    }),
                 },
+                state.clone(),
+                CallerContext::host(),
             )
             .await
             .unwrap();
         }
-        let list_val = handle_household_ls(&state).await.unwrap();
-        let list: Vec<HouseholdSummary> = serde_json::from_value(list_val).unwrap();
+        let list_val = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "household.ls".into(),
+                params: serde_json::json!({}),
+            },
+            state,
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let list: Vec<reeve_protocol::HouseholdSummary> = serde_json::from_value(list_val).unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].name, "alpha");
         assert_eq!(list[1].name, "beta");
@@ -1212,11 +868,14 @@ mod tests {
     #[tokio::test]
     async fn household_rm_returns_not_found_for_unknown() {
         let state = fresh_state();
-        let err = handle_household_rm(
-            &state,
-            NameParam {
-                name: "nope".into(),
+        let err = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.rm".into(),
+                params: serde_json::json!({ "name": "nope" }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap_err();
@@ -1248,25 +907,32 @@ mod tests {
         )
         .unwrap();
         let state = fresh_state();
-        handle_household_add(
-            &state,
-            HouseholdAddParams {
-                name: "test".into(),
-                source: HouseholdSource::Path { path: meta },
-                clone_into: None,
+        dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.add".into(),
+                params: serde_json::json!({
+                    "name": "test",
+                    "source": { "kind": "path", "path": meta.to_str().unwrap() },
+                }),
             },
+            state.clone(),
+            CallerContext::host(),
         )
         .await
         .unwrap();
-        let detail_val = handle_household_show(
-            &state,
-            NameParam {
-                name: "test".into(),
+        let detail_val = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "household.show".into(),
+                params: serde_json::json!({ "name": "test" }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap();
-        let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
+        let detail: reeve_protocol::HouseholdDetail = serde_json::from_value(detail_val).unwrap();
         assert_eq!(detail.repos.len(), 4);
         let by = |n: &str| detail.repos.iter().find(|r| r.name == n).unwrap();
         assert!(by("ws").is_workspace);
@@ -1289,13 +955,17 @@ mod tests {
         )
         .unwrap();
         let state = fresh_state();
-        handle_household_add(
-            &state,
-            HouseholdAddParams {
-                name: "ours".into(),
-                source: HouseholdSource::Path { path: meta },
-                clone_into: None,
+        dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.add".into(),
+                params: serde_json::json!({
+                    "name": "ours",
+                    "source": { "kind": "path", "path": meta.to_str().unwrap() },
+                }),
             },
+            state.clone(),
+            CallerContext::host(),
         )
         .await
         .unwrap();
@@ -1328,15 +998,18 @@ mod tests {
             )
             .unwrap();
         }
-        let detail_val = handle_household_show(
-            &state,
-            NameParam {
-                name: "ours".into(),
+        let detail_val = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "household.show".into(),
+                params: serde_json::json!({ "name": "ours" }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap();
-        let detail: HouseholdDetail = serde_json::from_value(detail_val).unwrap();
+        let detail: reeve_protocol::HouseholdDetail = serde_json::from_value(detail_val).unwrap();
         let ids: Vec<&str> = detail.cards.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["card-1", "card-2"]);
     }
@@ -1350,13 +1023,18 @@ mod tests {
         std::fs::create_dir_all(&dest).unwrap();
         std::fs::write(dest.join("something"), "x").unwrap();
         let state = fresh_state();
-        let err = handle_household_new(
-            &state,
-            HouseholdNewParams {
-                name: "occupied".into(),
-                path: Some(dest),
-                template: Some("file:///nonexistent".into()),
+        let err = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "household.new".into(),
+                params: serde_json::json!({
+                    "name": "occupied",
+                    "path": dest.to_str().unwrap(),
+                    "template": "file:///nonexistent",
+                }),
             },
+            state,
+            CallerContext::host(),
         )
         .await
         .unwrap_err();
@@ -1370,16 +1048,11 @@ mod tests {
         name: &str,
         meta_repo_path: &std::path::Path,
     ) {
-        let conn = state.db.lock().await;
-        crate::db::insert_household(
-            &conn,
-            &crate::db::HouseholdRow {
-                name: name.to_string(),
-                meta_repo_path: meta_repo_path.to_path_buf(),
-                added_at: 0,
-            },
-        )
-        .unwrap();
+        state.household_repo.insert(reeve_household::HouseholdRow {
+            name: name.to_string(),
+            meta_repo_path: meta_repo_path.to_path_buf(),
+            added_at: 0,
+        }).await.unwrap();
     }
 
     /// Write a minimal household.json at `meta_repo_path`.
@@ -1525,6 +1198,8 @@ mod tests {
     fn fresh_state_with_configurable_git(git: std::sync::Arc<ConfigurableGit>) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
             containers: std::sync::Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
@@ -1535,6 +1210,8 @@ mod tests {
             ),
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
+            household_repo,
+            household_lookup,
         }
     }
 
@@ -1686,6 +1363,8 @@ mod tests {
     ) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
             containers: containers as crate::container::ContainerOpsHandle,
@@ -1696,6 +1375,8 @@ mod tests {
             ),
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
+            household_repo,
+            household_lookup,
         }
     }
 

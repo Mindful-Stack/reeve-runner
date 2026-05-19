@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use reeve_protocol::{Card, Column, ContainerStatus};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::PathBuf;
 
 /// Open a SQLite connection at `path` and run any pending migrations.
 /// Pass `":memory:"` for an in-memory database (used in tests).
@@ -13,35 +12,20 @@ pub fn open(path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
+pub fn migrate(conn: &Connection) -> Result<()> {
+    reeve_card::init_schema(conn)?;
+    reeve_household::init_schema(conn)?;
+    // workspace schema-init joins in Stage 4
+    // (containers table init still inline in db.rs until then)
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS cards (
-            id          TEXT PRIMARY KEY,
-            household   TEXT NOT NULL,
-            brief       TEXT NOT NULL,
-            column_     TEXT NOT NULL,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL,
-            needs_heavy INTEGER NOT NULL DEFAULT 0,
-            parent_id   TEXT
-         );
-         CREATE INDEX IF NOT EXISTS idx_cards_column ON cards(column_);
-
-         CREATE TABLE IF NOT EXISTS containers (
-            card_id        TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+        "CREATE TABLE IF NOT EXISTS containers (
+            card_id        TEXT PRIMARY KEY,
             container_name TEXT NOT NULL,
             status         TEXT NOT NULL CHECK (status IN ('spawning','running','stopped','failed')),
             started_at     INTEGER NOT NULL,
             updated_at     INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_containers_status ON containers(status);
-
-         CREATE TABLE IF NOT EXISTS households (
-            name           TEXT PRIMARY KEY,
-            meta_repo_path TEXT NOT NULL,
-            added_at       INTEGER NOT NULL
-         );
-
          PRAGMA foreign_keys = ON;",
     )?;
     Ok(())
@@ -182,75 +166,6 @@ pub fn remove_container(conn: &Connection, card_id: &str) -> Result<()> {
         params![card_id],
     )?;
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct HouseholdRow {
-    pub name: String,
-    pub meta_repo_path: PathBuf,
-    pub added_at: i64,
-}
-
-pub fn insert_household(conn: &Connection, row: &HouseholdRow) -> Result<()> {
-    conn.execute(
-        "INSERT INTO households (name, meta_repo_path, added_at) VALUES (?1, ?2, ?3)",
-        params![row.name, row.meta_repo_path.to_string_lossy(), row.added_at],
-    )?;
-    Ok(())
-}
-
-pub fn remove_household(conn: &Connection, name: &str) -> Result<bool> {
-    let n = conn.execute("DELETE FROM households WHERE name = ?1", [name])?;
-    Ok(n > 0)
-}
-
-pub fn list_households(conn: &Connection) -> Result<Vec<HouseholdRow>> {
-    let mut stmt =
-        conn.prepare("SELECT name, meta_repo_path, added_at FROM households ORDER BY name")?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(HouseholdRow {
-                name: r.get(0)?,
-                meta_repo_path: PathBuf::from(r.get::<_, String>(1)?),
-                added_at: r.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-pub fn get_household(conn: &Connection, name: &str) -> Result<Option<HouseholdRow>> {
-    let result = conn
-        .query_row(
-            "SELECT name, meta_repo_path, added_at FROM households WHERE name = ?1",
-            [name],
-            |r| {
-                Ok(HouseholdRow {
-                    name: r.get(0)?,
-                    meta_repo_path: PathBuf::from(r.get::<_, String>(1)?),
-                    added_at: r.get(2)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(result)
-}
-
-/// Return all cards whose `household` column equals `name`. Used by
-/// `handle_household_show` to surface the cards-referencing-this-household list.
-pub fn cards_for_household(conn: &Connection, name: &str) -> Result<Vec<(String, String, String)>> {
-    let mut stmt =
-        conn.prepare("SELECT id, brief, column_ FROM cards WHERE household = ?1 ORDER BY id")?;
-    let rows = stmt
-        .query_map([name], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
 }
 
 fn row_to_container(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerRow> {
@@ -428,74 +343,4 @@ mod tests {
         assert!(get_container(&conn, "c1").unwrap().is_none());
     }
 
-    #[test]
-    fn cascade_delete_when_card_removed() {
-        let conn = open(":memory:").unwrap();
-        insert_card(&conn, &sample_card("c1")).unwrap();
-        upsert_container(&conn, "c1", "reeve-c1", ContainerStatus::Running, 1).unwrap();
-        conn.execute("DELETE FROM cards WHERE id = ?1", params!["c1"])
-            .unwrap();
-        assert!(get_container(&conn, "c1").unwrap().is_none());
-    }
-
-    #[test]
-    fn insert_and_get_household() {
-        let conn = open(":memory:").unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let row = HouseholdRow {
-            name: "test".into(),
-            meta_repo_path: dir.path().to_path_buf(),
-            added_at: 1234,
-        };
-        insert_household(&conn, &row).unwrap();
-        let got = get_household(&conn, "test").unwrap().unwrap();
-        assert_eq!(got.name, "test");
-        assert_eq!(got.meta_repo_path, dir.path());
-    }
-
-    #[test]
-    fn duplicate_household_name_errors() {
-        let conn = open(":memory:").unwrap();
-        let row = HouseholdRow {
-            name: "test".into(),
-            meta_repo_path: PathBuf::from("/x"),
-            added_at: 1,
-        };
-        insert_household(&conn, &row).unwrap();
-        assert!(insert_household(&conn, &row).is_err());
-    }
-
-    #[test]
-    fn remove_household_returns_true_if_existed() {
-        let conn = open(":memory:").unwrap();
-        let row = HouseholdRow {
-            name: "test".into(),
-            meta_repo_path: PathBuf::from("/x"),
-            added_at: 1,
-        };
-        insert_household(&conn, &row).unwrap();
-        assert!(remove_household(&conn, "test").unwrap());
-        assert!(!remove_household(&conn, "test").unwrap());
-    }
-
-    #[test]
-    fn list_households_sorted() {
-        let conn = open(":memory:").unwrap();
-        for name in ["c", "a", "b"] {
-            insert_household(
-                &conn,
-                &HouseholdRow {
-                    name: name.into(),
-                    meta_repo_path: PathBuf::from(format!("/{name}")),
-                    added_at: 0,
-                },
-            )
-            .unwrap();
-        }
-        let rows = list_households(&conn).unwrap();
-        assert_eq!(
-            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            vec!["a", "b", "c"],
-        );
-    }
 }

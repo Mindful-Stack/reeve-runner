@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::household::Household;
+use reeve_household::Household;
 use reeve_household::manifest::Manifest;
 
 /// Result of attempting a fast-forward update via `GitOps::fast_forward`.
@@ -311,7 +311,7 @@ fn cleanup(workspace: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::household::Household;
+    use reeve_household::Household;
     use reeve_household::manifest::{Manifest, RepoEntry};
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -689,7 +689,7 @@ mod tests {
 mod integration_tests {
     //! Real-git tests. Require `git` in $PATH. Hit the filesystem.
     use super::*;
-    use crate::household::Household;
+    use reeve_household::Household;
     use reeve_household::manifest::{Manifest, RepoEntry};
     use std::path::PathBuf;
     use tempfile::tempdir;

@@ -58,13 +58,7 @@ async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
     };
 
     // Look up the household.
-    let household_name = card.household.clone();
-    let db = state.db.clone();
-    let row = tokio::task::spawn_blocking(move || -> Result<Option<crate::db::HouseholdRow>> {
-        let conn = db.blocking_lock();
-        crate::db::get_household(&conn, &household_name)
-    })
-    .await??;
+    let row = state.household_repo.get(&card.household).await?;
     let Some(row) = row else {
         warn!(
             "fetch tick: household '{}' for card {} not configured",
@@ -72,14 +66,14 @@ async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
         );
         return Ok(());
     };
-    let household = crate::household::Household {
+    let household = reeve_household::Household {
         name: row.name,
         meta_repo_path: row.meta_repo_path,
     };
 
     // Load the manifest. Failure to parse skips this card until the user fixes
     // household.json; next tick re-tries.
-    let manifest = match crate::household::load_household_manifest(&household) {
+    let manifest = match reeve_household::load_household_manifest(&household) {
         Ok(m) => m,
         Err(e) => {
             warn!("fetch tick: manifest for card {}: {e:#}", card_id);
@@ -88,7 +82,7 @@ async fn tick_one_card(state: &DaemonState, card_id: &str) -> Result<()> {
     };
 
     let workspace = reeve_protocol::paths::card_workspace_path(card_id);
-    for (repo_name, host_path) in crate::household::iter_card_repos(&household, &manifest) {
+    for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
         // The card-side source path mirrors the host topology:
         //   - workspace repo: <workspace>/
         //   - sibling repo:   <workspace>/<name>/
@@ -242,6 +236,8 @@ mod tests {
     fn state_with(git: Arc<RecordingGit>) -> DaemonState {
         let conn = crate::db::open(":memory:").unwrap();
         let db: crate::transport::server::DbHandle = Arc::new(tokio::sync::Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
         DaemonState {
             db: db.clone(),
             containers: Arc::new(NoopOps) as crate::container::ContainerOpsHandle,
@@ -249,6 +245,8 @@ mod tests {
             listeners: crate::transport::listener::ListenerRegistry::new(db, Arc::new(NoopDispatcher)),
             claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             api_key: None,
+            household_repo,
+            household_lookup,
         }
     }
 
@@ -261,17 +259,13 @@ mod tests {
         let git = Arc::new(RecordingGit::new());
         let state = state_with(git.clone());
 
+        state.household_repo.insert(reeve_household::HouseholdRow {
+            name: "h".into(),
+            meta_repo_path: meta.clone(),
+            added_at: 0,
+        }).await.unwrap();
         {
             let conn = state.db.lock().await;
-            crate::db::insert_household(
-                &conn,
-                &crate::db::HouseholdRow {
-                    name: "h".into(),
-                    meta_repo_path: meta.clone(),
-                    added_at: 0,
-                },
-            )
-            .unwrap();
             crate::db::insert_card(
                 &conn,
                 &reeve_protocol::Card {
@@ -324,17 +318,13 @@ mod tests {
         let git = Arc::new(RecordingGit::new());
         let state = state_with(git.clone());
 
+        state.household_repo.insert(reeve_household::HouseholdRow {
+            name: "h".into(),
+            meta_repo_path: meta.clone(),
+            added_at: 0,
+        }).await.unwrap();
         {
             let conn = state.db.lock().await;
-            crate::db::insert_household(
-                &conn,
-                &crate::db::HouseholdRow {
-                    name: "h".into(),
-                    meta_repo_path: meta.clone(),
-                    added_at: 0,
-                },
-            )
-            .unwrap();
             crate::db::insert_card(
                 &conn,
                 &reeve_protocol::Card {
@@ -368,18 +358,14 @@ mod tests {
         let git = Arc::new(RecordingGit::new());
         let state = state_with(git.clone());
 
+        // Household "b" exists; "a" does not.
+        state.household_repo.insert(reeve_household::HouseholdRow {
+            name: "b".into(),
+            meta_repo_path: meta_b.clone(),
+            added_at: 0,
+        }).await.unwrap();
         {
             let conn = state.db.lock().await;
-            // Household "b" exists; "a" does not.
-            crate::db::insert_household(
-                &conn,
-                &crate::db::HouseholdRow {
-                    name: "b".into(),
-                    meta_repo_path: meta_b.clone(),
-                    added_at: 0,
-                },
-            )
-            .unwrap();
             for (id, hh) in [("card-a", "a-missing"), ("card-b", "b")] {
                 crate::db::insert_card(
                     &conn,

@@ -4,7 +4,6 @@ mod db;
 mod effects;
 mod fetch;
 mod handlers;
-mod household;
 mod lifecycle;
 mod transitions;
 
@@ -81,6 +80,8 @@ async fn main() -> Result<()> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
     let git: clones::GitOpsHandle = Arc::new(clones::RealGitOps);
+    let (household_repo, household_lookup) =
+        reeve_household::make_household_components(db.clone());
     let state = effects::DaemonState {
         db: db.clone(),
         containers,
@@ -88,6 +89,8 @@ async fn main() -> Result<()> {
         listeners: listeners.clone(),
         claude_dir,
         api_key,
+        household_repo,
+        household_lookup,
     };
     dispatcher_holder
         .state

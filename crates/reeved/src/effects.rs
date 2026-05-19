@@ -4,7 +4,6 @@
 use crate::clones::{self, GitOpsHandle};
 use crate::container::{self, ContainerOpsHandle};
 use crate::db;
-use crate::household;
 use crate::transport::listener::ListenerRegistry;
 use crate::transport::server::DbHandle;
 use crate::transitions::TransitionEffects;
@@ -12,6 +11,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reeve_protocol::{Card, ContainerStatus};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Everything the live transition effects need to do their job.
@@ -23,6 +23,8 @@ pub struct DaemonState {
     pub listeners: ListenerRegistry,
     pub claude_dir: PathBuf,
     pub api_key: Option<String>,
+    pub household_repo: Arc<dyn reeve_household::HouseholdRepo>,
+    pub household_lookup: Arc<dyn reeve_card::HouseholdLookup>,
 }
 
 pub struct LiveEffects {
@@ -50,15 +52,10 @@ impl TransitionEffects for LiveEffects {
         // Query the DB for the household so that households registered after
         // daemon start (via `household new/add`) are visible immediately.
         let household_name = card.household.clone();
-        let db = self.state.db.clone();
-        let row = tokio::task::spawn_blocking(move || -> Result<Option<db::HouseholdRow>> {
-            let conn = db.blocking_lock();
-            db::get_household(&conn, &household_name)
-        })
-        .await??;
+        let row = self.state.household_repo.get(&household_name).await?;
         let row =
             row.ok_or_else(|| anyhow::anyhow!("household '{}' not configured", card.household))?;
-        let household = household::Household {
+        let household = reeve_household::Household {
             name: row.name,
             meta_repo_path: row.meta_repo_path,
         };
@@ -103,7 +100,7 @@ impl TransitionEffects for LiveEffects {
             }
         }
 
-        let manifest = household::load_household_manifest(&household)
+        let manifest = reeve_household::load_household_manifest(&household)
             .with_context(|| format!("load manifest for '{}'", household.name))?;
 
         // Ensure the cards ROOT dir exists. clone_all_for_card refuses to clone
