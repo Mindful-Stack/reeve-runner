@@ -137,9 +137,6 @@ mod tests {
             *self.fast_forward_response.lock().unwrap() = outcome;
         }
 
-        fn set_push_failure(&self, message: &str) {
-            *self.push_response.lock().unwrap() = Err(message.to_string());
-        }
     }
 
     #[async_trait]

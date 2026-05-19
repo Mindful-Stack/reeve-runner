@@ -80,6 +80,7 @@ impl Card {
 
     /// Construct a Card directly from validated fields. Used by the repo when
     /// reading from persisted SQL rows.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_persisted(
         id: String,
         household: String,

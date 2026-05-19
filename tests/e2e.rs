@@ -855,17 +855,15 @@ fn m4_fetch_and_push_round_trip() {
     // 5. Update manifest to declare code as a sibling; commit.
     write_manifest(
         &dest.join("household.json"),
-        &format!(
-            r#"{{
+        r#"{
       "workspace": "m4-household",
       "knowledge_base": "lore",
       "repos": [
-        {{ "name": "m4-household" }},
-        {{ "name": "code" }},
-        {{ "name": "lore" }}
+        { "name": "m4-household" },
+        { "name": "code" },
+        { "name": "lore" }
       ]
-    }}"#
-        ),
+    }"#,
     );
     commit_meta_changes(&dest);
 
