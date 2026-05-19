@@ -268,14 +268,15 @@ fn render_move_picker(f: &mut ratatui::Frame<'_>, area: Rect, choice: Column) {
     let area = centered_rect(30, 40, area);
     let items: Vec<ListItem> = Column::ALL
         .iter()
-        .map(|col| {
+        .enumerate()
+        .map(|(i, col)| {
             let style = if *col == choice {
                 Style::default().bg(Color::Yellow).fg(Color::Black)
             } else {
                 Style::default()
             };
             ListItem::new(Line::from(Span::styled(
-                format!("  {}", col.label()),
+                format!("  {}  {}", i + 1, col.label()),
                 style,
             )))
         })
@@ -283,7 +284,7 @@ fn render_move_picker(f: &mut ratatui::Frame<'_>, area: Rect, choice: Column) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("move to column  (enter/esc)"),
+            .title("move to column  (1-6 jump · ↑/↓ · enter · esc)"),
     );
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(list, area);

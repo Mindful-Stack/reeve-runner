@@ -188,18 +188,13 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     });
                 }
                 KeyCode::Enter => {
-                    app.modal = None;
-                    let params =
-                        reeve_protocol::MvParams { id: card_id.clone(), column: choice };
-                    match crate::tui::client_ext::rpc_mv(params).await {
-                        Ok(Ok(updated)) => {
-                            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
-                                *c = updated;
-                            }
-                            app.focused_column = choice;
-                        }
-                        Ok(Err(e)) => set_status_error(app, format!("mv failed: {}", e.message)),
-                        Err(e) => set_status_error(app, format!("mv error: {e:#}")),
+                    submit_move(app, card_id.clone(), choice).await;
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    // 1-6 = Backlog..Done. Single-press jump-and-confirm.
+                    let n = c.to_digit(10).unwrap() as usize;
+                    if n >= 1 && n <= cols.len() {
+                        submit_move(app, card_id.clone(), cols[n - 1]).await;
                     }
                 }
                 _ => {}
@@ -264,8 +259,13 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         error: None,
                     });
                 }
-                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Ctrl+W = delete word backward (emacs/vim convention).
+                KeyCode::Char('w' | 'h' | '\x08' | '\x7f')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    // Delete word backward. Triggered by Ctrl+W (emacs/vim),
+                    // Ctrl+H (typewriter convention / some terminals), and the
+                    // raw BS/DEL bytes that other terminals send for
+                    // Ctrl+Backspace.
                     let target = word_boundary_before(&buffer, cursor);
                     if target < cursor {
                         let idx = char_byte_index(&buffer, target);
@@ -484,8 +484,11 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             error: None,
                         });
                     }
-                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        // Ctrl+W = delete word backward.
+                    KeyCode::Char('w' | 'h' | '\x08' | '\x7f')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        // Delete word backward. See EditBrief for the why
+                        // behind catching all four code points.
                         let target = word_boundary_before(&brief, cursor);
                         if target < cursor {
                             let idx = char_byte_index(&brief, target);
@@ -592,6 +595,23 @@ fn word_boundary_before(s: &str, cursor: usize) -> usize {
 fn selected_card_column(app: &App) -> Option<Column> {
     let id = app.selected_card_id.as_ref()?;
     app.cards.iter().find(|c| &c.id == id).map(|c| c.column)
+}
+
+/// Close the move-picker modal and submit the mv RPC. Shared by Enter and
+/// the 1-6 digit shortcuts.
+async fn submit_move(app: &mut App, card_id: String, target: Column) {
+    app.modal = None;
+    let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
+    match crate::tui::client_ext::rpc_mv(params).await {
+        Ok(Ok(updated)) => {
+            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                *c = updated;
+            }
+            app.focused_column = target;
+        }
+        Ok(Err(e)) => set_status_error(app, format!("mv failed: {}", e.message)),
+        Err(e) => set_status_error(app, format!("mv error: {e:#}")),
+    }
 }
 
 async fn handle_menu_letter(app: &mut App, c: char) {
