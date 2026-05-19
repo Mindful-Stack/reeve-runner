@@ -3,6 +3,7 @@
 //! now live in reeve_workspace::{git, clones}.
 
 pub use reeve_workspace::GitOpsHandle;
-// GitOps re-exported for use in handlers.rs tests (crate::clones::GitOps).
+// GitOps + FfOutcome re-exported for use in handlers.rs tests
+// (crate::clones::{GitOps, FfOutcome}).
 #[allow(unused_imports)]
-pub use reeve_workspace::GitOps;
+pub use reeve_workspace::{FfOutcome, GitOps};
