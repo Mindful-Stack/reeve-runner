@@ -215,14 +215,16 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     app.modal = None;
                 }
                 KeyCode::Enter => {
-                    let params = reeve_protocol::EditParams {
-                        id: card_id.clone(),
-                        brief: buffer.clone(),
-                    };
+                    let new_brief = buffer.clone();
+                    // Optimistic local update.
+                    if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                        c.brief = new_brief.clone();
+                    }
+                    let params = reeve_protocol::EditParams { id: card_id.clone(), brief: new_brief };
                     let tx = app.op_tx.clone();
                     let card_id_for_event = card_id.clone();
-                    set_status_info(app, "saving …".into());
-                    app.modal = None; // close immediately; result lands via op_event
+                    app.modal = None;
+                    // No "saving …" status; the local update is the feedback.
                     tokio::spawn(async move {
                         let event = match crate::tui::client_ext::rpc_edit(params).await {
                             Ok(Ok(result)) => crate::tui::app::OpEvent::EditOk {
@@ -345,10 +347,14 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
         crate::tui::modal::ModalKind::DeleteConfirm { card_id } => {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
+                    // Optimistic local removal.
+                    app.cards.retain(|c| c.id != card_id);
+                    app.pending_attention.remove(&card_id);
+                    app.sessions.close(&card_id);
+
                     let params = reeve_protocol::DeleteParams { id: card_id.clone() };
                     let tx = app.op_tx.clone();
                     let card_id_for_event = card_id.clone();
-                    set_status_info(app, "deleting …".into());
                     app.modal = None;
                     tokio::spawn(async move {
                         let event = match crate::tui::client_ext::rpc_delete(params).await {
@@ -451,7 +457,6 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                                 needs_heavy: false,
                             };
                             let tx = app.op_tx.clone();
-                            set_status_info(app, "creating …".into());
                             app.modal = None;
                             tokio::spawn(async move {
                                 let event = match crate::tui::client_ext::rpc_new(params).await {
@@ -664,9 +669,18 @@ fn mv_relative(app: &mut App, delta: i32) {
 }
 
 fn spawn_mv(app: &mut App, card_id: String, target: Column) {
+    // Optimistic local update — the card moves immediately. The RPC will
+    // either confirm (no-op) or fail (next ls poll reconciles back to
+    // daemon truth). `selected_card_id` stays on the moved card so
+    // subsequent H/L acts on the same card the user is looking at.
+    if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+        c.column = target;
+    }
+    app.focused_column = target;
+    // No status message — the visible column change is the feedback.
+
     let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
     let tx = app.op_tx.clone();
-    set_status_info(app, format!("moving to {} …", target.label()));
     tokio::spawn(async move {
         let event = match crate::tui::client_ext::rpc_mv(params).await {
             Ok(Ok(updated)) => {
@@ -684,33 +698,41 @@ fn spawn_mv(app: &mut App, card_id: String, target: Column) {
 pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     use crate::tui::app::OpEvent;
     match event {
-        OpEvent::MvOk { card_id, updated, target } => {
+        OpEvent::MvOk { card_id, updated, target: _ } => {
+            // Optimistic update already moved the card. Replace with the
+            // daemon's version so updated_at etc. reflect the server time.
             if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
                 *c = updated;
             }
-            app.focused_column = target;
-            set_status_info(app, format!("moved to {}", target.label()));
+            // Don't set status — the optimistic visible change was sufficient.
+            // Don't change focused_column — already done in spawn_mv.
         }
-        OpEvent::MvErr { msg } => set_status_error(app, format!("mv failed: {msg}")),
+        OpEvent::MvErr { msg } => {
+            // The optimistic update was wrong. Next ls poll reconciles the
+            // card back to its real column. Show the error so the user knows.
+            set_status_error(app, format!("mv failed: {msg}"));
+        }
         OpEvent::EditOk { card_id, updated } => {
+            // Replace with daemon's version (updated_at).
             if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
                 *c = updated;
             }
-            set_status_info(app, "saved".into());
+            // Don't set status.
         }
         OpEvent::EditErr { card_id: _, msg } => {
             set_status_error(app, format!("edit failed: {msg}"));
+            // Next ls poll reverts the optimistic brief.
         }
-        OpEvent::NewOk => set_status_info(app, "created".into()),
+        OpEvent::NewOk => {
+            // New card appears on next ls poll. No status (avoid noise).
+        }
         OpEvent::NewErr { msg } => set_status_error(app, format!("new card failed: {msg}")),
-        OpEvent::DeleteOk { card_id } => {
-            app.cards.retain(|c| c.id != card_id);
-            app.pending_attention.remove(&card_id);
-            app.sessions.close(&card_id);
-            set_status_info(app, "deleted".into());
+        OpEvent::DeleteOk { card_id: _ } => {
+            // Already removed optimistically. No-op.
         }
         OpEvent::DeleteErr { card_id: _, msg } => {
-            set_status_error(app, format!("delete failed: {msg}"))
+            set_status_error(app, format!("delete failed: {msg}"));
+            // Next ls poll re-adds the card if delete failed.
         }
     }
 }
