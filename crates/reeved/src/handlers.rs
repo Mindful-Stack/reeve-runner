@@ -1,6 +1,5 @@
 //! Method dispatch and per-method handlers.
 
-use crate::db;
 use crate::effects::DaemonState;
 use crate::stubs::StubWorkspaceLifecycle;
 use crate::transport::server::CallerContext;
@@ -285,6 +284,7 @@ async fn handle_attach(state: &DaemonState, params: AttachParams) -> Result<Valu
 mod tests {
     use super::*;
     use crate::container::{ContainerOps, ContainerOpsHandle};
+    use crate::db;
     use crate::effects::DaemonState;
     use crate::transport::listener::{Dispatcher, ListenerRegistry};
     use crate::transport::server::DbHandle;
