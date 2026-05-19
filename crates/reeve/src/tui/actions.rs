@@ -125,7 +125,7 @@ pub async fn handle(app: &mut App, action: Action) {
 }
 
 pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
     let Some(modal) = app.modal.clone() else {
         return;
     };
@@ -244,11 +244,34 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     }
                 }
                 KeyCode::Backspace => {
-                    if cursor > 0 {
-                        let idx = char_byte_index(&buffer, cursor - 1);
+                    let target = if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        word_boundary_before(&buffer, cursor)
+                    } else if cursor > 0 {
+                        cursor - 1
+                    } else {
+                        cursor
+                    };
+                    if target < cursor {
+                        let idx = char_byte_index(&buffer, target);
                         let end = char_byte_index(&buffer, cursor);
                         buffer.drain(idx..end);
-                        cursor -= 1;
+                        cursor = target;
+                    }
+                    app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
+                        card_id,
+                        buffer,
+                        cursor,
+                        error: None,
+                    });
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Ctrl+W = delete word backward (emacs/vim convention).
+                    let target = word_boundary_before(&buffer, cursor);
+                    if target < cursor {
+                        let idx = char_byte_index(&buffer, target);
+                        let end = char_byte_index(&buffer, cursor);
+                        buffer.drain(idx..end);
+                        cursor = target;
                     }
                     app.modal = Some(crate::tui::modal::ModalKind::EditBrief {
                         card_id,
@@ -297,7 +320,7 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         error: None,
                     });
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let byte_idx = char_byte_index(&buffer, cursor);
                     buffer.insert(byte_idx, c);
                     cursor += 1;
@@ -440,11 +463,35 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         }
                     }
                     KeyCode::Backspace => {
-                        if cursor > 0 {
-                            let idx = char_byte_index(&brief, cursor - 1);
+                        let target = if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            word_boundary_before(&brief, cursor)
+                        } else if cursor > 0 {
+                            cursor - 1
+                        } else {
+                            cursor
+                        };
+                        if target < cursor {
+                            let idx = char_byte_index(&brief, target);
                             let end = char_byte_index(&brief, cursor);
                             brief.drain(idx..end);
-                            cursor -= 1;
+                            cursor = target;
+                        }
+                        app.modal = Some(crate::tui::modal::ModalKind::NewCard {
+                            household,
+                            brief,
+                            cursor,
+                            household_picker_index,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+W = delete word backward.
+                        let target = word_boundary_before(&brief, cursor);
+                        if target < cursor {
+                            let idx = char_byte_index(&brief, target);
+                            let end = char_byte_index(&brief, cursor);
+                            brief.drain(idx..end);
+                            cursor = target;
                         }
                         app.modal = Some(crate::tui::modal::ModalKind::NewCard {
                             household,
@@ -498,7 +545,7 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             error: None,
                         });
                     }
-                    KeyCode::Char(c) => {
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let byte_idx = char_byte_index(&brief, cursor);
                         brief.insert(byte_idx, c);
                         cursor += 1;
@@ -523,6 +570,23 @@ fn char_byte_index(s: &str, char_pos: usize) -> usize {
         .nth(char_pos)
         .map(|(i, _)| i)
         .unwrap_or(s.len())
+}
+
+/// Find the char-position to the left where a word-delete should stop:
+/// skip trailing whitespace, then skip the word. Used by Ctrl+Backspace
+/// and Ctrl+W in text-input modals.
+fn word_boundary_before(s: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = cursor.min(chars.len());
+    // Skip whitespace immediately before cursor.
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    // Then skip the word itself.
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
 }
 
 fn selected_card_column(app: &App) -> Option<Column> {

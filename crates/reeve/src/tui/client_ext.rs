@@ -63,5 +63,5 @@ pub async fn rpc_attach(params: AttachParams) -> Result<std::result::Result<Atta
 }
 
 pub async fn rpc_household_ls() -> Result<std::result::Result<Vec<HouseholdSummary>, RpcError>> {
-    call("household-ls", serde_json::json!({})).await
+    call("household.ls", serde_json::json!({})).await
 }

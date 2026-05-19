@@ -292,9 +292,15 @@ fn render_move_picker(f: &mut ratatui::Frame<'_>, area: Rect, choice: Column) {
 fn render_help(f: &mut ratatui::Frame<'_>, area: Rect) {
     let area = centered_rect(60, 70, area);
     let bindings = crate::tui::events::BINDINGS;
+
+    // Group consecutive bindings that share (section, description) into one
+    // row, joining their key labels with " / ". This is what surfaces "h / ←"
+    // instead of two separate rows.
     let mut lines: Vec<Line> = Vec::new();
     let mut last_section: Option<crate::tui::events::HelpSection> = None;
-    for b in bindings {
+    let mut i = 0;
+    while i < bindings.len() {
+        let b = &bindings[i];
         if Some(b.section) != last_section {
             lines.push(Line::from(Span::styled(
                 format!("\n{:?}", b.section),
@@ -302,20 +308,54 @@ fn render_help(f: &mut ratatui::Frame<'_>, area: Rect) {
             )));
             last_section = Some(b.section);
         }
-        let key_label = match b.key {
-            crate::tui::events::KeyMatcher::Char(c) => format!("{c}"),
-            crate::tui::events::KeyMatcher::Code(c) => format!("{c:?}"),
-            crate::tui::events::KeyMatcher::Shift(c) => format!("Shift+{c:?}"),
-        };
+
+        // Collect all consecutive bindings with the same description in this
+        // section. The BINDINGS const is ordered to group these naturally
+        // (e.g. h / Left appear back-to-back for the same FocusPrevColumn).
+        let mut keys: Vec<String> = vec![key_label(b.key)];
+        let mut j = i + 1;
+        while j < bindings.len()
+            && bindings[j].section == b.section
+            && bindings[j].description == b.description
+        {
+            keys.push(key_label(bindings[j].key));
+            j += 1;
+        }
         lines.push(Line::from(vec![
-            Span::styled(format!("  {key_label:<12}"), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("  {:<14}", keys.join(" / ")),
+                Style::default().fg(Color::Cyan),
+            ),
             Span::raw(b.description),
         ]));
+        i = j;
     }
+
     let para = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title("help  (esc/?/q to close)"));
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(para, area);
+}
+
+fn key_label(matcher: crate::tui::events::KeyMatcher) -> String {
+    use crossterm::event::KeyCode;
+    match matcher {
+        crate::tui::events::KeyMatcher::Char(' ') => "Space".to_string(),
+        crate::tui::events::KeyMatcher::Char(c) => c.to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::Left) => "←".to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::Right) => "→".to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::Up) => "↑".to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::Down) => "↓".to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::PageUp) => "PgUp".to_string(),
+        crate::tui::events::KeyMatcher::Code(KeyCode::PageDown) => "PgDn".to_string(),
+        crate::tui::events::KeyMatcher::Code(c) => format!("{c:?}"),
+        crate::tui::events::KeyMatcher::Shift(KeyCode::Left) => "Shift+←".to_string(),
+        crate::tui::events::KeyMatcher::Shift(KeyCode::Right) => "Shift+→".to_string(),
+        crate::tui::events::KeyMatcher::Shift(KeyCode::Char(c)) => {
+            format!("Shift+{}", c.to_ascii_uppercase())
+        }
+        crate::tui::events::KeyMatcher::Shift(c) => format!("Shift+{c:?}"),
+    }
 }
 
 fn render_edit_modal(
