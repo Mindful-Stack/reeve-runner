@@ -4,7 +4,7 @@
 use crate::domain::Household;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -74,9 +74,8 @@ impl HouseholdRepo for SqliteHouseholdRepo {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<HouseholdRow>> {
             let conn = conn.blocking_lock();
-            let mut stmt = conn.prepare(
-                "SELECT name, meta_repo_path, added_at FROM households ORDER BY name",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT name, meta_repo_path, added_at FROM households ORDER BY name")?;
             let rows = stmt
                 .query_map([], |r| {
                     Ok(HouseholdRow {
@@ -128,10 +127,7 @@ impl reeve_card::HouseholdLookup for SqliteHouseholdRepo {
 /// Reeved holds both Arcs; they point at the same SqliteHouseholdRepo instance.
 pub fn make_household_components(
     conn: Arc<Mutex<Connection>>,
-) -> (
-    Arc<dyn HouseholdRepo>,
-    Arc<dyn reeve_card::HouseholdLookup>,
-) {
+) -> (Arc<dyn HouseholdRepo>, Arc<dyn reeve_card::HouseholdLookup>) {
     let concrete = Arc::new(SqliteHouseholdRepo::new(conn));
     (concrete.clone(), concrete)
 }

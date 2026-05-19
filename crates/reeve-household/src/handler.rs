@@ -87,13 +87,10 @@ pub async fn handle_household_add(
                     message: format!("target directory {} already exists", dest.display()),
                 });
             }
-            scaffold
-                .clone_url(url, &dest)
-                .await
-                .map_err(|e| RpcError {
-                    code: RpcError::INTERNAL,
-                    message: format!("clone {url}: {e:#}"),
-                })?;
+            scaffold.clone_url(url, &dest).await.map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
+                message: format!("clone {url}: {e:#}"),
+            })?;
             dest
         }
     };
@@ -154,13 +151,10 @@ pub async fn handle_household_new(
             message: format!("clone template {template}: {e:#}"),
         })?;
 
-    scaffold
-        .init_repo(&dest)
-        .await
-        .map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("init repo: {e:#}"),
-        })?;
+    scaffold.init_repo(&dest).await.map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("init repo: {e:#}"),
+    })?;
 
     let manifest_path = dest.join("household.json");
     let body = std::fs::read_to_string(&manifest_path).map_err(|e| RpcError {
@@ -213,9 +207,7 @@ pub async fn handle_household_new(
     serde_json::to_value(summary_from(&row, &m)).map_err(internal)
 }
 
-pub async fn handle_household_ls(
-    repo: &dyn HouseholdRepo,
-) -> std::result::Result<Value, RpcError> {
+pub async fn handle_household_ls(repo: &dyn HouseholdRepo) -> std::result::Result<Value, RpcError> {
     let rows = repo.list().await.map_err(|e| RpcError {
         code: RpcError::INTERNAL,
         message: format!("list households: {e:#}"),

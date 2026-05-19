@@ -2,10 +2,10 @@
 
 use crate::domain::Card;
 use crate::repo::CardRepo;
-use crate::transitions::{on_column_change, HouseholdLookup, WorkspaceLifecycle};
+use crate::transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
 use reeve_protocol::{
-    Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
-    NewParams, NewResult, RpcError, StatusSelfResult,
+    Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult,
+    RpcError, StatusSelfResult,
 };
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,8 +41,8 @@ pub async fn handle_new(
     cards: &dyn CardRepo,
     params: NewParams,
 ) -> std::result::Result<Value, RpcError> {
-    let card = Card::new(params.household, params.brief, params.needs_heavy)
-        .map_err(|e| RpcError {
+    let card =
+        Card::new(params.household, params.brief, params.needs_heavy).map_err(|e| RpcError {
             code: RpcError::INVALID_ARGUMENT,
             message: e.to_string(),
         })?;
@@ -65,7 +65,10 @@ pub async fn handle_mv(
     let old_column = existing.column();
 
     if params.column == Column::Implementing
-        && !households.exists(existing.household()).await.map_err(internal)?
+        && !households
+            .exists(existing.household())
+            .await
+            .map_err(internal)?
     {
         return Err(RpcError {
             code: RpcError::INTERNAL,
@@ -106,7 +109,10 @@ pub async fn handle_mv_self(
     let old_column = existing.column();
 
     if params.column == Column::Implementing
-        && !households.exists(existing.household()).await.map_err(internal)?
+        && !households
+            .exists(existing.household())
+            .await
+            .map_err(internal)?
     {
         return Err(RpcError {
             code: RpcError::INTERNAL,

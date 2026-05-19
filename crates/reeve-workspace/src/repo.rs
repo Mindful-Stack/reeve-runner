@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reeve_protocol::ContainerStatus;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -132,7 +132,10 @@ impl WorkspaceRepo for SqliteWorkspaceRepo {
         let card_id = card_id.to_string();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = conn.blocking_lock();
-            conn.execute("DELETE FROM containers WHERE card_id = ?1", params![card_id])?;
+            conn.execute(
+                "DELETE FROM containers WHERE card_id = ?1",
+                params![card_id],
+            )?;
             Ok(())
         })
         .await?

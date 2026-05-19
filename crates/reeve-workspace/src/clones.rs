@@ -95,8 +95,8 @@ fn cleanup(workspace: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::git::FfOutcome;
+    use async_trait::async_trait;
     use reeve_household::Household;
     use reeve_household::{Manifest, RepoEntry};
     use std::path::PathBuf;
@@ -468,7 +468,11 @@ mod integration_tests {
             .current_dir(repo)
             .status()
             .expect("git invoke");
-        assert!(status.success(), "git {args:?} failed in {}", repo.display());
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            repo.display()
+        );
     }
 
     fn host_repo(dir: &Path, name: &str) -> PathBuf {
@@ -496,8 +500,18 @@ mod integration_tests {
             meta_repo: "meta".into(),
             knowledge_base: None,
             repos: vec![
-                RepoEntry { name: "meta".into(), url: None, tags: vec![], description: None },
-                RepoEntry { name: "backend".into(), url: None, tags: vec![], description: None },
+                RepoEntry {
+                    name: "meta".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+                RepoEntry {
+                    name: "backend".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
             ],
         };
         let workspace = dir.path().join("workspace");
@@ -507,7 +521,10 @@ mod integration_tests {
             .await
             .unwrap();
 
-        assert!(workspace.join(".git").exists(), "workspace meta-repo cloned");
+        assert!(
+            workspace.join(".git").exists(),
+            "workspace meta-repo cloned"
+        );
         assert!(workspace.join("backend/.git").exists(), "sibling cloned");
     }
 }

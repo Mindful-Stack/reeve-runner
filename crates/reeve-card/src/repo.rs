@@ -1,10 +1,10 @@
 //! Persistence port + SQLite adapter for the Card aggregate.
 
+use crate::domain::Card;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crate::domain::Card;
 use reeve_protocol::{CardReference, Column};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -13,12 +13,7 @@ pub trait CardRepo: Send + Sync {
     async fn list(&self) -> Result<Vec<Card>>;
     async fn get(&self, id: &str) -> Result<Option<Card>>;
     async fn insert(&self, card: &Card) -> Result<()>;
-    async fn update_column(
-        &self,
-        id: &str,
-        col: Column,
-        now: i64,
-    ) -> Result<Option<Card>>;
+    async fn update_column(&self, id: &str, col: Column, now: i64) -> Result<Option<Card>>;
     async fn for_household(&self, name: &str) -> Result<Vec<CardReference>>;
 }
 
@@ -82,12 +77,7 @@ impl CardRepo for SqliteCardRepo {
         .await?
     }
 
-    async fn update_column(
-        &self,
-        id: &str,
-        col: Column,
-        now: i64,
-    ) -> Result<Option<Card>> {
+    async fn update_column(&self, id: &str, col: Column, now: i64) -> Result<Option<Card>> {
         let conn = self.conn.clone();
         let id = id.to_string();
         tokio::task::spawn_blocking(move || -> Result<Option<Card>> {
@@ -113,9 +103,8 @@ impl CardRepo for SqliteCardRepo {
         let name = name.to_string();
         tokio::task::spawn_blocking(move || -> Result<Vec<CardReference>> {
             let conn = conn.blocking_lock();
-            let mut stmt = conn.prepare(
-                "SELECT id, brief, column_ FROM cards WHERE household = ?1 ORDER BY id",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT id, brief, column_ FROM cards WHERE household = ?1 ORDER BY id")?;
             let rows = stmt.query_map([name], |r| {
                 Ok(CardReference {
                     id: r.get::<_, String>(0)?,

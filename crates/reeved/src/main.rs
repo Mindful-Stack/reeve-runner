@@ -8,12 +8,12 @@ mod transport;
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use reeve_protocol::RpcRequest;
-use transport::server::{CallerContext, DbHandle};
-use transport::listener;
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
 use tracing::{info, warn};
+use transport::listener;
+use transport::server::{CallerContext, DbHandle};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -73,15 +73,14 @@ async fn main() -> Result<()> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
     let git: clones::GitOpsHandle = reeve_workspace::make_git_ops();
-    let (household_repo, household_lookup) =
-        reeve_household::make_household_components(db.clone());
+    let (household_repo, household_lookup) = reeve_household::make_household_components(db.clone());
 
     let cards = reeve_card::make_card_repo(db.clone());
     let workspaces = reeve_workspace::make_workspace_repo(db.clone());
     let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
 
-    let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> = Arc::new(
-        reeve_workspace::LiveWorkspaceLifecycle::new(
+    let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> =
+        Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
             workspaces.clone(),
             household_repo.clone(),
             git.clone(),
@@ -89,8 +88,7 @@ async fn main() -> Result<()> {
             listeners_arc,
             claude_dir,
             api_key,
-        )
-    );
+        ));
 
     let state = app::state::DaemonState {
         db: db.clone(),
@@ -113,7 +111,10 @@ async fn main() -> Result<()> {
     // Spawn the fetch worker. Hold its shutdown sender; we'll fire it after
     // server::run returns.
     let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let fetch_worker = tokio::spawn(reeve_workspace::fetch::run(state.clone(), fetch_shutdown_rx));
+    let fetch_worker = tokio::spawn(reeve_workspace::fetch::run(
+        state.clone(),
+        fetch_shutdown_rx,
+    ));
 
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {

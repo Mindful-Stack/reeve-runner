@@ -26,9 +26,7 @@ pub struct DaemonState {
 /// `reeve-workspace`) can drive the live daemon state without a circular dep.
 #[async_trait]
 impl reeve_workspace::fetch::FetchDeps for DaemonState {
-    async fn list_running_cards(
-        &self,
-    ) -> Result<Vec<reeve_workspace::fetch::RunningCard>> {
+    async fn list_running_cards(&self) -> Result<Vec<reeve_workspace::fetch::RunningCard>> {
         use reeve_protocol::ContainerStatus;
 
         let mut rows = self

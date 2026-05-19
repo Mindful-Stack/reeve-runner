@@ -56,11 +56,7 @@ pub async fn tick(state: &dyn FetchDeps) -> Result<()> {
 /// Fetch for a single card. Logs per-fetch errors at warn; returns Err only
 /// on household lookup failure. Missing household and broken manifest are
 /// warn-and-continue rather than errors.
-async fn tick_one_card(
-    state: &dyn FetchDeps,
-    card_id: &str,
-    household_name: &str,
-) -> Result<()> {
+async fn tick_one_card(state: &dyn FetchDeps, card_id: &str, household_name: &str) -> Result<()> {
     // Look up the household.
     let row = state.get_household(household_name).await?;
     let Some(row) = row else {
@@ -158,7 +154,11 @@ mod tests {
             ));
             Ok(())
         }
-        async fn list_namespace_refs(&self, _workdir: &Path, _namespace: &str) -> Result<Vec<String>> {
+        async fn list_namespace_refs(
+            &self,
+            _workdir: &Path,
+            _namespace: &str,
+        ) -> Result<Vec<String>> {
             Ok(vec![])
         }
         async fn fast_forward(
@@ -198,7 +198,10 @@ mod tests {
         }
 
         fn add_household(&self, name: &str, path: PathBuf) {
-            self.households.lock().unwrap().insert(name.to_string(), path);
+            self.households
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), path);
         }
     }
 

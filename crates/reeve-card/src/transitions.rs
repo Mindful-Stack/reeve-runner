@@ -1,9 +1,9 @@
 //! Kanban transition policy + ports the Card aggregate needs from
 //! other aggregates. Pure decision logic — no infra deps.
 
+use crate::domain::Card;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::domain::Card;
 use reeve_protocol::Column;
 
 /// Port the Card aggregate uses to drive workspace state.
@@ -69,17 +69,7 @@ mod tests {
     }
 
     fn sample(id: &str, col: Column) -> Card {
-        Card::from_persisted(
-            id.into(),
-            "h".into(),
-            "b".into(),
-            col,
-            0,
-            0,
-            false,
-            None,
-        )
-        .unwrap()
+        Card::from_persisted(id.into(), "h".into(), "b".into(), col, 0, 0, false, None).unwrap()
     }
 
     async fn run_one(old: Column, new: Column) -> Arc<MockFx> {

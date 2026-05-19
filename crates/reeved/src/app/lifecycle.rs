@@ -39,8 +39,7 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 /// Open a SQLite connection at `path` and run all schema migrations.
 /// Pass `":memory:"` for an in-memory database (used in tests).
 pub fn open_db(path: &str) -> Result<rusqlite::Connection> {
-    let conn =
-        rusqlite::Connection::open(path).with_context(|| format!("open db at {path}"))?;
+    let conn = rusqlite::Connection::open(path).with_context(|| format!("open db at {path}"))?;
     migrate(&conn)?;
     Ok(conn)
 }

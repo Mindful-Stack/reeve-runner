@@ -54,7 +54,8 @@ pub async fn handle_attach(
             code: RpcError::INTERNAL,
             message: format!(
                 "container for card '{}' not running (try mv {} implementing again)",
-                card.id(), card.id()
+                card.id(),
+                card.id()
             ),
         })?;
 
@@ -98,11 +99,10 @@ pub async fn handle_push(
     };
 
     // 3. Load + validate the manifest.
-    let manifest =
-        reeve_household::load_household_manifest(&household).map_err(|e| RpcError {
-            code: RpcError::INTERNAL,
-            message: format!("load manifest: {e:#}"),
-        })?;
+    let manifest = reeve_household::load_household_manifest(&household).map_err(|e| RpcError {
+        code: RpcError::INTERNAL,
+        message: format!("load manifest: {e:#}"),
+    })?;
 
     // 4. For each repo, for each branch in the namespace, FF + push.
     let mut branches = Vec::new();
@@ -122,14 +122,12 @@ pub async fn handle_push(
             let target = format!("refs/heads/{branch}");
             let source = format!("refs/reeve/{}/{}", card.id(), branch);
             let status = match git.fast_forward(&host_path, &target, &source).await {
-                Ok(crate::git::FfOutcome::Updated) => {
-                    match git.push(&host_path, &branch).await {
-                        Ok(()) => BranchPushStatus::Pushed,
-                        Err(e) => BranchPushStatus::PushFailed {
-                            message: format!("{e:#}"),
-                        },
-                    }
-                }
+                Ok(crate::git::FfOutcome::Updated) => match git.push(&host_path, &branch).await {
+                    Ok(()) => BranchPushStatus::Pushed,
+                    Err(e) => BranchPushStatus::PushFailed {
+                        message: format!("{e:#}"),
+                    },
+                },
                 Ok(crate::git::FfOutcome::NotFastForward) => BranchPushStatus::NotFastForward,
                 Err(e) => BranchPushStatus::PushFailed {
                     message: format!("fast-forward check failed: {e:#}"),

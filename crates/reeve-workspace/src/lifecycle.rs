@@ -69,11 +69,10 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         // Look up the household via the repo port.
         let household_name = card.household().to_string();
-        let row = self
-            .households
-            .get(&household_name)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("household '{}' not configured", card.household()))?;
+        let row =
+            self.households.get(&household_name).await?.ok_or_else(|| {
+                anyhow::anyhow!("household '{}' not configured", card.household())
+            })?;
         let household = reeve_household::Household {
             name: row.name,
             meta_repo_path: row.meta_repo_path,
@@ -110,7 +109,9 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
 
         clones::clone_all_for_card(&*self.git, &household, &manifest, &workspace_path).await?;
 
-        let devcontainer_path = workspace_path.join(".devcontainer").join("devcontainer.json");
+        let devcontainer_path = workspace_path
+            .join(".devcontainer")
+            .join("devcontainer.json");
         if !devcontainer_path.exists() {
             anyhow::bail!(
                 "devcontainer.json missing at {} — every witan-household must ship one at the conventional location",
@@ -130,7 +131,12 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
 
         let container_name = discover_with_deadline(&*self.containers, card_id).await?;
         self.workspaces
-            .upsert_container(card_id, &container_name, ContainerStatus::Running, now_secs())
+            .upsert_container(
+                card_id,
+                &container_name,
+                ContainerStatus::Running,
+                now_secs(),
+            )
             .await?;
         self.listeners.spawn(card_id, socket).await;
 
@@ -163,7 +169,12 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             None => return Ok(()), // never had one
         };
 
-        if self.containers.inspect_status(&row.container_name).await?.is_none() {
+        if self
+            .containers
+            .inspect_status(&row.container_name)
+            .await?
+            .is_none()
+        {
             self.workspaces.remove_container(card_id).await?;
             return Ok(());
         }
@@ -174,10 +185,7 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
     }
 }
 
-async fn discover_with_deadline(
-    ops: &dyn ContainerOps,
-    card_id: &str,
-) -> Result<String> {
+async fn discover_with_deadline(ops: &dyn ContainerOps, card_id: &str) -> Result<String> {
     let start = std::time::Instant::now();
     let deadline = std::time::Duration::from_secs(2);
     let mut backoff = std::time::Duration::from_millis(100);

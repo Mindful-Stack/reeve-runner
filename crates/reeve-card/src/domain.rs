@@ -53,14 +53,30 @@ impl Card {
     }
 
     // Getters
-    pub fn id(&self) -> &str { &self.id }
-    pub fn household(&self) -> &str { &self.household }
-    pub fn brief(&self) -> &str { &self.brief }
-    pub fn column(&self) -> Column { self.column }
-    pub fn created_at(&self) -> i64 { self.created_at }
-    pub fn updated_at(&self) -> i64 { self.updated_at }
-    pub fn needs_heavy(&self) -> bool { self.needs_heavy }
-    pub fn parent_id(&self) -> Option<&str> { self.parent_id.as_deref() }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn household(&self) -> &str {
+        &self.household
+    }
+    pub fn brief(&self) -> &str {
+        &self.brief
+    }
+    pub fn column(&self) -> Column {
+        self.column
+    }
+    pub fn created_at(&self) -> i64 {
+        self.created_at
+    }
+    pub fn updated_at(&self) -> i64 {
+        self.updated_at
+    }
+    pub fn needs_heavy(&self) -> bool {
+        self.needs_heavy
+    }
+    pub fn parent_id(&self) -> Option<&str> {
+        self.parent_id.as_deref()
+    }
 
     /// Construct a Card directly from validated fields. Used by the repo when
     /// reading from persisted SQL rows.
@@ -74,14 +90,25 @@ impl Card {
         needs_heavy: bool,
         parent_id: Option<String>,
     ) -> Result<Self, CardError> {
-        if id.is_empty() { return Err(CardError::EmptyId); }
-        if brief.is_empty() { return Err(CardError::EmptyBrief); }
+        if id.is_empty() {
+            return Err(CardError::EmptyId);
+        }
+        if brief.is_empty() {
+            return Err(CardError::EmptyBrief);
+        }
         let n = brief.chars().count();
-        if n > 200 { return Err(CardError::BriefTooLong(n)); }
+        if n > 200 {
+            return Err(CardError::BriefTooLong(n));
+        }
         Ok(Self {
-            id, household, brief, column,
-            created_at, updated_at,
-            needs_heavy, parent_id,
+            id,
+            household,
+            brief,
+            column,
+            created_at,
+            updated_at,
+            needs_heavy,
+            parent_id,
         })
     }
 }
@@ -107,8 +134,14 @@ impl TryFrom<reeve_protocol::Card> for Card {
     type Error = CardError;
     fn try_from(d: reeve_protocol::Card) -> Result<Self, CardError> {
         Self::from_persisted(
-            d.id, d.household, d.brief, d.column,
-            d.created_at, d.updated_at, d.needs_heavy, d.parent_id,
+            d.id,
+            d.household,
+            d.brief,
+            d.column,
+            d.created_at,
+            d.updated_at,
+            d.needs_heavy,
+            d.parent_id,
         )
     }
 }

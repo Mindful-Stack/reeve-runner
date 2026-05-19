@@ -6,8 +6,6 @@ mod repo;
 mod transitions;
 
 pub use domain::{Card, CardError};
-pub use handler::{
-    handle_ls, handle_mv, handle_mv_self, handle_new, handle_status_self,
-};
-pub use repo::{init_schema, make_card_repo, CardRepo};
-pub use transitions::{on_column_change, HouseholdLookup, WorkspaceLifecycle};
+pub use handler::{handle_ls, handle_mv, handle_mv_self, handle_new, handle_status_self};
+pub use repo::{CardRepo, init_schema, make_card_repo};
+pub use transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
