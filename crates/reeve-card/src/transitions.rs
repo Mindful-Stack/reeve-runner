@@ -3,7 +3,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use reeve_protocol::{Card, Column};
+use crate::domain::Card;
+use reeve_protocol::Column;
 
 /// Port the Card aggregate uses to drive workspace state.
 /// Implemented in `reeve-workspace`.
@@ -34,11 +35,11 @@ pub async fn on_column_change(
     match (old, new) {
         (_, Column::Implementing) => workspace.ensure_running(card).await,
         (_, Column::Testing | Column::Review) => Ok(()),
-        (_, Column::Done) => workspace.ensure_stopped(&card.id).await,
+        (_, Column::Done) => workspace.ensure_stopped(card.id()).await,
         (
             Column::Implementing | Column::Testing | Column::Review,
             Column::Backlog | Column::Planning,
-        ) => workspace.ensure_stopped(&card.id).await,
+        ) => workspace.ensure_stopped(card.id()).await,
         (_, Column::Backlog | Column::Planning) => Ok(()),
     }
 }
@@ -58,7 +59,7 @@ mod tests {
     #[async_trait]
     impl WorkspaceLifecycle for MockFx {
         async fn ensure_running(&self, card: &Card) -> Result<()> {
-            self.running.lock().await.push(card.id.clone());
+            self.running.lock().await.push(card.id().to_string());
             Ok(())
         }
         async fn ensure_stopped(&self, card_id: &str) -> Result<()> {
@@ -68,16 +69,17 @@ mod tests {
     }
 
     fn sample(id: &str, col: Column) -> Card {
-        Card {
-            id: id.into(),
-            household: "h".into(),
-            brief: "b".into(),
-            column: col,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }
+        Card::from_persisted(
+            id.into(),
+            "h".into(),
+            "b".into(),
+            col,
+            0,
+            0,
+            false,
+            None,
+        )
+        .unwrap()
     }
 
     async fn run_one(old: Column, new: Column) -> Arc<MockFx> {

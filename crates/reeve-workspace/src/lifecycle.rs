@@ -8,8 +8,8 @@ use crate::git::GitOps;
 use crate::repo::WorkspaceRepo;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reeve_card::WorkspaceLifecycle;
-use reeve_protocol::{Card, ContainerStatus};
+use reeve_card::{Card, WorkspaceLifecycle};
+use reeve_protocol::ContainerStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,18 +68,18 @@ fn now_secs() -> i64 {
 impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
         // Look up the household via the repo port.
-        let household_name = card.household.clone();
+        let household_name = card.household().to_string();
         let row = self
             .households
             .get(&household_name)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("household '{}' not configured", card.household))?;
+            .ok_or_else(|| anyhow::anyhow!("household '{}' not configured", card.household()))?;
         let household = reeve_household::Household {
             name: row.name,
             meta_repo_path: row.meta_repo_path,
         };
 
-        let card_id = &card.id;
+        let card_id = card.id();
         let socket = reeve_protocol::paths::card_socket_path(card_id);
         let cards_socket_dir = reeve_protocol::paths::cards_socket_dir();
         let workspace_path = reeve_protocol::paths::card_workspace_path(card_id);

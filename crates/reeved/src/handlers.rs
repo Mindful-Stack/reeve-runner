@@ -145,7 +145,8 @@ mod tests {
     use crate::transport::server::DbHandle;
     use anyhow::Result;
     use async_trait::async_trait;
-    use reeve_protocol::{Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
+    use reeve_card::Card;
+    use reeve_protocol::{Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
     use std::pin::Pin;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -864,15 +865,18 @@ mod tests {
         .await
         .unwrap();
         // Insert cards directly via db.
-        let make_card = |id: &str, brief: &str, column: Column, household: &str| Card {
-            id: id.into(),
-            household: household.into(),
-            brief: brief.into(),
-            column,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
+        let make_card = |id: &str, brief: &str, column: Column, household: &str| {
+            Card::from_persisted(
+                id.into(),
+                household.into(),
+                brief.into(),
+                column,
+                0,
+                0,
+                false,
+                None,
+            )
+            .unwrap()
         };
         state.cards.insert(&make_card("card-1", "brief one", Column::Backlog, "ours")).await.unwrap();
         state.cards.insert(&make_card("card-2", "brief two", Column::Implementing, "ours")).await.unwrap();
@@ -958,16 +962,16 @@ mod tests {
         insert_test_household(&state, "h", &meta).await;
 
         // Insert a card pointing at the household.
-        state.cards.insert(&reeve_protocol::Card {
-            id: "card-x".into(),
-            household: "h".into(),
-            brief: "x".into(),
-            column: reeve_protocol::Column::Implementing,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-x".into(),
+            "h".into(),
+            "x".into(),
+            reeve_protocol::Column::Implementing,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1112,16 +1116,16 @@ mod tests {
 
         let state = fresh_state_with_configurable_git(git);
         insert_test_household(&state, "h", &meta).await;
-        state.cards.insert(&Card {
-            id: "card-y".into(),
-            household: "h".into(),
-            brief: "y".into(),
-            column: Column::Implementing,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-y".into(),
+            "h".into(),
+            "y".into(),
+            Column::Implementing,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1158,16 +1162,16 @@ mod tests {
 
         let state = fresh_state_with_configurable_git(git.clone());
         insert_test_household(&state, "h", &meta).await;
-        state.cards.insert(&Card {
-            id: "card-z".into(),
-            household: "h".into(),
-            brief: "z".into(),
-            column: Column::Implementing,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-z".into(),
+            "h".into(),
+            "z".into(),
+            Column::Implementing,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1266,16 +1270,16 @@ mod tests {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         containers.set_discover(Some("happy-cool-container".into()));
         let state = fresh_state_with_containers(containers);
-        state.cards.insert(&Card {
-            id: "card-a".into(),
-            household: "h".into(),
-            brief: "a".into(),
-            column: Column::Implementing,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-a".into(),
+            "h".into(),
+            "a".into(),
+            Column::Implementing,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1310,16 +1314,16 @@ mod tests {
     async fn attach_rejects_non_implementing_card() {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         let state = fresh_state_with_containers(containers);
-        state.cards.insert(&Card {
-            id: "card-b".into(),
-            household: "h".into(),
-            brief: "b".into(),
-            column: Column::Backlog,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-b".into(),
+            "h".into(),
+            "b".into(),
+            Column::Backlog,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1339,16 +1343,16 @@ mod tests {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         // Don't call set_discover — defaults to None.
         let state = fresh_state_with_containers(containers);
-        state.cards.insert(&Card {
-            id: "card-c".into(),
-            household: "h".into(),
-            brief: "c".into(),
-            column: Column::Implementing,
-            created_at: 0,
-            updated_at: 0,
-            needs_heavy: false,
-            parent_id: None,
-        }).await.unwrap();
+        state.cards.insert(&Card::from_persisted(
+            "card-c".into(),
+            "h".into(),
+            "c".into(),
+            Column::Implementing,
+            0,
+            0,
+            false,
+            None,
+        ).unwrap()).await.unwrap();
 
         let req = RpcRequest {
             id: 1,

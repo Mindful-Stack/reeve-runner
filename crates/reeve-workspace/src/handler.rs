@@ -32,19 +32,19 @@ pub async fn handle_attach(
         })?;
 
     // 2. Column check.
-    if card.column != Column::Implementing {
+    if card.column() != Column::Implementing {
         return Err(RpcError {
             code: RpcError::INVALID_ARGUMENT,
             message: format!(
                 "card is in {}; attach only works in Implementing",
-                card.column.label()
+                card.column().label()
             ),
         });
     }
 
     // 3. Container discovery by label.
     let container_name = containers
-        .discover_container_name(&card.id)
+        .discover_container_name(card.id())
         .await
         .map_err(|e| RpcError {
             code: RpcError::INTERNAL,
@@ -54,7 +54,7 @@ pub async fn handle_attach(
             code: RpcError::INTERNAL,
             message: format!(
                 "container for card '{}' not running (try mv {} implementing again)",
-                card.id, card.id
+                card.id(), card.id()
             ),
         })?;
 
@@ -62,7 +62,7 @@ pub async fn handle_attach(
     let result = AttachResult {
         container_name,
         session_name: "reeve".to_string(),
-        in_container_workspace: format!("/workspaces/{}", card.id),
+        in_container_workspace: format!("/workspaces/{}", card.id()),
     };
     serde_json::to_value(result).map_err(internal)
 }
@@ -85,12 +85,12 @@ pub async fn handle_push(
 
     // 2. Resolve the household from the household_repo.
     let row = households
-        .get(&card.household)
+        .get(card.household())
         .await
         .map_err(internal)?
         .ok_or_else(|| RpcError {
             code: RpcError::INTERNAL,
-            message: format!("household '{}' not configured", card.household),
+            message: format!("household '{}' not configured", card.household()),
         })?;
     let household = reeve_household::Household {
         name: row.name,
@@ -108,19 +108,19 @@ pub async fn handle_push(
     let mut branches = Vec::new();
     for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
         let listed = git
-            .list_namespace_refs(&host_path, &card.id)
+            .list_namespace_refs(&host_path, card.id())
             .await
             .map_err(|e| RpcError {
                 code: RpcError::INTERNAL,
                 message: format!(
                     "list refs/reeve/{}/* in {}: {e:#}",
-                    card.id,
+                    card.id(),
                     host_path.display()
                 ),
             })?;
         for branch in listed {
             let target = format!("refs/heads/{branch}");
-            let source = format!("refs/reeve/{}/{}", card.id, branch);
+            let source = format!("refs/reeve/{}/{}", card.id(), branch);
             let status = match git.fast_forward(&host_path, &target, &source).await {
                 Ok(crate::git::FfOutcome::Updated) => {
                     match git.push(&host_path, &branch).await {

@@ -1,9 +1,10 @@
 //! RPC handlers for the Card aggregate.
 
+use crate::domain::Card;
 use crate::repo::CardRepo;
 use crate::transitions::{on_column_change, HouseholdLookup, WorkspaceLifecycle};
 use reeve_protocol::{
-    Card, Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
+    Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
     NewParams, NewResult, RpcError, StatusSelfResult,
 };
 use serde_json::Value;
@@ -31,27 +32,23 @@ fn not_found(id: &str) -> RpcError {
 }
 
 pub async fn handle_ls(cards: &dyn CardRepo) -> std::result::Result<Value, RpcError> {
-    let cards = cards.list().await.map_err(internal)?;
-    serde_json::to_value(LsResult { cards }).map_err(internal)
+    let entities = cards.list().await.map_err(internal)?;
+    let dtos: Vec<reeve_protocol::Card> = entities.into_iter().map(Into::into).collect();
+    serde_json::to_value(LsResult { cards: dtos }).map_err(internal)
 }
 
 pub async fn handle_new(
     cards: &dyn CardRepo,
     params: NewParams,
 ) -> std::result::Result<Value, RpcError> {
-    let now = now_secs();
-    let card = Card {
-        id: uuid::Uuid::new_v4().to_string(),
-        household: params.household,
-        brief: params.brief,
-        column: Column::Backlog,
-        created_at: now,
-        updated_at: now,
-        needs_heavy: params.needs_heavy,
-        parent_id: None,
-    };
+    let card = Card::new(params.household, params.brief, params.needs_heavy)
+        .map_err(|e| RpcError {
+            code: RpcError::INVALID_ARGUMENT,
+            message: e.to_string(),
+        })?;
     cards.insert(&card).await.map_err(internal)?;
-    serde_json::to_value(NewResult { card }).map_err(internal)
+    let dto: reeve_protocol::Card = card.into();
+    serde_json::to_value(NewResult { card: dto }).map_err(internal)
 }
 
 pub async fn handle_mv(
@@ -65,14 +62,14 @@ pub async fn handle_mv(
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(&params.id))?;
-    let old_column = existing.column;
+    let old_column = existing.column();
 
     if params.column == Column::Implementing
-        && !households.exists(&existing.household).await.map_err(internal)?
+        && !households.exists(existing.household()).await.map_err(internal)?
     {
         return Err(RpcError {
             code: RpcError::INTERNAL,
-            message: format!("household '{}' not configured", existing.household),
+            message: format!("household '{}' not configured", existing.household()),
         });
     }
 
@@ -90,7 +87,8 @@ pub async fn handle_mv(
             message: format!("{e:#}"),
         })?;
 
-    serde_json::to_value(MvResult { card }).map_err(internal)
+    let dto: reeve_protocol::Card = card.into();
+    serde_json::to_value(MvResult { card: dto }).map_err(internal)
 }
 
 pub async fn handle_mv_self(
@@ -105,14 +103,14 @@ pub async fn handle_mv_self(
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(&card_id))?;
-    let old_column = existing.column;
+    let old_column = existing.column();
 
     if params.column == Column::Implementing
-        && !households.exists(&existing.household).await.map_err(internal)?
+        && !households.exists(existing.household()).await.map_err(internal)?
     {
         return Err(RpcError {
             code: RpcError::INTERNAL,
-            message: format!("household '{}' not configured", existing.household),
+            message: format!("household '{}' not configured", existing.household()),
         });
     }
 
@@ -130,7 +128,8 @@ pub async fn handle_mv_self(
             message: format!("{e:#}"),
         })?;
 
-    serde_json::to_value(MvSelfResult { card }).map_err(internal)
+    let dto: reeve_protocol::Card = card.into();
+    serde_json::to_value(MvSelfResult { card: dto }).map_err(internal)
 }
 
 pub async fn handle_status_self(
@@ -143,8 +142,9 @@ pub async fn handle_status_self(
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(&card_id))?;
+    let dto: reeve_protocol::Card = card.into();
     serde_json::to_value(StatusSelfResult {
-        card,
+        card: dto,
         container_status: workspace_status,
     })
     .map_err(internal)

@@ -5,7 +5,7 @@ mod handler;
 mod repo;
 mod transitions;
 
-pub use domain::Card;
+pub use domain::{Card, CardError};
 pub use handler::{
     handle_ls, handle_mv, handle_mv_self, handle_new, handle_status_self,
 };

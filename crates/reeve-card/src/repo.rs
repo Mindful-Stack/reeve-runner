@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reeve_protocol::{Card, CardReference, Column};
+use crate::domain::Card;
+use reeve_protocol::{CardReference, Column};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -71,9 +72,9 @@ impl CardRepo for SqliteCardRepo {
                 "INSERT INTO cards (id, household, brief, column_, created_at, updated_at, needs_heavy, parent_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    card.id, card.household, card.brief,
-                    card.column.as_wire_str(), card.created_at, card.updated_at,
-                    card.needs_heavy as i64, card.parent_id,
+                    card.id(), card.household(), card.brief(),
+                    card.column().as_wire_str(), card.created_at(), card.updated_at(),
+                    card.needs_heavy() as i64, card.parent_id(),
                 ],
             )?;
             Ok(())
@@ -137,21 +138,32 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
             Box::new(InvalidColumn(column_str.clone())),
         )
     })?;
-    Ok(Card {
-        id: row.get(0)?,
-        household: row.get(1)?,
-        brief: row.get(2)?,
+    Card::from_persisted(
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
         column,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
-        needs_heavy: row.get::<_, i64>(6)? != 0,
-        parent_id: row.get(7)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get::<_, i64>(6)? != 0,
+        row.get(7)?,
+    )
+    .map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(InvalidPersistedCard(e.to_string())),
+        )
     })
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid column value: {0}")]
 struct InvalidColumn(String);
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid persisted card: {0}")]
+struct InvalidPersistedCard(String);
 
 /// Construct the SQLite-backed CardRepo. Only `reeved` should call this.
 pub fn make_card_repo(conn: Arc<Mutex<Connection>>) -> Arc<dyn CardRepo> {
@@ -182,16 +194,17 @@ mod tests {
     use super::*;
 
     fn sample(id: &str) -> Card {
-        Card {
-            id: id.into(),
-            household: "h".into(),
-            brief: "test".into(),
-            column: Column::Backlog,
-            created_at: 1000,
-            updated_at: 1000,
-            needs_heavy: false,
-            parent_id: None,
-        }
+        Card::from_persisted(
+            id.into(),
+            "h".into(),
+            "test".into(),
+            Column::Backlog,
+            1000,
+            1000,
+            false,
+            None,
+        )
+        .unwrap()
     }
 
     fn fresh_repo() -> Arc<dyn CardRepo> {
@@ -206,7 +219,7 @@ mod tests {
         repo.insert(&sample("a")).await.unwrap();
         let cards = repo.list().await.unwrap();
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].id, "a");
+        assert_eq!(cards[0].id(), "a");
     }
 
     #[tokio::test]
@@ -218,8 +231,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(updated.column, Column::Implementing);
-        assert_eq!(updated.updated_at, 2000);
+        assert_eq!(updated.column(), Column::Implementing);
+        assert_eq!(updated.updated_at(), 2000);
     }
 
     #[tokio::test]

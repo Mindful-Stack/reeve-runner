@@ -45,8 +45,8 @@ impl reeve_workspace::fetch::FetchDeps for DaemonState {
         for row in rows {
             if let Some(card) = self.cards.get(&row.card_id).await? {
                 cards.push(reeve_workspace::fetch::RunningCard {
-                    card_id: card.id,
-                    household: card.household,
+                    card_id: card.id().to_string(),
+                    household: card.household().to_string(),
                 });
             }
         }
