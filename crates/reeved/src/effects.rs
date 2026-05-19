@@ -221,10 +221,6 @@ impl TransitionEffects for LiveEffects {
     }
 }
 
-/// Poll `containers.discover_container_name` until it returns a name, with a
-/// 2-second deadline. Returns `Err` if the deadline expires without a result.
-/// `devcontainer up` may return success a moment before docker registers the
-/// container, so this poll absorbs the race.
 /// Implement `FetchDeps` for `DaemonState` so the fetch worker (now in
 /// `reeve-workspace`) can drive the live daemon state without a circular dep.
 #[async_trait]
@@ -288,6 +284,10 @@ impl reeve_workspace::fetch::FetchDeps for DaemonState {
     }
 }
 
+/// Poll `containers.discover_container_name` until it returns a name, with a
+/// 2-second deadline. Returns `Err` if the deadline expires without a result.
+/// `devcontainer up` may return success a moment before docker registers the
+/// container, so this poll absorbs the race.
 async fn discover_with_deadline(state: &DaemonState, card_id: &str) -> Result<String> {
     let start = std::time::Instant::now();
     let deadline = std::time::Duration::from_secs(2);

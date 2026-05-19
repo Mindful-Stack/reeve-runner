@@ -2,6 +2,11 @@
 //!
 //! Examines every `Running`/`Spawning` row in the DB, inspects the actual
 //! docker state, and either adopts the surviving container or marks it Failed.
+//!
+//! TODO(stage-4.x): move into `reeve-workspace` once Task 4.3 carves
+//! `WorkspaceRepo` (which will own `ContainerRow`). Currently this stays in
+//! reeved because it depends on `DaemonState`, `ContainerRow` (in db.rs), and
+//! `ListenerRegistry` (transport) — all reeved-internal at this stage.
 
 use crate::db::ContainerRow;
 use crate::effects::DaemonState;
