@@ -68,7 +68,19 @@ fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
         }
         KeyMatcher::Code(code) => event.code == code,
         KeyMatcher::Shift(code) => {
-            event.code == code && event.modifiers.contains(KeyModifiers::SHIFT)
+            if !event.modifiers.contains(KeyModifiers::SHIFT) {
+                return false;
+            }
+            // Crossterm reports Shift+<letter> as KeyCode::Char(<uppercase>)
+            // with the SHIFT modifier set. Compare case-insensitively so a
+            // binding written as `Shift(Char('g'))` matches both `(Char('G'),
+            // SHIFT)` and `(Char('g'), SHIFT)`.
+            match (code, event.code) {
+                (KeyCode::Char(want), KeyCode::Char(got)) => {
+                    want.to_ascii_lowercase() == got.to_ascii_lowercase()
+                }
+                _ => code == event.code,
+            }
         }
     }
 }
@@ -93,5 +105,25 @@ mod tests {
     fn unbound_key_returns_none() {
         let key = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
         assert_eq!(translate(key), None);
+    }
+
+    #[test]
+    fn shift_g_uppercase_translates_to_select_last() {
+        // Crossterm reports Shift+G as Char('G') with SHIFT modifier.
+        let key = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::SelectLast));
+    }
+
+    #[test]
+    fn shift_g_lowercase_with_modifier_translates_to_select_last() {
+        // Some terminals / kitty protocol may report (Char('g'), SHIFT).
+        let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SHIFT);
+        assert_eq!(translate(key), Some(Action::SelectLast));
+    }
+
+    #[test]
+    fn plain_g_without_shift_translates_to_select_first() {
+        let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::SelectFirst));
     }
 }
