@@ -24,6 +24,13 @@ pub async fn handle(app: &mut App, action: Action) {
                 } else {
                     reset_selection(app);
                 }
+                let implementing: Vec<String> = app
+                    .cards
+                    .iter()
+                    .filter(|c| c.column == reeve_protocol::Column::Implementing)
+                    .map(|c| c.id.clone())
+                    .collect();
+                app.sessions.reconcile(&implementing);
             }
         }
         Action::FocusPrevColumn => {

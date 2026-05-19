@@ -13,6 +13,12 @@ use reeve_protocol::{Card, Column};
 use std::io::{Stdout, stdout};
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneFocus {
+    Kanban,
+    SessionPane,
+}
+
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +45,9 @@ pub struct App {
     pub modal: Option<crate::tui::modal::ModalKind>,
     pub status: Option<StatusMessage>,
     pub households: Vec<reeve_protocol::HouseholdSummary>,
+    pub sessions: crate::tui::sessions::SessionManager,
+    pub pane_focus: PaneFocus,
+    pub pending_attention: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -53,6 +62,9 @@ impl App {
             modal: None,
             status: None,
             households: Vec::new(),
+            sessions: crate::tui::sessions::SessionManager::new(),
+            pane_focus: PaneFocus::Kanban,
+            pending_attention: std::collections::HashSet::new(),
         }
     }
 
@@ -112,6 +124,13 @@ async fn drive(terminal: &mut Term) -> Result<()> {
         app.cards = result.cards;
         app.last_refresh = Instant::now();
         crate::tui::actions::ensure_selection_valid(&mut app);
+        let implementing: Vec<String> = app
+            .cards
+            .iter()
+            .filter(|c| c.column == Column::Implementing)
+            .map(|c| c.id.clone())
+            .collect();
+        app.sessions.reconcile(&implementing);
     }
 
     while !app.quit {
@@ -135,6 +154,13 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                 app.cards = result.cards;
                 app.last_refresh = Instant::now();
                 crate::tui::actions::ensure_selection_valid(&mut app);
+                let implementing: Vec<String> = app
+                    .cards
+                    .iter()
+                    .filter(|c| c.column == Column::Implementing)
+                    .map(|c| c.id.clone())
+                    .collect();
+                app.sessions.reconcile(&implementing);
             }
         }
     }

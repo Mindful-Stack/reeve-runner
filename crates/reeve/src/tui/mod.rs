@@ -5,6 +5,7 @@ mod events;
 mod layout;
 mod modal;
 mod render;
+mod sessions;
 
 use anyhow::Result;
 

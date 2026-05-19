@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use reeve_protocol::{Card, Column};
+use tui_term::widget::PseudoTerminal;
 
 pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
     let area = f.area();
@@ -126,6 +127,33 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         f.render_widget(placeholder, area);
         return;
     };
+
+    if card.column == Column::Implementing {
+        if let Some(session) = app.sessions.get(&card.id) {
+            if let Ok(parser) = session.parser.lock() {
+                let screen = parser.screen();
+                let border_style =
+                    if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                let widget = PseudoTerminal::new(screen).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border_style)
+                        .title(format!(
+                            "session ({})",
+                            card.id.get(..8).unwrap_or(&card.id)
+                        )),
+                );
+                f.render_widget(widget, area);
+                return;
+            }
+        }
+    }
+
+    // Fallback: card detail block.
     let lines = vec![
         Line::from(vec![
             Span::styled("id:        ", Style::default().fg(Color::DarkGray)),
