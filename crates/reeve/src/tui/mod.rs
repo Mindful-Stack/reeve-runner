@@ -2,6 +2,7 @@ mod actions;
 mod app;
 mod client_ext;
 mod events;
+mod layout;
 mod render;
 
 use anyhow::Result;

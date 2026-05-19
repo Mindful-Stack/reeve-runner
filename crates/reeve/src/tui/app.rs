@@ -21,6 +21,7 @@ pub struct App {
     pub quit: bool,
     pub focused_column: Column,
     pub selected_card_id: Option<String>,
+    pub layout: crate::tui::layout::LayoutMode,
 }
 
 impl App {
@@ -31,6 +32,7 @@ impl App {
             quit: false,
             focused_column: Column::Backlog,
             selected_card_id: None,
+            layout: crate::tui::layout::LayoutMode::default(),
         }
     }
 

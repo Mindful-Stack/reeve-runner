@@ -82,6 +82,18 @@ pub async fn handle(app: &mut App, action: Action) {
             let cards = app.focused_cards();
             app.selected_card_id = cards.last().map(|c| c.id.clone());
         }
+        Action::OpenDrillIn => {
+            if app.selected_card_id.is_some() {
+                app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+            }
+        }
+        Action::CloseDrillIn => {
+            if app.layout == crate::tui::layout::LayoutMode::FocusedColumnPlusDetail {
+                app.layout = crate::tui::layout::LayoutMode::KanbanFull;
+            } else {
+                app.quit = true; // Esc in KanbanFull = quit
+            }
+        }
     }
 }
 
@@ -208,5 +220,37 @@ mod tests {
         app.selected_card_id = Some("b".into()); // not in cards
         ensure_selection_valid(&mut app);
         assert_eq!(app.selected_card_id.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn enter_opens_drill_in_when_card_selected() {
+        let mut app = App::new();
+        app.cards = vec![card("a", Column::Backlog, 0)];
+        app.selected_card_id = Some("a".into());
+        handle(&mut app, Action::OpenDrillIn).await;
+        assert_eq!(app.layout, crate::tui::layout::LayoutMode::FocusedColumnPlusDetail);
+    }
+
+    #[tokio::test]
+    async fn enter_does_not_open_drill_in_when_no_selection() {
+        let mut app = App::new();
+        handle(&mut app, Action::OpenDrillIn).await;
+        assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
+    }
+
+    #[tokio::test]
+    async fn esc_closes_drill_in_when_open() {
+        let mut app = App::new();
+        app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+        handle(&mut app, Action::CloseDrillIn).await;
+        assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
+        assert!(!app.quit);
+    }
+
+    #[tokio::test]
+    async fn esc_quits_when_drill_in_closed() {
+        let mut app = App::new();
+        handle(&mut app, Action::CloseDrillIn).await;
+        assert!(app.quit);
     }
 }

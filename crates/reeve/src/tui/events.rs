@@ -13,6 +13,8 @@ pub enum Action {
     SelectDown,
     SelectFirst,
     SelectLast,
+    OpenDrillIn,
+    CloseDrillIn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +40,8 @@ pub struct Binding {
 
 pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('q'), action: Action::Quit, description: "quit", section: HelpSection::Global },
-    Binding { key: KeyMatcher::Code(KeyCode::Esc), action: Action::Quit, description: "quit", section: HelpSection::Global },
+    Binding { key: KeyMatcher::Code(KeyCode::Esc), action: Action::CloseDrillIn, description: "close drill-in / quit", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::Enter), action: Action::OpenDrillIn, description: "open drill-in", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Char('r'), action: Action::ForceRefresh, description: "force refresh", section: HelpSection::Global },
     Binding { key: KeyMatcher::Char('h'), action: Action::FocusPrevColumn, description: "focus previous column", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Code(KeyCode::Left), action: Action::FocusPrevColumn, description: "focus previous column", section: HelpSection::Navigation },
