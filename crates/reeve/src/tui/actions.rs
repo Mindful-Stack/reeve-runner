@@ -239,7 +239,12 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     }
                 }
                 KeyCode::Backspace => {
-                    let target = if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    // Word-delete on Ctrl+Backspace OR Alt+Backspace (emacs
+                    // M-Backspace convention; fallback for terminals that
+                    // drop the Ctrl modifier on Backspace).
+                    let is_word_delete = key.modifiers.contains(KeyModifiers::CONTROL)
+                        || key.modifiers.contains(KeyModifiers::ALT);
+                    let target = if is_word_delete {
                         word_boundary_before(&buffer, cursor)
                     } else if cursor > 0 {
                         cursor - 1
@@ -463,7 +468,10 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         }
                     }
                     KeyCode::Backspace => {
-                        let target = if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        // Word-delete on Ctrl+Backspace OR Alt+Backspace.
+                        let is_word_delete = key.modifiers.contains(KeyModifiers::CONTROL)
+                            || key.modifiers.contains(KeyModifiers::ALT);
+                        let target = if is_word_delete {
                             word_boundary_before(&brief, cursor)
                         } else if cursor > 0 {
                             cursor - 1
