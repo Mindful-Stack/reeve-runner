@@ -141,9 +141,6 @@ mod tests {
         async fn clone(&self, _s: &std::path::Path, _d: &std::path::Path) -> Result<()> {
             Ok(())
         }
-        async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
         async fn fetch(
             &self,
             workdir: &std::path::Path,

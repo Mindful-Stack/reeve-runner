@@ -29,9 +29,6 @@ pub enum FfOutcome {
 pub trait GitOps: Send + Sync {
     /// Run `git clone --reference <source> --dissociate <source> <dest>`.
     async fn clone(&self, source: &Path, dest: &Path) -> Result<()>;
-    /// Run `git clone <url> <dest>` — no --reference, no --dissociate.
-    /// For adding a remote household whose meta-repo lives off-host.
-    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()>;
     /// Run `git fetch <source> '+refs/heads/*:refs/reeve/<namespace>/*'` in `workdir`.
     /// The leading `+` allows non-fast-forward updates so re-fetched namespace
     /// refs are always overwritten.
@@ -80,22 +77,6 @@ impl GitOps for RealGitOps {
                 source.to_str().context("source path not utf-8")?,
                 dest.to_str().context("dest path not utf-8")?,
             ])
-            .output()
-            .await
-            .context("exec git clone")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git clone failed (exit {}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(())
-    }
-
-    async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
-        let output = Command::new("git")
-            .args(["clone", url, dest.to_str().context("dest path not utf-8")?])
             .output()
             .await
             .context("exec git clone")?;
@@ -366,13 +347,6 @@ mod tests {
             Ok(())
         }
 
-        async fn clone_url(&self, url: &str, dest: &Path) -> Result<()> {
-            let mut calls = self.calls.lock().unwrap();
-            calls.push((PathBuf::from(url), dest.to_path_buf()));
-            std::fs::create_dir_all(dest).unwrap();
-            Ok(())
-        }
-
         async fn fetch(&self, workdir: &Path, source: &Path, namespace: &str) -> Result<()> {
             self.fetches.lock().unwrap().push((
                 workdir.to_path_buf(),
@@ -518,10 +492,6 @@ mod tests {
                     }
                 }
                 Ok(())
-            }
-
-            async fn clone_url(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
-                self.inner.clone_url(url, dest).await
             }
 
             async fn fetch(

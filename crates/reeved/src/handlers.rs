@@ -305,10 +305,6 @@ mod tests {
             std::fs::create_dir_all(_dest).ok();
             Ok(())
         }
-        async fn clone_url(&self, _url: &str, _dest: &std::path::Path) -> Result<()> {
-            std::fs::create_dir_all(_dest).ok();
-            Ok(())
-        }
         async fn fetch(
             &self,
             _workdir: &std::path::Path,
@@ -1148,9 +1144,6 @@ mod tests {
     #[async_trait::async_trait]
     impl crate::clones::GitOps for ConfigurableGit {
         async fn clone(&self, _s: &std::path::Path, _d: &std::path::Path) -> Result<()> {
-            Ok(())
-        }
-        async fn clone_url(&self, _u: &str, _d: &std::path::Path) -> Result<()> {
             Ok(())
         }
         async fn fetch(&self, _w: &std::path::Path, _s: &std::path::Path, _n: &str) -> Result<()> {

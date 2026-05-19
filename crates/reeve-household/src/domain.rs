@@ -39,3 +39,74 @@ pub fn iter_card_repos<'a>(
         .map(move |r| (r.name.as_str(), meta.join(&r.name)));
     workspace_entry.chain(siblings)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{Manifest, RepoEntry};
+    use std::path::PathBuf;
+
+    fn manifest(workspace: &str, repos: &[&str]) -> Manifest {
+        Manifest {
+            workspace: workspace.to_string(),
+            knowledge_base: None,
+            repos: repos
+                .iter()
+                .map(|name| RepoEntry {
+                    name: (*name).to_string(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn iter_card_repos_yields_workspace_first_then_siblings_in_order() {
+        let h = Household {
+            name: "test".into(),
+            meta_repo_path: PathBuf::from("/tmp/meta"),
+        };
+        let m = manifest("ws", &["ws", "backend", "lore"]);
+        let yielded: Vec<(String, PathBuf)> = iter_card_repos(&h, &m)
+            .map(|(n, p)| (n.to_string(), p))
+            .collect();
+        assert_eq!(
+            yielded,
+            vec![
+                ("ws".to_string(), PathBuf::from("/tmp/meta")),
+                ("backend".to_string(), PathBuf::from("/tmp/meta/backend")),
+                ("lore".to_string(), PathBuf::from("/tmp/meta/lore")),
+            ]
+        );
+    }
+
+    #[test]
+    fn iter_card_repos_skips_workspace_entry_in_siblings_section() {
+        // Manifest where the workspace entry isn't first in repos[]; ensure
+        // the helper still emits it first and doesn't double-emit.
+        let h = Household {
+            name: "test".into(),
+            meta_repo_path: PathBuf::from("/tmp/meta"),
+        };
+        let m = manifest("ws", &["backend", "ws", "lore"]);
+        let yielded: Vec<String> = iter_card_repos(&h, &m)
+            .map(|(n, _)| n.to_string())
+            .collect();
+        assert_eq!(yielded, vec!["ws", "backend", "lore"]);
+    }
+
+    #[test]
+    fn iter_card_repos_with_only_workspace_yields_one_entry() {
+        let h = Household {
+            name: "test".into(),
+            meta_repo_path: PathBuf::from("/tmp/meta"),
+        };
+        let m = manifest("ws", &["ws"]);
+        let yielded: Vec<String> = iter_card_repos(&h, &m)
+            .map(|(n, _)| n.to_string())
+            .collect();
+        assert_eq!(yielded, vec!["ws"]);
+    }
+}
