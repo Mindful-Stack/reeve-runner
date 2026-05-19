@@ -12,6 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use reeve_protocol::{Card, Column};
 use std::io::{Stdout, stdout};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -35,6 +36,18 @@ pub struct StatusMessage {
     pub expires_at: Instant,
 }
 
+#[derive(Debug)]
+pub enum OpEvent {
+    MvOk { card_id: String, updated: reeve_protocol::Card, target: reeve_protocol::Column },
+    MvErr { msg: String },
+    EditOk { card_id: String, updated: reeve_protocol::Card },
+    EditErr { card_id: String, msg: String },
+    NewOk,
+    NewErr { msg: String },
+    DeleteOk { card_id: String },
+    DeleteErr { card_id: String, msg: String },
+}
+
 pub struct App {
     pub cards: Vec<Card>,
     pub last_refresh: Instant,
@@ -48,10 +61,13 @@ pub struct App {
     pub sessions: crate::tui::sessions::SessionManager,
     pub pane_focus: PaneFocus,
     pub pending_attention: std::collections::HashSet<String>,
+    pub op_tx: UnboundedSender<OpEvent>,
+    pub op_rx: UnboundedReceiver<OpEvent>,
 }
 
 impl App {
     pub fn new() -> Self {
+        let (op_tx, op_rx) = mpsc::unbounded_channel();
         Self {
             cards: Vec::new(),
             last_refresh: Instant::now(),
@@ -65,6 +81,8 @@ impl App {
             sessions: crate::tui::sessions::SessionManager::new(),
             pane_focus: PaneFocus::Kanban,
             pending_attention: std::collections::HashSet::new(),
+            op_tx,
+            op_rx,
         }
     }
 
@@ -135,6 +153,12 @@ async fn drive(terminal: &mut Term) -> Result<()> {
 
     while !app.quit {
         app.clear_expired_status();
+
+        // Drain background-RPC results (non-blocking).
+        while let Ok(event) = app.op_rx.try_recv() {
+            crate::tui::actions::process_op_event(&mut app, event);
+        }
+
         terminal.draw(|f| render::render(f, &app))?;
 
         if event::poll(Duration::from_millis(200))? {
