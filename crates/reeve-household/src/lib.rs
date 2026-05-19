@@ -11,5 +11,6 @@ pub use handler::{
     handle_household_add, handle_household_ls, handle_household_new,
     handle_household_rm, handle_household_show, NameParam,
 };
+pub use manifest::{Manifest, RepoEntry};
 pub use repo::{init_schema, make_household_components, HouseholdRepo, HouseholdRow};
 pub use scaffold::{make_scaffold, HouseholdScaffold};

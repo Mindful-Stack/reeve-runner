@@ -10,7 +10,7 @@ use std::path::Path;
 use tracing::warn;
 
 use reeve_household::Household;
-use reeve_household::manifest::Manifest;
+use reeve_household::Manifest;
 
 /// Clone the workspace meta-repo plus every separate-sibling repo declared in
 /// the manifest into the card workspace, using `--reference --dissociate` per
@@ -98,7 +98,7 @@ mod tests {
     use async_trait::async_trait;
     use crate::git::FfOutcome;
     use reeve_household::Household;
-    use reeve_household::manifest::{Manifest, RepoEntry};
+    use reeve_household::{Manifest, RepoEntry};
     use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::tempdir;
@@ -458,7 +458,7 @@ mod integration_tests {
     use super::*;
     use crate::make_git_ops;
     use reeve_household::Household;
-    use reeve_household::manifest::{Manifest, RepoEntry};
+    use reeve_household::{Manifest, RepoEntry};
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
