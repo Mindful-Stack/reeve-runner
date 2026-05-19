@@ -133,6 +133,25 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             .upsert_container(card_id, &container_name, ContainerStatus::Running, now_secs())
             .await?;
         self.listeners.spawn(card_id, socket).await;
+
+        // M5: start the per-card claude session inside the container's tmux.
+        // Defensive `|| bash` so a broken claude install doesn't lock the user out.
+        // Warn-not-bail: if tmux isn't installed in the container, the column
+        // transition still succeeds; the user discovers the issue when they
+        // run `reeve attach`.
+        let tmux_cmd = format!("cd /workspaces/{card_id} && (claude || bash)");
+        if let Err(e) = self
+            .containers
+            .exec_in_tmux(&container_name, "reeve", &tmux_cmd)
+            .await
+        {
+            tracing::warn!(
+                "tmux session not started in {container_name}: {e:#} — \
+                 `reeve attach` will fail with 'session not found'; \
+                 install tmux in the container (add to devcontainer features)",
+            );
+        }
+
         Ok(())
     }
 
