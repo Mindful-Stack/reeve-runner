@@ -1,6 +1,6 @@
 //! Method dispatch and per-method handlers.
 
-use crate::effects::DaemonState;
+use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
 use reeve_card::make_card_repo;
 use reeve_protocol::{
@@ -107,24 +107,17 @@ pub async fn dispatch(
 }
 
 async fn fetch_container_status(
-    state: &crate::effects::DaemonState,
+    state: &crate::app::state::DaemonState,
     card_id: &str,
 ) -> std::result::Result<Option<reeve_protocol::ContainerStatus>, reeve_protocol::RpcError> {
-    let db = state.db.clone();
-    let id = card_id.to_string();
-    let row = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<crate::db::ContainerRow>> {
-        let conn = db.blocking_lock();
-        crate::db::get_container(&conn, &id)
-    })
-    .await
-    .map_err(|e| reeve_protocol::RpcError {
-        code: reeve_protocol::RpcError::INTERNAL,
-        message: e.to_string(),
-    })?
-    .map_err(|e| reeve_protocol::RpcError {
-        code: reeve_protocol::RpcError::INTERNAL,
-        message: e.to_string(),
-    })?;
+    let row = state
+        .workspaces
+        .get_container(card_id)
+        .await
+        .map_err(|e| reeve_protocol::RpcError {
+            code: reeve_protocol::RpcError::INTERNAL,
+            message: e.to_string(),
+        })?;
     Ok(row.map(|r| r.status))
 }
 
@@ -147,14 +140,12 @@ fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcEr
 mod tests {
     use super::*;
     use reeve_workspace::{ContainerOps, ContainerOpsHandle};
-    use crate::db;
-    use crate::effects::DaemonState;
+    use crate::app::state::DaemonState;
     use crate::transport::listener::{Dispatcher, ListenerRegistry};
     use crate::transport::server::DbHandle;
     use anyhow::Result;
     use async_trait::async_trait;
     use reeve_protocol::{Card, Column, LsResult, MvResult, MvSelfResult, NewResult, StatusSelfResult};
-    use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -241,13 +232,12 @@ mod tests {
     }
 
     fn make_workspace_lifecycle(
-        db: &DbHandle,
+        workspaces: Arc<dyn reeve_workspace::WorkspaceRepo>,
         household_repo: Arc<dyn reeve_household::HouseholdRepo>,
         git: GitOpsHandle,
         containers: ContainerOpsHandle,
         listeners: &ListenerRegistry,
     ) -> Arc<dyn reeve_card::WorkspaceLifecycle> {
-        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
         let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
         Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
             workspaces,
@@ -255,21 +245,23 @@ mod tests {
             git,
             containers,
             listeners_arc,
-            PathBuf::from("/tmp/nonexistent-test-claude-dir"),
+            std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             None,
         ))
     }
 
     fn fresh_state() -> DaemonState {
-        let conn = db::open(":memory:").unwrap();
+        let conn = crate::app::lifecycle::open_db(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
         let containers: ContainerOpsHandle = Arc::new(NoopOps);
         let git: GitOpsHandle = Arc::new(NoopGit);
         let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
+        let cards = reeve_card::make_card_repo(db.clone());
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
         let workspace_lifecycle = make_workspace_lifecycle(
-            &db,
+            workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers.clone(),
@@ -277,11 +269,11 @@ mod tests {
         );
         DaemonState {
             db,
+            cards,
+            workspaces,
             containers,
             git,
             listeners,
-            claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
-            api_key: None,
             household_repo,
             household_lookup,
             workspace_lifecycle,
@@ -289,14 +281,16 @@ mod tests {
     }
 
     fn fresh_state_with_git(git: GitOpsHandle) -> DaemonState {
-        let conn = db::open(":memory:").unwrap();
+        let conn = crate::app::lifecycle::open_db(":memory:").unwrap();
         let db: DbHandle = Arc::new(Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
         let containers: ContainerOpsHandle = Arc::new(NoopOps);
         let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
+        let cards = reeve_card::make_card_repo(db.clone());
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
         let workspace_lifecycle = make_workspace_lifecycle(
-            &db,
+            workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers.clone(),
@@ -304,11 +298,11 @@ mod tests {
         );
         DaemonState {
             db,
+            cards,
+            workspaces,
             containers,
             git,
             listeners,
-            claude_dir: PathBuf::from("/tmp/nonexistent-test-claude-dir"),
-            api_key: None,
             household_repo,
             household_lookup,
             workspace_lifecycle,
@@ -880,24 +874,9 @@ mod tests {
             needs_heavy: false,
             parent_id: None,
         };
-        {
-            let conn = state.db.lock().await;
-            db::insert_card(
-                &conn,
-                &make_card("card-1", "brief one", Column::Backlog, "ours"),
-            )
-            .unwrap();
-            db::insert_card(
-                &conn,
-                &make_card("card-2", "brief two", Column::Implementing, "ours"),
-            )
-            .unwrap();
-            db::insert_card(
-                &conn,
-                &make_card("card-3", "brief three", Column::Backlog, "someone-else"),
-            )
-            .unwrap();
-        }
+        state.cards.insert(&make_card("card-1", "brief one", Column::Backlog, "ours")).await.unwrap();
+        state.cards.insert(&make_card("card-2", "brief two", Column::Implementing, "ours")).await.unwrap();
+        state.cards.insert(&make_card("card-3", "brief three", Column::Backlog, "someone-else")).await.unwrap();
         let detail_val = dispatch(
             RpcRequest {
                 id: 2,
@@ -979,23 +958,16 @@ mod tests {
         insert_test_household(&state, "h", &meta).await;
 
         // Insert a card pointing at the household.
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &reeve_protocol::Card {
-                    id: "card-x".into(),
-                    household: "h".into(),
-                    brief: "x".into(),
-                    column: reeve_protocol::Column::Implementing,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&reeve_protocol::Card {
+            id: "card-x".into(),
+            household: "h".into(),
+            brief: "x".into(),
+            column: reeve_protocol::Column::Implementing,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1093,7 +1065,7 @@ mod tests {
     }
 
     fn fresh_state_with_configurable_git(git: std::sync::Arc<ConfigurableGit>) -> DaemonState {
-        let conn = crate::db::open(":memory:").unwrap();
+        let conn = crate::app::lifecycle::open_db(":memory:").unwrap();
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
@@ -1103,8 +1075,10 @@ mod tests {
             db.clone(),
             std::sync::Arc::new(NoopDispatcher),
         );
+        let cards = reeve_card::make_card_repo(db.clone());
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
         let workspace_lifecycle = make_workspace_lifecycle(
-            &db,
+            workspaces.clone(),
             household_repo.clone(),
             git_arc.clone(),
             containers.clone(),
@@ -1112,11 +1086,11 @@ mod tests {
         );
         DaemonState {
             db,
+            cards,
+            workspaces,
             containers,
             git: git_arc,
             listeners,
-            claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
-            api_key: None,
             household_repo,
             household_lookup,
             workspace_lifecycle,
@@ -1138,23 +1112,16 @@ mod tests {
 
         let state = fresh_state_with_configurable_git(git);
         insert_test_household(&state, "h", &meta).await;
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &Card {
-                    id: "card-y".into(),
-                    household: "h".into(),
-                    brief: "y".into(),
-                    column: Column::Implementing,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&Card {
+            id: "card-y".into(),
+            household: "h".into(),
+            brief: "y".into(),
+            column: Column::Implementing,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1191,23 +1158,16 @@ mod tests {
 
         let state = fresh_state_with_configurable_git(git.clone());
         insert_test_household(&state, "h", &meta).await;
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &Card {
-                    id: "card-z".into(),
-                    household: "h".into(),
-                    brief: "z".into(),
-                    column: Column::Implementing,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&Card {
+            id: "card-z".into(),
+            household: "h".into(),
+            brief: "z".into(),
+            column: Column::Implementing,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1269,7 +1229,7 @@ mod tests {
     fn fresh_state_with_containers(
         containers: std::sync::Arc<ConfigurableContainers>,
     ) -> DaemonState {
-        let conn = crate::db::open(":memory:").unwrap();
+        let conn = crate::app::lifecycle::open_db(":memory:").unwrap();
         let db: crate::transport::server::DbHandle = std::sync::Arc::new(tokio::sync::Mutex::new(conn));
         let (household_repo, household_lookup) =
             reeve_household::make_household_components(db.clone());
@@ -1279,8 +1239,10 @@ mod tests {
             db.clone(),
             std::sync::Arc::new(NoopDispatcher),
         );
+        let cards = reeve_card::make_card_repo(db.clone());
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
         let workspace_lifecycle = make_workspace_lifecycle(
-            &db,
+            workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers_arc.clone(),
@@ -1288,11 +1250,11 @@ mod tests {
         );
         DaemonState {
             db,
+            cards,
+            workspaces,
             containers: containers_arc,
             git,
             listeners,
-            claude_dir: std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
-            api_key: None,
             household_repo,
             household_lookup,
             workspace_lifecycle,
@@ -1304,23 +1266,16 @@ mod tests {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         containers.set_discover(Some("happy-cool-container".into()));
         let state = fresh_state_with_containers(containers);
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &Card {
-                    id: "card-a".into(),
-                    household: "h".into(),
-                    brief: "a".into(),
-                    column: Column::Implementing,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&Card {
+            id: "card-a".into(),
+            household: "h".into(),
+            brief: "a".into(),
+            column: Column::Implementing,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1355,23 +1310,16 @@ mod tests {
     async fn attach_rejects_non_implementing_card() {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         let state = fresh_state_with_containers(containers);
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &Card {
-                    id: "card-b".into(),
-                    household: "h".into(),
-                    brief: "b".into(),
-                    column: Column::Backlog,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&Card {
+            id: "card-b".into(),
+            household: "h".into(),
+            brief: "b".into(),
+            column: Column::Backlog,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,
@@ -1391,23 +1339,16 @@ mod tests {
         let containers = std::sync::Arc::new(ConfigurableContainers::new());
         // Don't call set_discover — defaults to None.
         let state = fresh_state_with_containers(containers);
-        {
-            let conn = state.db.lock().await;
-            crate::db::insert_card(
-                &conn,
-                &Card {
-                    id: "card-c".into(),
-                    household: "h".into(),
-                    brief: "c".into(),
-                    column: Column::Implementing,
-                    created_at: 0,
-                    updated_at: 0,
-                    needs_heavy: false,
-                    parent_id: None,
-                },
-            )
-            .unwrap();
-        }
+        state.cards.insert(&Card {
+            id: "card-c".into(),
+            household: "h".into(),
+            brief: "c".into(),
+            column: Column::Implementing,
+            created_at: 0,
+            updated_at: 0,
+            needs_heavy: false,
+            parent_id: None,
+        }).await.unwrap();
 
         let req = RpcRequest {
             id: 1,

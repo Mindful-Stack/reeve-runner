@@ -1,23 +1,22 @@
-//! DaemonState and its port impls.
+//! DaemonState — composition of port handles passed through dispatch.
 
 use crate::clones::GitOpsHandle;
-use reeve_workspace::ContainerOpsHandle;
 use crate::transport::listener::ListenerRegistry;
 use crate::transport::server::DbHandle;
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use reeve_workspace::ContainerOpsHandle;
 use std::sync::Arc;
 
 /// Everything the daemon needs to serve requests.
 #[derive(Clone)]
 pub struct DaemonState {
     pub db: DbHandle,
+    pub cards: Arc<dyn reeve_card::CardRepo>,
+    pub workspaces: Arc<dyn reeve_workspace::WorkspaceRepo>,
     pub containers: ContainerOpsHandle,
     pub git: GitOpsHandle,
     pub listeners: ListenerRegistry,
-    pub claude_dir: PathBuf,
-    pub api_key: Option<String>,
     pub household_repo: Arc<dyn reeve_household::HouseholdRepo>,
     pub household_lookup: Arc<dyn reeve_card::HouseholdLookup>,
     pub workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle>,
@@ -31,36 +30,20 @@ impl reeve_workspace::fetch::FetchDeps for DaemonState {
         &self,
     ) -> Result<Vec<reeve_workspace::fetch::RunningCard>> {
         use reeve_protocol::ContainerStatus;
-        // First fetch all container rows, then look up each card to get its
-        // household name.
-        let db = self.db.clone();
-        let rows = tokio::task::spawn_blocking(move || -> Result<Vec<crate::db::ContainerRow>> {
-            let conn = db.blocking_lock();
-            crate::db::list_containers(&conn)
-        })
-        .await??;
 
-        let running_ids: Vec<String> = rows
-            .into_iter()
-            .filter(|r| {
-                matches!(
-                    r.status,
-                    ContainerStatus::Running | ContainerStatus::Spawning
-                )
-            })
-            .map(|r| r.card_id)
-            .collect();
+        let mut rows = self
+            .workspaces
+            .list_by_status(ContainerStatus::Running)
+            .await?;
+        rows.extend(
+            self.workspaces
+                .list_by_status(ContainerStatus::Spawning)
+                .await?,
+        );
 
-        let mut cards = Vec::with_capacity(running_ids.len());
-        for card_id in running_ids {
-            let db = self.db.clone();
-            let id = card_id.clone();
-            let card = tokio::task::spawn_blocking(move || -> Result<Option<reeve_protocol::Card>> {
-                let conn = db.blocking_lock();
-                crate::db::get_card(&conn, &id)
-            })
-            .await??;
-            if let Some(card) = card {
+        let mut cards = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let Some(card) = self.cards.get(&row.card_id).await? {
                 cards.push(reeve_workspace::fetch::RunningCard {
                     card_id: card.id,
                     household: card.household,

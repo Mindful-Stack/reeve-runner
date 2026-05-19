@@ -1,8 +1,5 @@
 mod clones;
-mod db;
-mod effects;
 mod handlers;
-mod lifecycle;
 mod reconcile;
 
 mod app;
@@ -35,15 +32,15 @@ async fn main() -> Result<()> {
     // would inherit the ambient umask and could leak the socket world-readable.
     nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
 
-    let socket_path = lifecycle::socket_path();
-    let pid_path = lifecycle::pid_path();
-    let db_path = lifecycle::db_path()?;
+    let socket_path = app::lifecycle::socket_path();
+    let pid_path = app::lifecycle::pid_path();
+    let db_path = app::lifecycle::db_path()?;
 
-    lifecycle::ensure_parent_dir(&db_path)?;
-    lifecycle::ensure_parent_dir(&socket_path)?;
+    app::lifecycle::ensure_parent_dir(&db_path)?;
+    app::lifecycle::ensure_parent_dir(&socket_path)?;
 
-    if let Some(existing_pid) = lifecycle::read_pid_file(&pid_path)? {
-        if lifecycle::process_running(existing_pid) {
+    if let Some(existing_pid) = app::lifecycle::read_pid_file(&pid_path)? {
+        if app::lifecycle::process_running(existing_pid) {
             anyhow::bail!(
                 "reeved already running as PID {existing_pid} ({}). \
                  Stop it first with `reeve daemon stop`.",
@@ -51,14 +48,14 @@ async fn main() -> Result<()> {
             );
         } else {
             // Stale PID file — overwrite.
-            lifecycle::remove_pid_file(&pid_path)?;
+            app::lifecycle::remove_pid_file(&pid_path)?;
         }
     }
 
-    let conn = db::open(db_path.to_str().context("db path not utf-8")?)?;
+    let conn = app::lifecycle::open_db(db_path.to_str().context("db path not utf-8")?)?;
     let db = Arc::new(Mutex::new(conn));
 
-    lifecycle::write_pid_file(&pid_path)?;
+    app::lifecycle::write_pid_file(&pid_path)?;
     info!(socket = %socket_path.display(), "reeved started");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -79,28 +76,29 @@ async fn main() -> Result<()> {
     let (household_repo, household_lookup) =
         reeve_household::make_household_components(db.clone());
 
+    let cards = reeve_card::make_card_repo(db.clone());
     let workspaces = reeve_workspace::make_workspace_repo(db.clone());
     let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
 
     let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> = Arc::new(
         reeve_workspace::LiveWorkspaceLifecycle::new(
-            workspaces,
+            workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers.clone(),
             listeners_arc,
-            claude_dir.clone(),
-            api_key.clone(),
+            claude_dir,
+            api_key,
         )
     );
 
-    let state = effects::DaemonState {
+    let state = app::state::DaemonState {
         db: db.clone(),
+        cards,
+        workspaces,
         containers,
         git,
         listeners: listeners.clone(),
-        claude_dir,
-        api_key,
         household_repo,
         household_lookup,
         workspace_lifecycle,
@@ -141,7 +139,7 @@ async fn main() -> Result<()> {
 
     listeners.stop_all().await;
 
-    if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
+    if let Err(e) = app::lifecycle::remove_pid_file(&pid_path) {
         warn!("failed to remove pid file on shutdown: {e:#}");
     }
     info!(socket = %socket_path.display(), "reeved stopped");
@@ -188,7 +186,7 @@ fn spawn_signal_handler(tx: oneshot::Sender<()>) {
 }
 
 struct MainDispatcher {
-    state: std::sync::OnceLock<effects::DaemonState>,
+    state: std::sync::OnceLock<app::state::DaemonState>,
 }
 
 impl listener::Dispatcher for MainDispatcher {

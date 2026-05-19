@@ -1,3 +1,4 @@
 //! Application-level wiring (composition root + cross-cutting helpers).
-//!
-//! Populated in Stage 7.
+
+pub mod lifecycle;
+pub mod state;

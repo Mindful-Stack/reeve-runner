@@ -5,14 +5,15 @@
 //!
 //! TODO(stage-4.x): move into `reeve-workspace` once Task 4.3 carves
 //! `WorkspaceRepo` (which will own `ContainerRow`). Currently this stays in
-//! reeved because it depends on `DaemonState`, `ContainerRow` (in db.rs), and
-//! `ListenerRegistry` (transport) — all reeved-internal at this stage.
+//! reeved because it depends on `DaemonState`, `ContainerRow` (in
+//! reeve-workspace), and `ListenerRegistry` (transport) — all reeved-internal
+//! at this stage.
 
-use crate::db::ContainerRow;
-use crate::effects::DaemonState;
+use crate::app::state::DaemonState;
 use crate::transport::listener::ListenerRegistry;
 use anyhow::{Context, Result};
 use reeve_protocol::{ContainerStatus, paths};
+use reeve_workspace::ContainerRow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileDecision {
@@ -40,17 +41,16 @@ pub fn reconcile_one(_row: &ContainerRow, docker_state: Option<&str>) -> Reconci
 /// `ListenerRegistry::spawn` would do it anyway, but doing it explicitly
 /// is clearer in logs).
 pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
-    let db = state.db.clone();
-    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ContainerRow>> {
-        let conn = db.blocking_lock();
-        let mut rows = crate::db::list_containers_by_status(&conn, ContainerStatus::Running)?;
-        rows.extend(crate::db::list_containers_by_status(
-            &conn,
-            ContainerStatus::Spawning,
-        )?);
-        Ok(rows)
-    })
-    .await??;
+    let mut rows = state
+        .workspaces
+        .list_by_status(ContainerStatus::Running)
+        .await?;
+    rows.extend(
+        state
+            .workspaces
+            .list_by_status(ContainerStatus::Spawning)
+            .await?,
+    );
 
     for row in rows {
         // Propagate inspect errors — silently downgrading them to None would
@@ -73,33 +73,25 @@ pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
                 // Reconcile Spawning → Running for rows whose write completed
                 // just before a crash that didn't kill the container itself.
                 if row.status == ContainerStatus::Spawning {
-                    let db = state.db.clone();
-                    let id = row.card_id.clone();
-                    let name = row.container_name.clone();
-                    tokio::task::spawn_blocking(move || -> Result<()> {
-                        let conn = db.blocking_lock();
-                        crate::db::upsert_container(
-                            &conn,
-                            &id,
-                            &name,
+                    state
+                        .workspaces
+                        .upsert_container(
+                            &row.card_id,
+                            &row.container_name,
                             ContainerStatus::Running,
                             now,
                         )
-                    })
-                    .await??;
+                        .await?;
                 }
                 tracing::info!(card = %row.card_id, "adopted surviving container");
             }
             ReconcileDecision::Orphan => {
                 let socket = paths::card_socket_path(&row.card_id);
                 ListenerRegistry::unlink_stale(&socket);
-                let db = state.db.clone();
-                let id = row.card_id.clone();
-                tokio::task::spawn_blocking(move || -> Result<()> {
-                    let conn = db.blocking_lock();
-                    crate::db::update_container_status(&conn, &id, ContainerStatus::Failed, now)
-                })
-                .await??;
+                state
+                    .workspaces
+                    .update_container_status(&row.card_id, ContainerStatus::Failed, now)
+                    .await?;
                 tracing::warn!(card = %row.card_id, "orphaned container row → Failed");
             }
         }
@@ -110,8 +102,8 @@ pub async fn reconcile_on_startup(state: &DaemonState) -> Result<()> {
 #[cfg(test)]
 mod reconcile_tests {
     use super::*;
-    use crate::db::ContainerRow;
     use reeve_protocol::ContainerStatus;
+    use reeve_workspace::ContainerRow;
 
     fn row(card_id: &str, status: ContainerStatus) -> ContainerRow {
         ContainerRow {
