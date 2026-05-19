@@ -2,7 +2,7 @@
 //! socket file at $XDG_RUNTIME_DIR/reeve/cards/<id>.sock; the daemon
 //! resolves caller identity from which listener received the request.
 
-use crate::server::{CallerContext, DbHandle, run};
+use crate::transport::server::{CallerContext, DbHandle, run};
 use anyhow::Result;
 use reeve_protocol::{RpcError, RpcRequest};
 use std::collections::HashMap;
@@ -121,6 +121,16 @@ impl ListenerRegistry {
     /// Per-card socket files survive daemon shutdown (containers do too).
     pub fn unlink_stale(path: &Path) {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[async_trait::async_trait]
+impl reeve_workspace::ListenerOps for ListenerRegistry {
+    async fn spawn(&self, card_id: &str, socket: std::path::PathBuf) {
+        ListenerRegistry::spawn(self, card_id, socket).await;
+    }
+    async fn stop(&self, card_id: &str) -> anyhow::Result<()> {
+        ListenerRegistry::stop(self, card_id).await
     }
 }
 

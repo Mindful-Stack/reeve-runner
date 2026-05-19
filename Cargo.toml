@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/reeve-protocol", "crates/reeved", "crates/reeve", "tests"]
+members = [
+    "crates/reeve-protocol",
+    "crates/reeve-card",
+    "crates/reeve-workspace",
+    "crates/reeve-household",
+    "crates/reeved",
+    "crates/reeve",
+    "tests",
+]
 
 [workspace.package]
 edition = "2024"

@@ -1,24 +1,19 @@
 mod clones;
-mod container;
-mod db;
-mod effects;
-mod fetch;
-mod handlers;
-mod household;
-mod lifecycle;
-mod listeners;
-mod manifest;
-mod server;
-mod transitions;
+mod dispatch;
+mod reconcile;
+
+mod app;
+mod transport;
 
 use anyhow::{Context, Result};
 use nix::sys::stat::Mode;
 use reeve_protocol::RpcRequest;
-use server::{CallerContext, DbHandle};
 use std::sync::Arc;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, oneshot};
 use tracing::{info, warn};
+use transport::listener;
+use transport::server::{CallerContext, DbHandle};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,15 +32,15 @@ async fn main() -> Result<()> {
     // would inherit the ambient umask and could leak the socket world-readable.
     nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
 
-    let socket_path = lifecycle::socket_path();
-    let pid_path = lifecycle::pid_path();
-    let db_path = lifecycle::db_path()?;
+    let socket_path = app::lifecycle::socket_path();
+    let pid_path = app::lifecycle::pid_path();
+    let db_path = app::lifecycle::db_path()?;
 
-    lifecycle::ensure_parent_dir(&db_path)?;
-    lifecycle::ensure_parent_dir(&socket_path)?;
+    app::lifecycle::ensure_parent_dir(&db_path)?;
+    app::lifecycle::ensure_parent_dir(&socket_path)?;
 
-    if let Some(existing_pid) = lifecycle::read_pid_file(&pid_path)? {
-        if lifecycle::process_running(existing_pid) {
+    if let Some(existing_pid) = app::lifecycle::read_pid_file(&pid_path)? {
+        if app::lifecycle::process_running(existing_pid) {
             anyhow::bail!(
                 "reeved already running as PID {existing_pid} ({}). \
                  Stop it first with `reeve daemon stop`.",
@@ -53,14 +48,14 @@ async fn main() -> Result<()> {
             );
         } else {
             // Stale PID file — overwrite.
-            lifecycle::remove_pid_file(&pid_path)?;
+            app::lifecycle::remove_pid_file(&pid_path)?;
         }
     }
 
-    let conn = db::open(db_path.to_str().context("db path not utf-8")?)?;
+    let conn = app::lifecycle::open_db(db_path.to_str().context("db path not utf-8")?)?;
     let db = Arc::new(Mutex::new(conn));
 
-    lifecycle::write_pid_file(&pid_path)?;
+    app::lifecycle::write_pid_file(&pid_path)?;
     info!(socket = %socket_path.display(), "reeved started");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -70,44 +65,67 @@ async fn main() -> Result<()> {
         state: std::sync::OnceLock::new(),
     });
 
-    let containers: container::ContainerOpsHandle = Arc::new(container::DockerOps);
-    let listeners = listeners::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
+    let containers: reeve_workspace::ContainerOpsHandle = reeve_workspace::make_container_ops();
+    let listeners = listener::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
     let claude_dir = std::env::var("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".claude"))
         .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
-    let git: clones::GitOpsHandle = Arc::new(clones::RealGitOps);
-    let state = effects::DaemonState {
+    let git: clones::GitOpsHandle = reeve_workspace::make_git_ops();
+    let (household_repo, household_lookup) = reeve_household::make_household_components(db.clone());
+
+    let cards = reeve_card::make_card_repo(db.clone());
+    let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+    let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
+
+    let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> =
+        Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
+            workspaces.clone(),
+            household_repo.clone(),
+            git.clone(),
+            containers.clone(),
+            listeners_arc,
+            claude_dir,
+            api_key,
+        ));
+
+    let state = app::state::DaemonState {
         db: db.clone(),
+        cards,
+        workspaces,
         containers,
         git,
         listeners: listeners.clone(),
-        claude_dir,
-        api_key,
+        household_repo,
+        household_lookup,
+        workspace_lifecycle,
     };
     dispatcher_holder
         .state
         .set(state.clone())
         .map_err(|_| anyhow::anyhow!("dispatcher state already initialised"))?;
 
-    container::reconcile_on_startup(&state).await?;
+    reconcile::reconcile_on_startup(&state).await?;
 
     // Spawn the fetch worker. Hold its shutdown sender; we'll fire it after
     // server::run returns.
     let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let fetch_worker = tokio::spawn(fetch::run(state.clone(), fetch_shutdown_rx));
+    let fetch_worker = tokio::spawn(reeve_workspace::fetch::run(
+        state.clone(),
+        fetch_shutdown_rx,
+    ));
 
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {
         let state = state_for_dispatch.clone();
-        async move { handlers::dispatch(req, state, caller).await }
+        async move { dispatch::dispatch(req, state, caller).await }
     };
 
-    let result = server::run(
+    let result = transport::server::run(
         &socket_path,
         db,
-        server::CallerContext::host(),
+        transport::server::CallerContext::host(),
         shutdown_rx,
         dispatch,
     )
@@ -122,7 +140,7 @@ async fn main() -> Result<()> {
 
     listeners.stop_all().await;
 
-    if let Err(e) = lifecycle::remove_pid_file(&pid_path) {
+    if let Err(e) = app::lifecycle::remove_pid_file(&pid_path) {
         warn!("failed to remove pid file on shutdown: {e:#}");
     }
     info!(socket = %socket_path.display(), "reeved stopped");
@@ -169,15 +187,15 @@ fn spawn_signal_handler(tx: oneshot::Sender<()>) {
 }
 
 struct MainDispatcher {
-    state: std::sync::OnceLock<effects::DaemonState>,
+    state: std::sync::OnceLock<app::state::DaemonState>,
 }
 
-impl listeners::Dispatcher for MainDispatcher {
+impl listener::Dispatcher for MainDispatcher {
     fn dispatch(
         &self,
         req: reeve_protocol::RpcRequest,
-        _db: server::DbHandle,
-        caller: server::CallerContext,
+        _db: transport::server::DbHandle,
+        caller: transport::server::CallerContext,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
@@ -188,7 +206,7 @@ impl listeners::Dispatcher for MainDispatcher {
         let state = self.state.get().cloned();
         Box::pin(async move {
             match state {
-                Some(state) => handlers::dispatch(req, state, caller).await,
+                Some(state) => dispatch::dispatch(req, state, caller).await,
                 None => Err(reeve_protocol::RpcError {
                     code: reeve_protocol::RpcError::INTERNAL,
                     message: "dispatcher not initialised".into(),

@@ -1,8 +1,6 @@
-//! M3.5 household: a thin sqlite-backed registry mapping `name → meta_repo_path`.
-//! The manifest is read from the meta-repo on demand (see `manifest.rs`); no
-//! cached state lives in this module. M3's TOML-based `HouseholdProfile` is gone.
+//! Household domain entity.
 
-use crate::manifest::Manifest;
+use crate::manifest::{self, Manifest};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -12,11 +10,9 @@ pub struct Household {
     pub meta_repo_path: PathBuf,
 }
 
-/// Load and validate the meta-repo's manifest. Convenience wrapper over
-/// `manifest::load_manifest`. Used by handlers that want the manifest
-/// in their hot path.
+/// Load and validate the meta-repo's manifest.
 pub fn load_household_manifest(household: &Household) -> Result<Manifest> {
-    crate::manifest::load_manifest(&household.meta_repo_path)
+    manifest::load_manifest(&household.meta_repo_path)
         .with_context(|| format!("load manifest for household '{}'", household.name))
 }
 
@@ -24,16 +20,16 @@ pub fn load_household_manifest(household: &Household) -> Result<Manifest> {
 /// Used by both the fetch worker and the push handler.
 ///
 /// Iteration order is part of the contract (pinned for testability):
-/// 1. The workspace entry — `manifest.workspace` — first, with host_path
+/// 1. The workspace entry — `manifest.meta_repo` — first, with host_path
 ///    = `household.meta_repo_path` itself.
 /// 2. Then every entry in `manifest.repos` in declaration order, skipping
-///    the one whose `name == manifest.workspace` (already yielded as #1).
+///    the one whose `name == manifest.meta_repo` (already yielded as #1).
 ///    For each, host_path = `household.meta_repo_path.join(entry.name)`.
 pub fn iter_card_repos<'a>(
     household: &'a Household,
     manifest: &'a Manifest,
 ) -> impl Iterator<Item = (&'a str, PathBuf)> + 'a {
-    let workspace_name = manifest.workspace.as_str();
+    let workspace_name = manifest.meta_repo.as_str();
     let meta = household.meta_repo_path.clone();
     let workspace_entry = std::iter::once((workspace_name, meta.clone()));
     let siblings = manifest
@@ -52,7 +48,7 @@ mod tests {
 
     fn manifest(workspace: &str, repos: &[&str]) -> Manifest {
         Manifest {
-            workspace: workspace.to_string(),
+            meta_repo: workspace.to_string(),
             knowledge_base: None,
             repos: repos
                 .iter()

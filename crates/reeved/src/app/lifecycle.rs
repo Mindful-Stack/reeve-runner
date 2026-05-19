@@ -1,5 +1,6 @@
-//! Daemon lifecycle helpers: data-dir resolution. PID-file and
-//! process-liveness helpers (and the path resolvers) live in
+//! Daemon lifecycle helpers: data-dir resolution, DB opening, and schema migration.
+//!
+//! PID-file and process-liveness helpers (and the path resolvers) live in
 //! `reeve_protocol` so the user binary can share them.
 
 use anyhow::{Context, Result};
@@ -32,5 +33,22 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
     }
+    Ok(())
+}
+
+/// Open a SQLite connection at `path` and run all schema migrations.
+/// Pass `":memory:"` for an in-memory database (used in tests).
+pub fn open_db(path: &str) -> Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(path).with_context(|| format!("open db at {path}"))?;
+    migrate(&conn)?;
+    Ok(conn)
+}
+
+/// Orchestrate per-context schema initialisation.
+/// Each context crate owns its own table definitions.
+pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
+    reeve_card::init_schema(conn)?;
+    reeve_household::init_schema(conn)?;
+    reeve_workspace::init_schema(conn)?;
     Ok(())
 }
