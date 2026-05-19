@@ -4,8 +4,8 @@ use crate::domain::Card;
 use crate::repo::CardRepo;
 use crate::transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
 use reeve_protocol::{
-    Column, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult, NewParams, NewResult,
-    RpcError, StatusSelfResult,
+    Column, EditParams, EditResult, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
+    NewParams, NewResult, RpcError, StatusSelfResult,
 };
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,4 +154,86 @@ pub async fn handle_status_self(
         container_status: workspace_status,
     })
     .map_err(internal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo::{init_schema, make_card_repo};
+    use reeve_protocol::{EditParams, EditResult, RpcError};
+    use rusqlite::Connection;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn fresh_repo() -> Arc<dyn CardRepo> {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        make_card_repo(Arc::new(Mutex::new(conn)))
+    }
+
+    #[tokio::test]
+    async fn edit_updates_brief_and_returns_card() {
+        let repo = fresh_repo();
+        let card = Card::new("h".into(), "old brief".into(), false).unwrap();
+        let card_id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+
+        let req = EditParams {
+            id: card_id.clone(),
+            brief: "new brief".into(),
+        };
+        let value = handle_edit(&*repo, req).await.unwrap();
+        let result: EditResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.card.brief, "new brief");
+        assert_eq!(result.card.id, card_id);
+    }
+
+    #[tokio::test]
+    async fn edit_returns_not_found_for_unknown_card() {
+        let repo = fresh_repo();
+        let req = EditParams {
+            id: "no-such-card".into(),
+            brief: "anything".into(),
+        };
+        let err = handle_edit(&*repo, req).await.unwrap_err();
+        assert_eq!(err.code, RpcError::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_empty_brief() {
+        let repo = fresh_repo();
+        let card = Card::new("h".into(), "old".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        let req = EditParams {
+            id,
+            brief: "".into(),
+        };
+        let err = handle_edit(&*repo, req).await.unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+    }
+}
+
+pub async fn handle_edit(
+    cards: &dyn CardRepo,
+    params: EditParams,
+) -> std::result::Result<Value, RpcError> {
+    // Validate brief shape via the domain entity's update method.
+    let existing = cards
+        .get(&params.id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(&params.id))?;
+    let updated = existing.with_updated_brief(params.brief.clone()).map_err(|e| RpcError {
+        code: RpcError::INVALID_ARGUMENT,
+        message: e.to_string(),
+    })?;
+    let now = updated.updated_at();
+    let card = cards
+        .update_brief(&params.id, &params.brief, now)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(&params.id))?;
+    let dto: reeve_protocol::Card = card.into();
+    serde_json::to_value(EditResult { card: dto }).map_err(internal)
 }

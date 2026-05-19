@@ -78,6 +78,27 @@ impl Card {
         self.parent_id.as_deref()
     }
 
+    /// Return a new Card with the given brief and updated_at = now.
+    /// Validates the same brief constraints as `Card::new` (non-empty, ≤200 chars).
+    pub fn with_updated_brief(&self, brief: String) -> Result<Self, CardError> {
+        if brief.is_empty() {
+            return Err(CardError::EmptyBrief);
+        }
+        let n = brief.chars().count();
+        if n > 200 {
+            return Err(CardError::BriefTooLong(n));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Ok(Self {
+            brief,
+            updated_at: now,
+            ..self.clone()
+        })
+    }
+
     /// Construct a Card directly from validated fields. Used by the repo when
     /// reading from persisted SQL rows.
     #[allow(clippy::too_many_arguments)]

@@ -4,7 +4,7 @@
 use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
 use reeve_card::make_card_repo;
-use reeve_protocol::{MvParams, MvSelfParams, NewParams, RpcError, RpcRequest};
+use reeve_protocol::{EditParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest};
 use serde_json::Value;
 
 fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -62,6 +62,11 @@ pub async fn dispatch(
             let workspace = state.workspace_lifecycle.clone();
             let params = parse_params::<MvParams>(req.params)?;
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
+        }
+        "edit" => {
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<EditParams>(req.params)?;
+            reeve_card::handle_edit(&*cards, params).await
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
