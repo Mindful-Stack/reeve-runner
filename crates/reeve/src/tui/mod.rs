@@ -1,4 +1,6 @@
+mod actions;
 mod app;
+mod client_ext;
 mod events;
 mod render;
 
