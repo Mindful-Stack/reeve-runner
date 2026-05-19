@@ -7,6 +7,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Action {
     Quit,
     ForceRefresh,
+    FocusPrevColumn,
+    FocusNextColumn,
+    SelectUp,
+    SelectDown,
+    SelectFirst,
+    SelectLast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +25,7 @@ pub enum KeyMatcher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpSection {
     Global,
+    Navigation,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +40,16 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('q'), action: Action::Quit, description: "quit", section: HelpSection::Global },
     Binding { key: KeyMatcher::Code(KeyCode::Esc), action: Action::Quit, description: "quit", section: HelpSection::Global },
     Binding { key: KeyMatcher::Char('r'), action: Action::ForceRefresh, description: "force refresh", section: HelpSection::Global },
+    Binding { key: KeyMatcher::Char('h'), action: Action::FocusPrevColumn, description: "focus previous column", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::Left), action: Action::FocusPrevColumn, description: "focus previous column", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char('l'), action: Action::FocusNextColumn, description: "focus next column", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::Right), action: Action::FocusNextColumn, description: "focus next column", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char('j'), action: Action::SelectDown, description: "select next card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::Down), action: Action::SelectDown, description: "select next card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char('k'), action: Action::SelectUp, description: "select previous card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Code(KeyCode::Up), action: Action::SelectUp, description: "select previous card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char('g'), action: Action::SelectFirst, description: "select first card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Shift(KeyCode::Char('g')), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {
