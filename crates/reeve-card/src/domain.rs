@@ -78,9 +78,10 @@ impl Card {
         self.parent_id.as_deref()
     }
 
-    /// Return a new Card with the given brief and updated_at = now.
+    /// Return a new Card with the given brief and the provided updated_at.
     /// Validates the same brief constraints as `Card::new` (non-empty, ≤200 chars).
-    pub fn with_updated_brief(&self, brief: String) -> Result<Self, CardError> {
+    /// The caller (handler) owns the clock; this method is pure validation + assembly.
+    pub fn with_updated_brief(&self, brief: String, now: i64) -> Result<Self, CardError> {
         if brief.is_empty() {
             return Err(CardError::EmptyBrief);
         }
@@ -88,10 +89,6 @@ impl Card {
         if n > 200 {
             return Err(CardError::BriefTooLong(n));
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
         Ok(Self {
             brief,
             updated_at: now,

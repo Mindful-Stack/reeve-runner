@@ -160,7 +160,6 @@ pub async fn handle_status_self(
 mod tests {
     use super::*;
     use crate::repo::{init_schema, make_card_repo};
-    use reeve_protocol::{EditParams, EditResult, RpcError};
     use rusqlite::Connection;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -218,17 +217,20 @@ pub async fn handle_edit(
     cards: &dyn CardRepo,
     params: EditParams,
 ) -> std::result::Result<Value, RpcError> {
-    // Validate brief shape via the domain entity's update method.
     let existing = cards
         .get(&params.id)
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(&params.id))?;
-    let updated = existing.with_updated_brief(params.brief.clone()).map_err(|e| RpcError {
-        code: RpcError::INVALID_ARGUMENT,
-        message: e.to_string(),
-    })?;
-    let now = updated.updated_at();
+    let now = now_secs();
+    // Validate via the domain entity; result is discarded (the sqlite UPDATE
+    // is the source of truth for what the row becomes).
+    existing
+        .with_updated_brief(params.brief.clone(), now)
+        .map_err(|e| RpcError {
+            code: RpcError::INVALID_ARGUMENT,
+            message: e.to_string(),
+        })?;
     let card = cards
         .update_brief(&params.id, &params.brief, now)
         .await
