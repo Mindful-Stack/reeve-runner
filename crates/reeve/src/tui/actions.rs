@@ -94,7 +94,86 @@ pub async fn handle(app: &mut App, action: Action) {
                 app.quit = true; // Esc in KanbanFull = quit
             }
         }
+        Action::OpenActionMenu => {
+            app.modal = Some(crate::tui::modal::ModalKind::ActionMenu { selected_index: 0 });
+        }
+        Action::OpenHelp => {
+            app.modal = Some(crate::tui::modal::ModalKind::Help);
+        }
+        Action::CloseModal => {
+            app.modal = None;
+        }
+        Action::SelectMenuUp | Action::SelectMenuDown | Action::ConfirmMenuItem => {
+            // Routed via handle_modal_key; non-modal context is no-op.
+        }
     }
+}
+
+pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
+    use crossterm::event::KeyCode;
+    let Some(modal) = app.modal.clone() else {
+        return;
+    };
+    match modal {
+        crate::tui::modal::ModalKind::ActionMenu { selected_index } => {
+            match key.code {
+                KeyCode::Esc => app.modal = None,
+                KeyCode::Up => {
+                    let new = selected_index.saturating_sub(1);
+                    app.modal =
+                        Some(crate::tui::modal::ModalKind::ActionMenu { selected_index: new });
+                }
+                KeyCode::Down => {
+                    let items =
+                        crate::tui::modal::build_action_menu(selected_card_column(app));
+                    let new = (selected_index + 1).min(items.len().saturating_sub(1));
+                    app.modal =
+                        Some(crate::tui::modal::ModalKind::ActionMenu { selected_index: new });
+                }
+                KeyCode::Enter => {
+                    let items =
+                        crate::tui::modal::build_action_menu(selected_card_column(app));
+                    if let Some(item) = items.get(selected_index) {
+                        if item.enabled {
+                            app.modal = None;
+                            execute_menu_kind(app, item.action_kind).await;
+                        }
+                    }
+                }
+                KeyCode::Char(c) => handle_menu_letter(app, c).await,
+                _ => {}
+            }
+        }
+        crate::tui::modal::ModalKind::Help => {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')
+            ) {
+                app.modal = None;
+            }
+        }
+    }
+}
+
+fn selected_card_column(app: &App) -> Option<Column> {
+    let id = app.selected_card_id.as_ref()?;
+    app.cards.iter().find(|c| &c.id == id).map(|c| c.column)
+}
+
+async fn handle_menu_letter(app: &mut App, c: char) {
+    let items = crate::tui::modal::build_action_menu(selected_card_column(app));
+    if let Some(item) = items.iter().find(|i| i.key_hint.chars().next() == Some(c)) {
+        if item.enabled {
+            app.modal = None;
+            execute_menu_kind(app, item.action_kind).await;
+        }
+    }
+}
+
+async fn execute_menu_kind(app: &mut App, kind: crate::tui::modal::ActionMenuKind) {
+    // Tasks 11/12/13 wire these to real RPCs / modal opens.
+    // For Task 10, just no-op (the user sees the modal close and nothing else happens).
+    let _ = (app, kind);
 }
 
 /// Pick first card in focused column as the selection. Called after column

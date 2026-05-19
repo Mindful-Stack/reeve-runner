@@ -3,6 +3,7 @@ mod app;
 mod client_ext;
 mod events;
 mod layout;
+mod modal;
 mod render;
 
 use anyhow::Result;

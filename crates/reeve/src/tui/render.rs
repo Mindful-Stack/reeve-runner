@@ -21,6 +21,7 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
             render_focused_plus_detail(f, chunks[1], app)
         }
     }
+    render_modal(f, area, app);
 }
 
 fn title_line(app: &App) -> Paragraph<'static> {
@@ -141,6 +142,109 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     ];
     let para =
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("detail"));
+    f.render_widget(para, area);
+}
+
+pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let Some(modal) = &app.modal else {
+        return;
+    };
+    match modal {
+        crate::tui::modal::ModalKind::ActionMenu { selected_index } => {
+            render_action_menu(f, area, app, *selected_index);
+        }
+        crate::tui::modal::ModalKind::Help => {
+            render_help(f, area);
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn render_action_menu(
+    f: &mut ratatui::Frame<'_>,
+    area: Rect,
+    app: &App,
+    selected_index: usize,
+) {
+    let card_col = app
+        .selected_card_id
+        .as_ref()
+        .and_then(|id| app.cards.iter().find(|c| &c.id == id))
+        .map(|c| c.column);
+    let items = crate::tui::modal::build_action_menu(card_col);
+    let area = centered_rect(50, 50, area);
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let style = if i == selected_index {
+                Style::default().bg(Color::Yellow).fg(Color::Black)
+            } else if item.enabled {
+                Style::default()
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let label = if let Some(reason) = item.disabled_reason {
+                format!(
+                    "  {}  {} (disabled: {})",
+                    item.key_hint, item.description, reason
+                )
+            } else {
+                format!("  {}  {}", item.key_hint, item.description)
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
+        })
+        .collect();
+    let list = List::new(list_items)
+        .block(Block::default().borders(Borders::ALL).title("actions  (esc to close)"));
+    f.render_widget(ratatui::widgets::Clear, area);
+    f.render_widget(list, area);
+}
+
+fn render_help(f: &mut ratatui::Frame<'_>, area: Rect) {
+    let area = centered_rect(60, 70, area);
+    let bindings = crate::tui::events::BINDINGS;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut last_section: Option<crate::tui::events::HelpSection> = None;
+    for b in bindings {
+        if Some(b.section) != last_section {
+            lines.push(Line::from(Span::styled(
+                format!("\n{:?}", b.section),
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            last_section = Some(b.section);
+        }
+        let key_label = match b.key {
+            crate::tui::events::KeyMatcher::Char(c) => format!("{c}"),
+            crate::tui::events::KeyMatcher::Code(c) => format!("{c:?}"),
+            crate::tui::events::KeyMatcher::Shift(c) => format!("Shift+{c:?}"),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {key_label:<12}"), Style::default().fg(Color::Cyan)),
+            Span::raw(b.description),
+        ]));
+    }
+    let para = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("help  (esc/?/q to close)"));
+    f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(para, area);
 }
 

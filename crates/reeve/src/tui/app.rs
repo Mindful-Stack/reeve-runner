@@ -22,6 +22,7 @@ pub struct App {
     pub focused_column: Column,
     pub selected_card_id: Option<String>,
     pub layout: crate::tui::layout::LayoutMode,
+    pub modal: Option<crate::tui::modal::ModalKind>,
 }
 
 impl App {
@@ -33,6 +34,7 @@ impl App {
             focused_column: Column::Backlog,
             selected_card_id: None,
             layout: crate::tui::layout::LayoutMode::default(),
+            modal: None,
         }
     }
 
@@ -84,7 +86,9 @@ async fn drive(terminal: &mut Term) -> Result<()> {
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let Some(action) = events::translate(key) {
+                    if app.modal.is_some() {
+                        crate::tui::actions::handle_modal_key(&mut app, key).await;
+                    } else if let Some(action) = events::translate(key) {
                         crate::tui::actions::handle(&mut app, action).await;
                     }
                 }

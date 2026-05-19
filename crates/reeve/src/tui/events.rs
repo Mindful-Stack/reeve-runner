@@ -15,6 +15,12 @@ pub enum Action {
     SelectLast,
     OpenDrillIn,
     CloseDrillIn,
+    OpenActionMenu,
+    OpenHelp,
+    CloseModal,
+    SelectMenuUp,
+    SelectMenuDown,
+    ConfirmMenuItem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +61,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Code(KeyCode::PageUp), action: Action::SelectFirst, description: "select first card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Shift(KeyCode::Char('g')), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Code(KeyCode::PageDown), action: Action::SelectLast, description: "select last card", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char(' '), action: Action::OpenActionMenu, description: "open action menu", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Char('?'), action: Action::OpenHelp, description: "help", section: HelpSection::Global },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {
