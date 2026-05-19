@@ -15,6 +15,7 @@ pub trait CardRepo: Send + Sync {
     async fn insert(&self, card: &Card) -> Result<()>;
     async fn update_column(&self, id: &str, col: Column, now: i64) -> Result<Option<Card>>;
     async fn update_brief(&self, id: &str, brief: &str, now: i64) -> Result<Option<Card>>;
+    async fn delete(&self, id: &str) -> Result<bool>;
     async fn for_household(&self, name: &str) -> Result<Vec<CardReference>>;
 }
 
@@ -120,6 +121,19 @@ impl CardRepo for SqliteCardRepo {
             )?;
             let row = stmt.query_row(params![&id], row_to_card).optional()?;
             Ok(row)
+        })
+        .await?
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<bool> {
+            let conn = conn.blocking_lock();
+            let affected = conn
+                .execute("DELETE FROM cards WHERE id = ?1", params![&id])
+                .context("delete card")?;
+            Ok(affected > 0)
         })
         .await?
     }

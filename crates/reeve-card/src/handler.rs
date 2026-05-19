@@ -170,6 +170,75 @@ mod tests {
         make_card_repo(Arc::new(Mutex::new(conn)))
     }
 
+    /// Mock WorkspaceLifecycle that records ensure_stopped calls.
+    struct RecordingLifecycle {
+        stopped: std::sync::Mutex<Vec<String>>,
+    }
+    impl RecordingLifecycle {
+        fn new() -> Self {
+            Self {
+                stopped: std::sync::Mutex::new(vec![]),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::WorkspaceLifecycle for RecordingLifecycle {
+        async fn ensure_running(&self, _card: &Card) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn ensure_stopped(&self, card_id: &str) -> anyhow::Result<()> {
+            self.stopped.lock().unwrap().push(card_id.to_string());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_implementing_card_tears_down_container_then_removes_row() {
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let card = Card::new("h".into(), "doomed".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        repo.update_column(&id, Column::Implementing, 0)
+            .await
+            .unwrap();
+
+        let req = reeve_protocol::DeleteParams { id: id.clone() };
+        handle_delete(&*repo, &lifecycle, req).await.unwrap();
+
+        let stopped = lifecycle.stopped.lock().unwrap();
+        assert_eq!(stopped.as_slice(), &[id.clone()]);
+        assert!(repo.get(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_backlog_card_skips_teardown() {
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let card = Card::new("h".into(), "ephemeral".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        // Card stays in Backlog — no column update needed.
+
+        let req = reeve_protocol::DeleteParams { id: id.clone() };
+        handle_delete(&*repo, &lifecycle, req).await.unwrap();
+
+        // ensure_stopped must NOT have been called.
+        assert!(lifecycle.stopped.lock().unwrap().is_empty());
+        assert!(repo.get(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_returns_not_found_for_unknown_card() {
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let req = reeve_protocol::DeleteParams {
+            id: "no-such-id".into(),
+        };
+        let err = handle_delete(&*repo, &lifecycle, req).await.unwrap_err();
+        assert_eq!(err.code, RpcError::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn edit_updates_brief_and_returns_card() {
         let repo = fresh_repo();
@@ -211,6 +280,34 @@ mod tests {
         let err = handle_edit(&*repo, req).await.unwrap_err();
         assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
     }
+}
+
+pub async fn handle_delete(
+    cards: &dyn CardRepo,
+    workspace: &dyn crate::WorkspaceLifecycle,
+    params: reeve_protocol::DeleteParams,
+) -> std::result::Result<Value, RpcError> {
+    let existing = cards
+        .get(&params.id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(&params.id))?;
+
+    if existing.column() == Column::Implementing {
+        workspace
+            .ensure_stopped(existing.id())
+            .await
+            .map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
+                message: format!("teardown before delete: {e:#}"),
+            })?;
+    }
+
+    let removed = cards.delete(&params.id).await.map_err(internal)?;
+    if !removed {
+        // Race: card was deleted between get() and delete(). Treat as success.
+    }
+    Ok(Value::Null)
 }
 
 pub async fn handle_edit(
