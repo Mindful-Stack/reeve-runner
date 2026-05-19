@@ -1,5 +1,5 @@
 mod clones;
-mod handlers;
+mod dispatch;
 mod reconcile;
 
 mod app;
@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
     let state_for_dispatch = state.clone();
     let dispatch = move |req: RpcRequest, _db: DbHandle, caller: CallerContext| {
         let state = state_for_dispatch.clone();
-        async move { handlers::dispatch(req, state, caller).await }
+        async move { dispatch::dispatch(req, state, caller).await }
     };
 
     let result = transport::server::run(
@@ -205,7 +205,7 @@ impl listener::Dispatcher for MainDispatcher {
         let state = self.state.get().cloned();
         Box::pin(async move {
             match state {
-                Some(state) => handlers::dispatch(req, state, caller).await,
+                Some(state) => dispatch::dispatch(req, state, caller).await,
                 None => Err(reeve_protocol::RpcError {
                     code: reeve_protocol::RpcError::INTERNAL,
                     message: "dispatcher not initialised".into(),

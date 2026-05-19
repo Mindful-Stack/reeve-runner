@@ -1,4 +1,5 @@
-//! Method dispatch and per-method handlers.
+//! RPC method dispatch table. The phone directory of the daemon — one place
+//! to see every supported RPC method and where it routes.
 
 use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
@@ -9,12 +10,46 @@ use reeve_protocol::{
 };
 use serde_json::Value;
 
+fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
+    serde_json::from_value(value).map_err(|e| RpcError {
+        code: RpcError::INVALID_PARAMS,
+        message: format!("invalid params: {e}"),
+    })
+}
+
+fn require_card(caller: &CallerContext) -> Result<String, RpcError> {
+    caller.card_id.clone().ok_or_else(|| RpcError {
+        code: RpcError::FORBIDDEN,
+        message: "self-scoped methods require per-card socket".into(),
+    })
+}
+
+fn internal<E: std::fmt::Display>(e: E) -> RpcError {
+    RpcError {
+        code: RpcError::INTERNAL,
+        message: e.to_string(),
+    }
+}
+
+async fn fetch_container_status(
+    state: &DaemonState,
+    card_id: &str,
+) -> Result<Option<reeve_protocol::ContainerStatus>, RpcError> {
+    let row = state
+        .workspaces
+        .get_container(card_id)
+        .await
+        .map_err(internal)?;
+    Ok(row.map(|r| r.status))
+}
+
 pub async fn dispatch(
     req: RpcRequest,
     state: DaemonState,
     caller: CallerContext,
-) -> std::result::Result<Value, RpcError> {
+) -> Result<Value, RpcError> {
     match req.method.as_str() {
+        // --- card aggregate ---
         "ls" => {
             let cards = make_card_repo(state.db.clone());
             reeve_card::handle_ls(&*cards).await
@@ -31,15 +66,6 @@ pub async fn dispatch(
             let params = parse_params::<MvParams>(req.params)?;
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
         }
-        "attach" => {
-            let cards = make_card_repo(state.db.clone());
-            let params = parse_params::<reeve_protocol::AttachParams>(req.params)?;
-            reeve_workspace::handle_attach(
-                &*cards,
-                &*state.containers,
-                params,
-            ).await
-        }
         "mv-self" => {
             let card_id = require_card(&caller)?;
             let cards = make_card_repo(state.db.clone());
@@ -48,22 +74,14 @@ pub async fn dispatch(
             let params = parse_params::<MvSelfParams>(req.params)?;
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
-        "push" => {
-            let cards = make_card_repo(state.db.clone());
-            let params = parse_params::<reeve_protocol::PushParams>(req.params)?;
-            reeve_workspace::handle_push(
-                &*cards,
-                &*state.household_repo,
-                &*state.git,
-                params,
-            ).await
-        }
         "status-self" => {
             let card_id = require_card(&caller)?;
             let cards = make_card_repo(state.db.clone());
             let container_status = fetch_container_status(&state, &card_id).await?;
             reeve_card::handle_status_self(&*cards, container_status, card_id).await
         }
+
+        // --- household aggregate ---
         "household.add" => {
             let scaffold = reeve_household::make_scaffold();
             let params = parse_params::<reeve_protocol::HouseholdAddParams>(req.params)?;
@@ -91,48 +109,41 @@ pub async fn dispatch(
         }
         "household.show" => {
             let params = parse_params::<reeve_household::NameParam>(req.params)?;
-            // pre-resolve referencing cards via CardRepo
+            // Pre-resolve referencing cards via CardRepo.
             let cards_repo = reeve_card::make_card_repo(state.db.clone());
-            let cards = cards_repo.for_household(&params.name).await.map_err(|e| reeve_protocol::RpcError {
-                code: reeve_protocol::RpcError::INTERNAL,
+            let cards = cards_repo.for_household(&params.name).await.map_err(|e| RpcError {
+                code: RpcError::INTERNAL,
                 message: e.to_string(),
             })?;
             reeve_household::handle_household_show(&*state.household_repo, cards, params).await
         }
+
+        // --- workspace aggregate ---
+        "attach" => {
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<reeve_protocol::AttachParams>(req.params)?;
+            reeve_workspace::handle_attach(
+                &*cards,
+                &*state.containers,
+                params,
+            ).await
+        }
+        "push" => {
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<reeve_protocol::PushParams>(req.params)?;
+            reeve_workspace::handle_push(
+                &*cards,
+                &*state.household_repo,
+                &*state.git,
+                params,
+            ).await
+        }
+
         other => Err(RpcError {
             code: RpcError::METHOD_NOT_FOUND,
             message: format!("method not found: {other}"),
         }),
     }
-}
-
-async fn fetch_container_status(
-    state: &crate::app::state::DaemonState,
-    card_id: &str,
-) -> std::result::Result<Option<reeve_protocol::ContainerStatus>, reeve_protocol::RpcError> {
-    let row = state
-        .workspaces
-        .get_container(card_id)
-        .await
-        .map_err(|e| reeve_protocol::RpcError {
-            code: reeve_protocol::RpcError::INTERNAL,
-            message: e.to_string(),
-        })?;
-    Ok(row.map(|r| r.status))
-}
-
-fn require_card(caller: &CallerContext) -> std::result::Result<String, RpcError> {
-    caller.card_id.clone().ok_or_else(|| RpcError {
-        code: RpcError::FORBIDDEN,
-        message: "self-scoped methods require per-card socket".into(),
-    })
-}
-
-fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
-    serde_json::from_value(value).map_err(|e| RpcError {
-        code: RpcError::INVALID_PARAMS,
-        message: format!("invalid params: {e}"),
-    })
 }
 
 
