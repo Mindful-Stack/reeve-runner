@@ -13,7 +13,7 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::ForceRefresh => {
             let prev_id = app.selected_card_id.clone();
             if let Ok(Ok(result)) = client_ext::rpc_ls().await {
-                app.cards = result.cards;
+                merge_cards(app, result.cards);
                 app.last_refresh = std::time::Instant::now();
                 let still_present = prev_id
                     .as_ref()
@@ -220,6 +220,8 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
                         c.brief = new_brief.clone();
                     }
+                    // Mark as in-flight so ls poll doesn't revert our local brief.
+                    *app.pending_edits.entry(card_id.clone()).or_insert(0) += 1;
                     let params = reeve_protocol::EditParams { id: card_id.clone(), brief: new_brief };
                     let tx = app.op_tx.clone();
                     let card_id_for_event = card_id.clone();
@@ -351,6 +353,8 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     app.cards.retain(|c| c.id != card_id);
                     app.pending_attention.remove(&card_id);
                     app.sessions.close(&card_id);
+                    // Mark as in-flight so ls poll doesn't re-add this card.
+                    app.pending_deletes.insert(card_id.clone());
 
                     let params = reeve_protocol::DeleteParams { id: card_id.clone() };
                     let tx = app.op_tx.clone();
@@ -679,18 +683,59 @@ fn spawn_mv(app: &mut App, card_id: String, target: Column) {
     app.focused_column = target;
     // No status message — the visible column change is the feedback.
 
+    // Mark as in-flight so ls poll doesn't revert our local column.
+    *app.pending_mvs.entry(card_id.clone()).or_insert(0) += 1;
+
     let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
     let tx = app.op_tx.clone();
+    let card_id_for_event = card_id.clone();
     tokio::spawn(async move {
         let event = match crate::tui::client_ext::rpc_mv(params).await {
             Ok(Ok(updated)) => {
-                crate::tui::app::OpEvent::MvOk { card_id, updated, target }
+                crate::tui::app::OpEvent::MvOk { card_id: card_id_for_event, updated, target }
             }
-            Ok(Err(e)) => crate::tui::app::OpEvent::MvErr { msg: e.message },
-            Err(e) => crate::tui::app::OpEvent::MvErr { msg: format!("{e:#}") },
+            Ok(Err(e)) => crate::tui::app::OpEvent::MvErr {
+                card_id: card_id_for_event,
+                msg: e.message,
+            },
+            Err(e) => crate::tui::app::OpEvent::MvErr {
+                card_id: card_id_for_event,
+                msg: format!("{e:#}"),
+            },
         };
         let _ = tx.send(event);
     });
+}
+
+/// Merge a fresh ls response into app.cards, preserving optimistic state
+/// for cards with in-flight mutations.
+///
+/// Rules:
+/// - If a card has a pending delete, drop it from the merged list (it'll
+///   either get re-added on the next poll if the delete failed, or stay
+///   gone if it succeeded).
+/// - If a card has a pending mv, keep the local card (preserves the
+///   optimistic column the user sees).
+/// - If a card has a pending edit, keep the local card (preserves the
+///   optimistic brief).
+/// - Otherwise, use the server's version.
+pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
+    let mut merged: Vec<reeve_protocol::Card> = Vec::with_capacity(server_cards.len());
+    for s_card in server_cards {
+        if app.pending_deletes.contains(&s_card.id) {
+            continue;
+        }
+        let preserve_local = app.pending_mvs.contains_key(&s_card.id)
+            || app.pending_edits.contains_key(&s_card.id);
+        if preserve_local {
+            if let Some(local) = app.cards.iter().find(|c| c.id == s_card.id) {
+                merged.push(local.clone());
+                continue;
+            }
+        }
+        merged.push(s_card);
+    }
+    app.cards = merged;
 }
 
 /// Apply a completed background RPC result to the app state. Called by the
@@ -699,6 +744,7 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     use crate::tui::app::OpEvent;
     match event {
         OpEvent::MvOk { card_id, updated, target: _ } => {
+            decrement_pending(&mut app.pending_mvs, &card_id);
             // Optimistic update already moved the card. Replace with the
             // daemon's version so updated_at etc. reflect the server time.
             if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
@@ -707,32 +753,46 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
             // Don't set status — the optimistic visible change was sufficient.
             // Don't change focused_column — already done in spawn_mv.
         }
-        OpEvent::MvErr { msg } => {
+        OpEvent::MvErr { card_id, msg } => {
+            decrement_pending(&mut app.pending_mvs, &card_id);
             // The optimistic update was wrong. Next ls poll reconciles the
             // card back to its real column. Show the error so the user knows.
             set_status_error(app, format!("mv failed: {msg}"));
         }
         OpEvent::EditOk { card_id, updated } => {
+            decrement_pending(&mut app.pending_edits, &card_id);
             // Replace with daemon's version (updated_at).
             if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
                 *c = updated;
             }
             // Don't set status.
         }
-        OpEvent::EditErr { card_id: _, msg } => {
+        OpEvent::EditErr { card_id, msg } => {
+            decrement_pending(&mut app.pending_edits, &card_id);
             set_status_error(app, format!("edit failed: {msg}"));
-            // Next ls poll reverts the optimistic brief.
+            // Next ls poll reverts the optimistic brief (pending count now 0).
         }
         OpEvent::NewOk => {
             // New card appears on next ls poll. No status (avoid noise).
         }
         OpEvent::NewErr { msg } => set_status_error(app, format!("new card failed: {msg}")),
-        OpEvent::DeleteOk { card_id: _ } => {
+        OpEvent::DeleteOk { card_id } => {
+            app.pending_deletes.remove(&card_id);
             // Already removed optimistically. No-op.
         }
-        OpEvent::DeleteErr { card_id: _, msg } => {
+        OpEvent::DeleteErr { card_id, msg } => {
+            app.pending_deletes.remove(&card_id);
             set_status_error(app, format!("delete failed: {msg}"));
             // Next ls poll re-adds the card if delete failed.
+        }
+    }
+}
+
+fn decrement_pending(map: &mut std::collections::HashMap<String, u32>, card_id: &str) {
+    if let Some(count) = map.get_mut(card_id) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            map.remove(card_id);
         }
     }
 }

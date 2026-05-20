@@ -39,7 +39,7 @@ pub struct StatusMessage {
 #[derive(Debug)]
 pub enum OpEvent {
     MvOk { card_id: String, updated: reeve_protocol::Card, target: reeve_protocol::Column },
-    MvErr { msg: String },
+    MvErr { card_id: String, msg: String },
     EditOk { card_id: String, updated: reeve_protocol::Card },
     EditErr { card_id: String, msg: String },
     NewOk,
@@ -63,6 +63,13 @@ pub struct App {
     pub pending_attention: std::collections::HashSet<String>,
     pub op_tx: UnboundedSender<OpEvent>,
     pub op_rx: UnboundedReceiver<OpEvent>,
+    /// card_id → number of mv RPCs currently in flight for that card.
+    /// While > 0, ls poll results don't overwrite the local column for this card.
+    pub pending_mvs: std::collections::HashMap<String, u32>,
+    /// Same for edits — preserves the local brief.
+    pub pending_edits: std::collections::HashMap<String, u32>,
+    /// card_ids whose delete RPC is in flight. ls poll won't re-add them.
+    pub pending_deletes: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -83,6 +90,9 @@ impl App {
             pending_attention: std::collections::HashSet::new(),
             op_tx,
             op_rx,
+            pending_mvs: std::collections::HashMap::new(),
+            pending_edits: std::collections::HashMap::new(),
+            pending_deletes: std::collections::HashSet::new(),
         }
     }
 
@@ -175,7 +185,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
 
         if app.last_refresh.elapsed() > Duration::from_millis(500) {
             if let Ok(Ok(result)) = client_ext::rpc_ls().await {
-                app.cards = result.cards;
+                crate::tui::actions::merge_cards(&mut app, result.cards);
                 app.last_refresh = Instant::now();
                 crate::tui::actions::ensure_selection_valid(&mut app);
                 let implementing: Vec<String> = app
