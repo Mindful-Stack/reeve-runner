@@ -78,11 +78,11 @@ pub async fn dispatch(
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
+            let params = parse_params::<MvSelfParams>(req.params)?;
             let _card_guard = state.lock_card(&card_id).await;
             let cards = make_card_repo(state.db.clone());
             let households = state.household_lookup.clone();
             let workspace = state.workspace_lifecycle.clone();
-            let params = parse_params::<MvSelfParams>(req.params)?;
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
         "status-self" => {
@@ -1669,7 +1669,7 @@ mod tests {
     /// This test asserts no deadlock and correct final state for each card.
     #[tokio::test]
     async fn concurrent_mv_for_different_cards_are_independent() {
-        let (lifecycle, _log) = SlowLifecycle::new(0);
+        let (lifecycle, _) = SlowLifecycle::new(0);
         let state = fresh_state_with_lifecycle(lifecycle);
         let card_a = create_card(&state, "card-a").await;
         let card_b = create_card(&state, "card-b").await;
