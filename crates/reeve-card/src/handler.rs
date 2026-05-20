@@ -76,19 +76,31 @@ pub async fn handle_mv(
         });
     }
 
-    let now = now_secs();
-    let card = cards
-        .update_column(&params.id, params.column, now)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| not_found(&params.id))?;
-
-    on_column_change(old_column, params.column, &card, workspace)
+    // Run lifecycle BEFORE committing the column change. If ensure_running
+    // (or ensure_stopped) fails, the card stays in its old column and the
+    // caller sees an accurate error — instead of the card being stranded
+    // with a column change the side-effects never materialised for.
+    on_column_change(old_column, params.column, &existing, workspace)
         .await
         .map_err(|e| RpcError {
             code: RpcError::INTERNAL,
             message: format!("{e:#}"),
         })?;
+
+    let now = now_secs();
+    let card = cards
+        .update_column(&params.id, params.column, now)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "lifecycle succeeded but update_column failed for {}: {e:#} — \
+                 the side-effects (container spawn/teardown) already ran; \
+                 manual reconciliation may be required",
+                params.id,
+            );
+            internal(e)
+        })?
+        .ok_or_else(|| not_found(&params.id))?;
 
     let dto: reeve_protocol::Card = card.into();
     serde_json::to_value(MvResult { card: dto }).map_err(internal)
@@ -120,19 +132,28 @@ pub async fn handle_mv_self(
         });
     }
 
-    let now = now_secs();
-    let card = cards
-        .update_column(&card_id, params.column, now)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| not_found(&card_id))?;
-
-    on_column_change(old_column, params.column, &card, workspace)
+    // See `handle_mv` — lifecycle runs before column commit so a failing
+    // ensure_running/ensure_stopped leaves the card in its old column.
+    on_column_change(old_column, params.column, &existing, workspace)
         .await
         .map_err(|e| RpcError {
             code: RpcError::INTERNAL,
             message: format!("{e:#}"),
         })?;
+
+    let now = now_secs();
+    let card = cards
+        .update_column(&card_id, params.column, now)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "lifecycle succeeded but update_column failed for {card_id}: {e:#} — \
+                 the side-effects (container spawn/teardown) already ran; \
+                 manual reconciliation may be required",
+            );
+            internal(e)
+        })?
+        .ok_or_else(|| not_found(&card_id))?;
 
     let dto: reeve_protocol::Card = card.into();
     serde_json::to_value(MvSelfResult { card: dto }).map_err(internal)
@@ -189,6 +210,27 @@ mod tests {
         async fn ensure_stopped(&self, card_id: &str) -> anyhow::Result<()> {
             self.stopped.lock().unwrap().push(card_id.to_string());
             Ok(())
+        }
+    }
+
+    /// Mock WorkspaceLifecycle whose ensure_running always errors.
+    struct FailingLifecycle;
+    #[async_trait::async_trait]
+    impl crate::WorkspaceLifecycle for FailingLifecycle {
+        async fn ensure_running(&self, _card: &Card) -> anyhow::Result<()> {
+            anyhow::bail!("simulated lifecycle failure")
+        }
+        async fn ensure_stopped(&self, _card_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Mock HouseholdLookup that always reports the household exists.
+    struct AlwaysExistsHouseholds;
+    #[async_trait::async_trait]
+    impl crate::HouseholdLookup for AlwaysExistsHouseholds {
+        async fn exists(&self, _name: &str) -> anyhow::Result<bool> {
+            Ok(true)
         }
     }
 
@@ -265,6 +307,38 @@ mod tests {
         };
         let err = handle_edit(&*repo, req).await.unwrap_err();
         assert_eq!(err.code, RpcError::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mv_to_implementing_with_failing_lifecycle_leaves_column_unchanged() {
+        // Regression test: handle_mv must run on_column_change BEFORE
+        // committing the column update, so that a failing ensure_running
+        // doesn't strand the card in the new column without the
+        // accompanying side-effects (container spawn).
+        let repo = fresh_repo();
+        let card = Card::new("h".into(), "test".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        // Card starts in Backlog (the default for new()).
+
+        let req = MvParams {
+            id: id.clone(),
+            column: Column::Implementing,
+        };
+        let err = handle_mv(&*repo, &AlwaysExistsHouseholds, &FailingLifecycle, req)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::INTERNAL);
+        assert!(
+            err.message.contains("simulated lifecycle failure"),
+            "error should surface the lifecycle failure: {}",
+            err.message,
+        );
+
+        // The card must still be in Backlog — the column update was NOT
+        // committed because lifecycle ran first and failed.
+        let after = repo.get(&id).await.unwrap().unwrap();
+        assert_eq!(after.column(), Column::Backlog);
     }
 
     #[tokio::test]
