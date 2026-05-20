@@ -1,1 +1,6 @@
-{"image":"debian:trixie-slim","remoteUser":"root","overrideCommand":true}
+{
+  "image": "debian:trixie-slim",
+  "overrideCommand": true,
+  "remoteUser": "vscode",
+  "onCreateCommand": "apt-get update && apt-get install -y --no-install-recommends tmux git ca-certificates sudo && (id vscode || (useradd -m -s /bin/bash vscode && echo 'vscode ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/vscode))"
+}
