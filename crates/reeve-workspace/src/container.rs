@@ -23,10 +23,11 @@ pub trait ContainerOps: Send + Sync {
     async fn discover_container_name(&self, card_id: &str) -> Result<Option<String>>;
 
     /// Start a detached tmux session inside an existing running container.
-    /// Shells `docker exec -u vscode <container> tmux new-session -d -s
-    /// <session> -- bash -lc <command>`. The vscode user is hardcoded
-    /// because the M3.5 smoke confirmed it matches the Microsoft devcontainer
-    /// base image's default remoteUser; per-household overrides are M6 work.
+    /// Shells `docker exec <container> tmux new-session -d -s <session> --
+    /// bash -lc <command>` — runs as the container's default user (no `-u`
+    /// flag) so the resulting tmux server matches what `reeve attach`'s
+    /// `docker exec -it … tmux attach` sees. Per-household user overrides
+    /// are a future enhancement.
     /// Errors propagate from the underlying `docker exec`.
     async fn exec_in_tmux(
         &self,
@@ -145,8 +146,6 @@ impl ContainerOps for DockerOps {
         let output = Command::new("docker")
             .args([
                 "exec",
-                "-u",
-                "vscode",
                 container_name,
                 "tmux",
                 "new-session",
