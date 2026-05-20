@@ -6,7 +6,9 @@ use crate::transport::server::DbHandle;
 use anyhow::Result;
 use async_trait::async_trait;
 use reeve_workspace::ContainerOpsHandle;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Everything the daemon needs to serve requests.
 #[derive(Clone)]
@@ -20,6 +22,27 @@ pub struct DaemonState {
     pub household_repo: Arc<dyn reeve_household::HouseholdRepo>,
     pub household_lookup: Arc<dyn reeve_card::HouseholdLookup>,
     pub workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle>,
+    /// Per-card serialization for column-state-changing operations
+    /// (mv, mv-self, delete). The outer Mutex guards the HashMap;
+    /// the inner Arc<Mutex<()>> is per-card. Acquire the outer briefly
+    /// to get-or-insert the inner, then drop outer while holding inner.
+    pub card_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+}
+
+impl DaemonState {
+    /// Acquire the per-card serialization lock. Returns an owned guard
+    /// that releases on drop. Use this to serialize column-state-changing
+    /// RPCs (mv, mv-self, delete) per card.
+    pub async fn lock_card(&self, card_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let card_mutex = {
+            let mut map = self.card_locks.lock().await;
+            map.entry(card_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        // Outer guard dropped; we now hold only the per-card inner mutex.
+        card_mutex.lock_owned().await
+    }
 }
 
 /// Implement `FetchDeps` for `DaemonState` so the fetch worker (now in

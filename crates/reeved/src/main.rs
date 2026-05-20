@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
         household_repo,
         household_lookup,
         workspace_lifecycle,
+        card_locks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     dispatcher_holder
         .state
