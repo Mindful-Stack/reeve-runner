@@ -104,6 +104,11 @@ pub struct SessionManager {
     sessions: HashMap<String, Session>,
     default_rows: u16,
     default_cols: u16,
+    /// card_ids whose last spawn-or-attach failed. While present here,
+    /// `reconcile` will NOT auto-spawn a session for that card. Cleared
+    /// when the user manually retries (via the ForceRefresh action — `r`)
+    /// or when the card leaves Implementing.
+    failed_sessions: std::collections::HashSet<String>,
 }
 
 impl SessionManager {
@@ -112,7 +117,24 @@ impl SessionManager {
             sessions: HashMap::new(),
             default_rows: 40,
             default_cols: 120,
+            failed_sessions: std::collections::HashSet::new(),
         }
+    }
+
+    /// Mark a card's session as failed so reconcile won't auto-respawn.
+    pub fn mark_failed(&mut self, card_id: &str) {
+        self.failed_sessions.insert(card_id.to_string());
+    }
+
+    /// Clear all failed markers. Called on ForceRefresh (`r`) so the user
+    /// can retry manually.
+    pub fn clear_failed(&mut self) {
+        self.failed_sessions.clear();
+    }
+
+    /// Whether a card is currently in the failed set.
+    pub fn is_failed(&self, card_id: &str) -> bool {
+        self.failed_sessions.contains(card_id)
     }
 
     pub fn set_default_size(&mut self, rows: u16, cols: u16) {
@@ -153,10 +175,16 @@ impl SessionManager {
                 self.close(id);
             }
         }
+        // Also clear failed-state for cards no longer in Implementing — they
+        // get a fresh chance if/when they return.
+        let still_implementing: std::collections::HashSet<&String> = implementing.iter().collect();
+        self.failed_sessions.retain(|id| still_implementing.contains(id));
+
         for id in implementing {
-            if !self.sessions.contains_key(id) {
+            if !self.sessions.contains_key(id) && !self.failed_sessions.contains(id) {
                 if let Err(e) = self.spawn(id) {
                     tracing::warn!("failed to spawn session for {id}: {e:#}");
+                    self.failed_sessions.insert(id.clone());
                 }
             }
         }

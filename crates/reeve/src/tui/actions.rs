@@ -12,6 +12,9 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::Quit => app.quit = true,
         Action::ForceRefresh => {
             let prev_id = app.selected_card_id.clone();
+            // Manual retry: clear the failed-session memo so reconcile will
+            // attempt fresh spawns this tick.
+            app.sessions.clear_failed();
             if let Ok(Ok(result)) = client_ext::rpc_ls().await {
                 merge_cards(app, result.cards);
                 app.last_refresh = std::time::Instant::now();

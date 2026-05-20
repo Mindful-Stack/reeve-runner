@@ -234,9 +234,18 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                     app.sessions.close(&id);
                     if should_respawn {
                         if let Err(e) = app.sessions.spawn(&id) {
-                            app.set_status(format!("respawn failed: {e:#}"), crate::tui::app::StatusLevel::Error);
+                            app.sessions.mark_failed(&id);
+                            app.set_status(
+                                format!("respawn failed: {e:#}"),
+                                crate::tui::app::StatusLevel::Error,
+                            );
                         }
                     } else if let Some(msg) = error_msg {
+                        // Mark as failed so reconcile doesn't keep re-spawning.
+                        // The status message fires ONCE per failed session — the
+                        // ls-poll-driven reconcile won't re-spawn until the user
+                        // manually presses `r`.
+                        app.sessions.mark_failed(&id);
                         app.set_status(msg, crate::tui::app::StatusLevel::Error);
                     }
                 }
