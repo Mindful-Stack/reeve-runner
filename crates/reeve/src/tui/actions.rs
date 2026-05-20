@@ -618,7 +618,7 @@ fn selected_card_column(app: &App) -> Option<Column> {
 /// the 1-6 digit shortcuts.
 fn submit_move(app: &mut App, card_id: String, target: Column) {
     app.modal = None;
-    spawn_mv(app, card_id, target);
+    schedule_mv(app, card_id, target);
 }
 
 async fn handle_menu_letter(app: &mut App, c: char) {
@@ -669,10 +669,12 @@ fn mv_relative(app: &mut App, delta: i32) {
         return; // already at edge
     }
     let target = cols[new_idx];
-    spawn_mv(app, card_id, target);
+    schedule_mv(app, card_id, target);
 }
 
-fn spawn_mv(app: &mut App, card_id: String, target: Column) {
+const MV_DEBOUNCE_MS: u64 = 200;
+
+fn schedule_mv(app: &mut App, card_id: String, target: Column) {
     // Optimistic local update — the card moves immediately. The RPC will
     // either confirm (no-op) or fail (next ls poll reconciles back to
     // daemon truth). `selected_card_id` stays on the moved card so
@@ -683,7 +685,17 @@ fn spawn_mv(app: &mut App, card_id: String, target: Column) {
     app.focused_column = target;
     // No status message — the visible column change is the feedback.
 
-    // Mark as in-flight so ls poll doesn't revert our local column.
+    // Debounce: replace any pending intent for this card with the latest
+    // target and a fresh deadline. Rapid presses coalesce into one RPC.
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(MV_DEBOUNCE_MS);
+    app.pending_mv_intents.insert(card_id, (target, deadline));
+}
+
+/// Fire the mv RPC for a card whose debounce deadline has expired. Called
+/// by the drive loop tick.
+pub(crate) fn fire_pending_mv(app: &mut App, card_id: String, target: Column) {
+    // Increment in-flight counter (used by merge_cards to preserve state).
     *app.pending_mvs.entry(card_id.clone()).or_insert(0) += 1;
 
     let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
@@ -726,7 +738,8 @@ pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
             continue;
         }
         let preserve_local = app.pending_mvs.contains_key(&s_card.id)
-            || app.pending_edits.contains_key(&s_card.id);
+            || app.pending_edits.contains_key(&s_card.id)
+            || app.pending_mv_intents.contains_key(&s_card.id);
         if preserve_local {
             if let Some(local) = app.cards.iter().find(|c| c.id == s_card.id) {
                 merged.push(local.clone());

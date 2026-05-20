@@ -70,6 +70,10 @@ pub struct App {
     pub pending_edits: std::collections::HashMap<String, u32>,
     /// card_ids whose delete RPC is in flight. ls poll won't re-add them.
     pub pending_deletes: std::collections::HashSet<String>,
+    /// Debounce buffer: card_id → (final-target-column, deadline).
+    /// Each H/L/m on this card replaces the entry. When `Instant::now()` >= deadline,
+    /// the drive loop spawns the actual mv RPC with the latest target.
+    pub pending_mv_intents: std::collections::HashMap<String, (reeve_protocol::Column, std::time::Instant)>,
 }
 
 impl App {
@@ -93,6 +97,7 @@ impl App {
             pending_mvs: std::collections::HashMap::new(),
             pending_edits: std::collections::HashMap::new(),
             pending_deletes: std::collections::HashSet::new(),
+            pending_mv_intents: std::collections::HashMap::new(),
         }
     }
 
@@ -169,9 +174,22 @@ async fn drive(terminal: &mut Term) -> Result<()> {
             crate::tui::actions::process_op_event(&mut app, event);
         }
 
+        // Fire any debounced mvs whose deadline has passed.
+        let now = std::time::Instant::now();
+        let to_fire: Vec<(String, reeve_protocol::Column)> = app
+            .pending_mv_intents
+            .iter()
+            .filter(|(_, (_, deadline))| now >= *deadline)
+            .map(|(id, (col, _))| (id.clone(), *col))
+            .collect();
+        for (card_id, target) in to_fire {
+            app.pending_mv_intents.remove(&card_id);
+            crate::tui::actions::fire_pending_mv(&mut app, card_id, target);
+        }
+
         terminal.draw(|f| render::render(f, &app))?;
 
-        if event::poll(Duration::from_millis(200))? {
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if app.modal.is_some() {
