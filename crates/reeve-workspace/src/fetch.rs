@@ -84,6 +84,12 @@ async fn tick_one_card(state: &dyn FetchDeps, card_id: &str, household_name: &st
     let workspace = reeve_protocol::paths::card_workspace_path(card_id);
     let git = state.git_ops();
     for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
+        // Inline entries (subdirs of meta-repo tracked without their own
+        // .git/, e.g. a `lore/` knowledge-base directory) aren't independently
+        // fetchable. Skip them — they travel with the meta-repo clone.
+        if !host_path.join(".git").exists() {
+            continue;
+        }
         // The card-side source path mirrors the host topology:
         //   - workspace repo: <workspace>/
         //   - sibling repo:   <workspace>/<name>/
@@ -248,6 +254,18 @@ mod tests {
             repos_json.join(",")
         );
         std::fs::write(meta.join("household.json"), body).unwrap();
+        // Create a sentinel .git/ for the meta-repo and every separate
+        // sibling — the fetch worker skips paths without .git/, so the
+        // tests must mark which entries are real git repos. Callers needing
+        // an inline (non-git) entry should create_dir_all the subdir without
+        // a .git inside it.
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        for repo in repos {
+            if *repo == workspace {
+                continue; // workspace's .git is meta/.git itself
+            }
+            std::fs::create_dir_all(meta.join(repo).join(".git")).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -298,6 +316,47 @@ mod tests {
         let calls = git.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "only card-b should produce a fetch");
         assert_eq!(calls[0].2, "card-b");
+    }
+
+    #[tokio::test]
+    async fn tick_skips_inline_entries_without_git() {
+        // Inline entries (declared in the manifest but lacking their own
+        // .git/ on the host) aren't independently fetchable — they travel
+        // with the meta-repo clone. The fetch worker must skip them silently
+        // rather than erroring out with 'not a git repository'.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        // Write the manifest with three entries: workspace, a real sibling
+        // 'backend', and an inline 'lore'. write_manifest creates .git/ for
+        // all of them — overwrite lore by removing its .git/.
+        write_manifest(&meta, "ws", &["ws", "backend", "lore"]);
+        std::fs::remove_dir_all(meta.join("lore").join(".git")).unwrap();
+
+        let git = Arc::new(RecordingGit::new());
+        let deps = TestDeps::new(git.clone());
+
+        deps.add_card("card-a", "h");
+        deps.add_household("h", meta.clone());
+
+        tick(&deps).await.unwrap();
+
+        let calls = git.calls.lock().unwrap();
+        // Two fetches expected: workspace + backend. lore is skipped.
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected fetches for workspace + backend only; inline lore must be skipped: {calls:?}"
+        );
+        let repos_fetched: Vec<&PathBuf> = calls.iter().map(|c| &c.0).collect();
+        assert!(repos_fetched.contains(&&meta), "workspace fetched");
+        assert!(
+            repos_fetched.contains(&&meta.join("backend")),
+            "backend fetched"
+        );
+        assert!(
+            !repos_fetched.contains(&&meta.join("lore")),
+            "lore must NOT be fetched (no .git/)"
+        );
     }
 
     #[tokio::test]
