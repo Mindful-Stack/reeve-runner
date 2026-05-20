@@ -745,10 +745,14 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     match event {
         OpEvent::MvOk { card_id, updated, target: _ } => {
             decrement_pending(&mut app.pending_mvs, &card_id);
-            // Optimistic update already moved the card. Replace with the
-            // daemon's version so updated_at etc. reflect the server time.
-            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
-                *c = updated;
+            // Only sync to server-truth if this was the LAST in-flight mv.
+            // If more mvs are still pending, the later spawn_mv's optimistic
+            // column is what the user should see; overwriting with this
+            // (older) RPC's response would cause a visible bounce.
+            if !app.pending_mvs.contains_key(&card_id) {
+                if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                    *c = updated;
+                }
             }
             // Don't set status — the optimistic visible change was sufficient.
             // Don't change focused_column — already done in spawn_mv.
@@ -761,9 +765,12 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
         }
         OpEvent::EditOk { card_id, updated } => {
             decrement_pending(&mut app.pending_edits, &card_id);
-            // Replace with daemon's version (updated_at).
-            if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
-                *c = updated;
+            // Same logic as MvOk — only sync if no later edits are still
+            // pending, otherwise we'd revert the user's latest brief.
+            if !app.pending_edits.contains_key(&card_id) {
+                if let Some(c) = app.cards.iter_mut().find(|c| c.id == card_id) {
+                    *c = updated;
+                }
             }
             // Don't set status.
         }
