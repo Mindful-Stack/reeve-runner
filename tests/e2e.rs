@@ -351,7 +351,12 @@ fn write_manifest(path: &std::path::Path, body: &str) {
 fn commit_meta_changes(repo: &std::path::Path) {
     git_in(repo, &["config", "user.email", "t@t.com"]);
     git_in(repo, &["config", "user.name", "t"]);
-    git_in(repo, &["add", "-A"]);
+    // Only stage household.json (and other tracked files that aren't embedded
+    // sibling repos). Using `git add -A` would accidentally commit sibling
+    // directories that have their own .git/ as gitlinks, which would cause git
+    // to check out empty placeholder dirs in the card workspace instead of
+    // skipping them (sibling repos are separate clones, not submodules).
+    git_in(repo, &["add", "household.json"]);
     git_in(repo, &["commit", "-m", "manifest update", "--quiet"]);
 }
 
@@ -711,9 +716,9 @@ fn m3_5_lore_subdir_lands_in_workspace() {
     //   { "workspace": "with-kb", "knowledge_base": "lore",
     //     "repos": [{"name": "with-kb"}, {"name": "lore"}] }
     // We just need the lore repo to exist on disk so clone_all_for_card can
-    // clone it, then commit any working-tree changes the init leaves behind.
+    // clone it. Do NOT commit lore/ into the meta-repo — sibling repos are
+    // separate clones, not submodules.
     init_sibling(&dest.join("lore"));
-    commit_meta_changes(&dest);
 
     // Create a card tied to the household.
     let out_new = cmd("reeve", &env)
@@ -1113,8 +1118,9 @@ fn m5_attach_drops_into_running_tmux_session() {
 
     // The template's household.json declares "lore" as a sibling.
     // Initialise it next to the meta-repo so clone_all_for_card can clone it.
+    // Do NOT commit lore/ into the meta-repo — sibling repos are separate clones,
+    // not submodules, and committing them as gitlinks would break the clone path.
     init_sibling(&dest.join("lore"));
-    commit_meta_changes(&dest);
 
     // 4. Create card + mv to implementing.
     let out_new = cmd("reeve", &env)
