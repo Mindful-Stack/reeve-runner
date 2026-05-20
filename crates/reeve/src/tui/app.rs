@@ -189,11 +189,78 @@ async fn drive(terminal: &mut Term) -> Result<()> {
 
         terminal.draw(|f| render::render(f, &app))?;
 
+        // Activity badge: mark cards whose session emitted output since the
+        // user last viewed it. Skip the currently-focused session.
+        {
+            let session_ids: Vec<String> = app.sessions.ids();
+            let now = std::time::Instant::now();
+            for id in session_ids {
+                let is_currently_focused = app.pane_focus == crate::tui::app::PaneFocus::SessionPane
+                    && app.selected_card_id.as_ref() == Some(&id);
+                if is_currently_focused {
+                    continue;
+                }
+                if let Some(s) = app.sessions.get(&id) {
+                    let last = *s.last_output_at.lock().unwrap();
+                    if now.saturating_duration_since(last) < std::time::Duration::from_millis(500) {
+                        app.pending_attention.insert(id.clone());
+                    }
+                }
+            }
+        }
+
+        // Auto-respawn sessions whose reeve attach exited (with guard against tight loops).
+        {
+            let session_ids: Vec<String> = app.sessions.ids();
+            for id in session_ids {
+                let exit_info = app.sessions.get_mut(&id).and_then(|s| s.poll_child_exit());
+                if let Some(exit) = exit_info {
+                    let (should_respawn, error_msg) = {
+                        let s = app.sessions.get_mut(&id).expect("session present");
+                        // Reset window if >5s since the first respawn in this window.
+                        if s.respawn_window_start.elapsed() > std::time::Duration::from_secs(5) {
+                            s.respawn_count = 0;
+                            s.respawn_window_start = std::time::Instant::now();
+                        }
+                        if exit == 0 && s.respawn_count < 3 {
+                            s.respawn_count += 1;
+                            (true, None)
+                        } else if exit == 0 {
+                            (false, Some(format!("session {} respawned 3x in 5s, stopped — press 'r' to retry", &id[..8.min(id.len())])))
+                        } else {
+                            (false, Some(format!("session {} exited with status {}", &id[..8.min(id.len())], exit)))
+                        }
+                    };
+                    app.sessions.close(&id);
+                    if should_respawn {
+                        if let Err(e) = app.sessions.spawn(&id) {
+                            app.set_status(format!("respawn failed: {e:#}"), crate::tui::app::StatusLevel::Error);
+                        }
+                    } else if let Some(msg) = error_msg {
+                        app.set_status(msg, crate::tui::app::StatusLevel::Error);
+                    }
+                }
+            }
+        }
+
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if app.modal.is_some() {
                         crate::tui::actions::handle_modal_key(&mut app, key).await;
+                    } else if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
+                        // Two escape paths back to kanban: Shift+Tab and Ctrl+G.
+                        let is_shift_tab = key.code == crossterm::event::KeyCode::BackTab
+                            && key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+                        // BackTab without explicit modifier check — some terminals report it without SHIFT
+                        let is_back_tab_bare = key.code == crossterm::event::KeyCode::BackTab;
+                        let is_ctrl_g = key.code == crossterm::event::KeyCode::Char('g')
+                            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
+                        if is_shift_tab || is_back_tab_bare || is_ctrl_g {
+                            crate::tui::actions::handle(&mut app, events::Action::FocusKanban).await;
+                        } else {
+                            crate::tui::actions::forward_to_session(&mut app, key).await;
+                        }
                     } else if let Some(action) = events::translate(key) {
                         crate::tui::actions::handle(&mut app, action).await;
                     }

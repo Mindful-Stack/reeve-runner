@@ -92,6 +92,7 @@ fn render_column_into(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, col: Co
             card_to_listitem(
                 c,
                 app.selected_card_id.as_deref() == Some(&c.id) && is_focused,
+                app.pending_attention.contains(&c.id),
             )
         })
         .collect();
@@ -555,18 +556,21 @@ fn build_buffer_line(buffer: &str, cursor: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-fn card_to_listitem(card: &Card, selected: bool) -> ListItem<'_> {
+fn card_to_listitem(card: &Card, selected: bool, has_attention: bool) -> ListItem<'_> {
     let id_short = card.id.get(..8).unwrap_or(&card.id);
     let style = if selected {
         Style::default().fg(Color::Black).bg(Color::Yellow)
     } else {
         Style::default()
     };
+    let badge = if has_attention {
+        Span::styled("• ", Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw("  ")
+    };
     let line = Line::from(vec![
-        Span::styled(
-            format!("{id_short} "),
-            Style::default().fg(Color::DarkGray),
-        ),
+        badge,
+        Span::styled(format!("{id_short} "), Style::default().fg(Color::DarkGray)),
         Span::styled(card.brief.as_str(), style),
     ]);
     ListItem::new(line)

@@ -27,6 +27,8 @@ pub enum Action {
     Edit,
     New,
     Delete,
+    FocusSessionPane,
+    FocusKanban,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,8 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('e'), action: Action::Edit, description: "edit brief", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Char('n'), action: Action::New, description: "new card", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Char('d'), action: Action::Delete, description: "delete card", section: HelpSection::Mutations },
+    Binding { key: KeyMatcher::Code(KeyCode::Tab), action: Action::FocusSessionPane, description: "focus session pane", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Shift(KeyCode::BackTab), action: Action::FocusKanban, description: "focus kanban", section: HelpSection::Navigation },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {

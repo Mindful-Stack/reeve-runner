@@ -128,6 +128,22 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::Edit => open_edit_modal(app),
         Action::New => open_new_modal(app).await,
         Action::Delete => open_delete_modal(app),
+        Action::FocusSessionPane => {
+            // Only meaningful in FocusedColumnPlusDetail with an Implementing card that has a live session.
+            if app.layout == crate::tui::layout::LayoutMode::FocusedColumnPlusDetail {
+                if let Some(id) = &app.selected_card_id {
+                    if app.sessions.get(id).is_some() {
+                        app.pane_focus = crate::tui::app::PaneFocus::SessionPane;
+                        app.pending_attention.remove(id);
+                    } else {
+                        set_status_info(app, "no live session for this card".into());
+                    }
+                }
+            }
+        }
+        Action::FocusKanban => {
+            app.pane_focus = crate::tui::app::PaneFocus::Kanban;
+        }
     }
 }
 
@@ -880,6 +896,51 @@ fn open_delete_modal(app: &mut App) {
         return;
     };
     app.modal = Some(crate::tui::modal::ModalKind::DeleteConfirm { card_id });
+}
+
+/// Forward a raw keypress to the focused session's PTY master.
+pub async fn forward_to_session(app: &mut App, key: crossterm::event::KeyEvent) {
+    let Some(id) = app.selected_card_id.clone() else { return; };
+    let Some(session) = app.sessions.get_mut(&id) else { return; };
+    let bytes = key_event_to_bytes(key);
+    if !bytes.is_empty() {
+        if let Err(e) = session.send_bytes(&bytes) {
+            set_status_error(app, format!("send to session failed: {e:#}"));
+        }
+    }
+}
+
+fn key_event_to_bytes(key: crossterm::event::KeyEvent) -> Vec<u8> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                let upper = c.to_ascii_uppercase() as u8;
+                if (b'A'..=b'Z').contains(&upper) {
+                    vec![upper - b'A' + 1]
+                } else {
+                    vec![]
+                }
+            } else {
+                // Forward the literal char (handles uppercase from Shift+letter correctly).
+                c.to_string().into_bytes()
+            }
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => vec![0x1b, b'[', b'A'],
+        KeyCode::Down => vec![0x1b, b'[', b'B'],
+        KeyCode::Right => vec![0x1b, b'[', b'C'],
+        KeyCode::Left => vec![0x1b, b'[', b'D'],
+        KeyCode::Home => vec![0x1b, b'[', b'H'],
+        KeyCode::End => vec![0x1b, b'[', b'F'],
+        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
+        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
+        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
+        _ => vec![],
+    }
 }
 
 /// Pick first card in focused column as the selection. Called after column
