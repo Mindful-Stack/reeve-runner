@@ -93,6 +93,7 @@ fn render_column_into(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, col: Co
                 c,
                 app.selected_card_id.as_deref() == Some(&c.id) && is_focused,
                 app.pending_attention.contains(&c.id),
+                app.pending_mvs.contains_key(&c.id),
             )
         })
         .collect();
@@ -556,14 +557,25 @@ fn build_buffer_line(buffer: &str, cursor: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-fn card_to_listitem(card: &Card, selected: bool, has_attention: bool) -> ListItem<'_> {
+fn card_to_listitem(
+    card: &Card,
+    selected: bool,
+    has_attention: bool,
+    has_pending_mv: bool,
+) -> ListItem<'_> {
     let id_short = card.id.get(..8).unwrap_or(&card.id);
     let style = if selected {
         Style::default().fg(Color::Black).bg(Color::Yellow)
     } else {
         Style::default()
     };
-    let badge = if has_attention {
+    // Badge priority: pending-mv > attention > none. A mv in flight typically
+    // takes 30-90s (container provisioning), so the user needs visible feedback
+    // that the move is happening rather than wondering whether their keypress
+    // registered.
+    let badge = if has_pending_mv {
+        Span::styled("⟳ ", Style::default().fg(Color::Yellow))
+    } else if has_attention {
         Span::styled("• ", Style::default().fg(Color::Cyan))
     } else {
         Span::raw("  ")

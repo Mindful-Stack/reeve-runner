@@ -129,6 +129,21 @@ impl App {
     }
 }
 
+/// Cards that the SERVER reports in Implementing AND for which no mv RPC
+/// is currently in flight. Used to drive the session pane spawn loop —
+/// without this filter, optimistically-flipped cards would have
+/// `reeve attach` fired against them before the daemon committed the
+/// column change, causing immediate "card is in <column>; attach only
+/// works in Implementing" failures.
+fn confirmed_implementing(app: &App) -> Vec<String> {
+    app.cards
+        .iter()
+        .filter(|c| c.column == Column::Implementing)
+        .filter(|c| !app.pending_mvs.contains_key(&c.id))
+        .map(|c| c.id.clone())
+        .collect()
+}
+
 pub async fn run_loop() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = drive(&mut terminal).await;
@@ -157,12 +172,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
         app.cards = result.cards;
         app.last_refresh = Instant::now();
         crate::tui::actions::ensure_selection_valid(&mut app);
-        let implementing: Vec<String> = app
-            .cards
-            .iter()
-            .filter(|c| c.column == Column::Implementing)
-            .map(|c| c.id.clone())
-            .collect();
+        let implementing = confirmed_implementing(&app);
         app.sessions.reconcile(&implementing);
     }
 
@@ -282,12 +292,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                 crate::tui::actions::merge_cards(&mut app, result.cards);
                 app.last_refresh = Instant::now();
                 crate::tui::actions::ensure_selection_valid(&mut app);
-                let implementing: Vec<String> = app
-                    .cards
-                    .iter()
-                    .filter(|c| c.column == Column::Implementing)
-                    .map(|c| c.id.clone())
-                    .collect();
+                let implementing = confirmed_implementing(&app);
                 app.sessions.reconcile(&implementing);
             }
         }
