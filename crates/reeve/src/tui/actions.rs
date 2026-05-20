@@ -672,7 +672,7 @@ fn mv_relative(app: &mut App, delta: i32) {
     schedule_mv(app, card_id, target);
 }
 
-const MV_DEBOUNCE_MS: u64 = 200;
+const MV_DEBOUNCE_MS: u64 = 400;
 
 fn schedule_mv(app: &mut App, card_id: String, target: Column) {
     // Optimistic local update — the card moves immediately. The RPC will
