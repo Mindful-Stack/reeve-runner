@@ -232,15 +232,25 @@ pub fn devcontainer_up_command(
         ),
     ];
 
-    let ro_mounts: [(std::path::PathBuf, &str); 3] = [
-        (claude_dir.join("skills"), "/home/agent/.claude/skills"),
+    // Mounts go to /home/vscode/.claude/ — matching the vscode user that
+    // DockerOps::exec_in_tmux uses. (Previous target /home/agent/.claude/
+    // was a leftover from an earlier convention and never reached the
+    // claude process.) The credentials file is included so claude doesn't
+    // require re-login on every fresh container; it must be writable so
+    // OAuth token refresh can update it in place.
+    let ro_mounts: [(std::path::PathBuf, &str); 4] = [
+        (claude_dir.join("skills"), "/home/vscode/.claude/skills"),
         (
             claude_dir.join("settings.json"),
-            "/home/agent/.claude/settings.json",
+            "/home/vscode/.claude/settings.json",
         ),
         (
             claude_dir.join("CLAUDE.md"),
-            "/home/agent/.claude/CLAUDE.md",
+            "/home/vscode/.claude/CLAUDE.md",
+        ),
+        (
+            claude_dir.join(".credentials.json"),
+            "/home/vscode/.claude/.credentials.json",
         ),
     ];
     for (host, container_target) in ro_mounts {

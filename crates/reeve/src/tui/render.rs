@@ -83,7 +83,8 @@ fn render_one_column(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_column_into(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, col: Column) {
-    let is_focused = col == app.focused_column;
+    let kanban_has_pane_focus = app.pane_focus == crate::tui::app::PaneFocus::Kanban;
+    let is_focused_column = col == app.focused_column;
     let mut filtered: Vec<&Card> = app.cards.iter().filter(|c| c.column == col).collect();
     filtered.sort_by_key(|c| c.created_at);
     let items: Vec<ListItem> = filtered
@@ -91,7 +92,7 @@ fn render_column_into(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, col: Co
         .map(|c| {
             card_to_listitem(
                 c,
-                app.selected_card_id.as_deref() == Some(&c.id) && is_focused,
+                app.selected_card_id.as_deref() == Some(&c.id) && is_focused_column,
                 app.pending_attention.contains(&c.id),
                 app.pending_mvs.contains_key(&c.id),
             )
@@ -99,7 +100,10 @@ fn render_column_into(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, col: Co
         .collect();
     let count = items.len();
     let title = format!("{} ({count})", col.label());
-    let border_style = if is_focused {
+    // Yellow border only when the kanban actually owns input focus AND this
+    // is the active column. Otherwise grey — so Tab-to-session-pane makes
+    // the kanban side visibly dim.
+    let border_style = if kanban_has_pane_focus && is_focused_column {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
