@@ -83,10 +83,15 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('n'), action: Action::New, description: "new card", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Char('d'), action: Action::Delete, description: "delete card", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Code(KeyCode::Tab), action: Action::FocusSessionPane, description: "focus session pane", section: HelpSection::Navigation },
-    // Shift+Tab was previously bound here but it conflicts with claude's
-    // mode-cycle binding. Use Ctrl+G (primary) or Ctrl+] (alternate) to
-    // exit the session pane back to the kanban.
-    Binding { key: KeyMatcher::Ctrl(KeyCode::Char('g')), action: Action::FocusKanban, description: "exit session pane back to kanban", section: HelpSection::Navigation },
+    // Multiple bindings for exit-session-pane — terminals report these
+    // differently depending on TERM, kitty protocol, locale. Shift+Tab
+    // remains the primary (it conflicts with claude's mode-cycle binding
+    // but is the most universally-reported escape). Ctrl+G / Ctrl+] are
+    // alternates for users whose terminal reports them reliably.
+    Binding { key: KeyMatcher::Shift(KeyCode::BackTab), action: Action::FocusKanban, description: "exit session pane back to kanban", section: HelpSection::Navigation },
+    // Some terminals report Shift+Tab as bare BackTab with no SHIFT modifier.
+    Binding { key: KeyMatcher::Code(KeyCode::BackTab), action: Action::FocusKanban, description: "exit session pane (bare BackTab)", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Ctrl(KeyCode::Char('g')), action: Action::FocusKanban, description: "exit session pane (alternate)", section: HelpSection::Navigation },
     Binding { key: KeyMatcher::Ctrl(KeyCode::Char(']')), action: Action::FocusKanban, description: "exit session pane (alternate)", section: HelpSection::Navigation },
 ];
 

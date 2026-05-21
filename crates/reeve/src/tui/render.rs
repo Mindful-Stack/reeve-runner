@@ -41,7 +41,7 @@ fn title_line(app: &App) -> Paragraph<'static> {
     // Session-pane focus overrides layout-based hints — keys are forwarded
     // to the PTY, so kanban bindings don't apply.
     let hint = if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
-        "Ctrl+G back to kanban  (other keys forwarded to session)"
+        "Shift+Tab back to kanban  (other keys forwarded to session)"
     } else {
         match app.layout {
             crate::tui::layout::LayoutMode::KanbanFull => {
