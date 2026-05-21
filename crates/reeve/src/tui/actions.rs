@@ -715,7 +715,14 @@ fn schedule_mv(app: &mut App, card_id: String, target: Column) {
 /// by the drive loop tick.
 pub(crate) fn fire_pending_mv(app: &mut App, card_id: String, target: Column) {
     // Increment in-flight counter (used by merge_cards to preserve state).
-    *app.pending_mvs.entry(card_id.clone()).or_insert(0) += 1;
+    let entry = app.pending_mvs.entry(card_id.clone()).or_insert(0);
+    if *entry == 0 {
+        // Starting from quiescent — record the moment so the drill-in
+        // can show an elapsed-time loader while the daemon is busy.
+        app.pending_mv_started_at
+            .insert(card_id.clone(), std::time::Instant::now());
+    }
+    *entry += 1;
 
     let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
     let tx = app.op_tx.clone();
@@ -777,6 +784,9 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     match event {
         OpEvent::MvOk { card_id, updated, target: _ } => {
             decrement_pending(&mut app.pending_mvs, &card_id);
+            if !app.pending_mvs.contains_key(&card_id) {
+                app.pending_mv_started_at.remove(&card_id);
+            }
             // Only sync to server-truth if this was the LAST in-flight mv.
             // If more mvs are still pending, the later spawn_mv's optimistic
             // column is what the user should see; overwriting with this
@@ -791,6 +801,9 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
         }
         OpEvent::MvErr { card_id, msg } => {
             decrement_pending(&mut app.pending_mvs, &card_id);
+            if !app.pending_mvs.contains_key(&card_id) {
+                app.pending_mv_started_at.remove(&card_id);
+            }
             // The optimistic update was wrong. Next ls poll reconciles the
             // card back to its real column. Show the error so the user knows.
             set_status_error(app, format!("mv failed: {msg}"));

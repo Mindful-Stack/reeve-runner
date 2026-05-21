@@ -74,6 +74,10 @@ pub struct App {
     /// Each H/L/m on this card replaces the entry. When `Instant::now()` >= deadline,
     /// the drive loop spawns the actual mv RPC with the latest target.
     pub pending_mv_intents: std::collections::HashMap<String, (reeve_protocol::Column, std::time::Instant)>,
+    /// card_id → when the FIRST in-flight mv RPC started. Used by the
+    /// drill-in to show an elapsed-time loader while the daemon is busy
+    /// with ensure_running. Cleared when pending_mvs drops to 0.
+    pub pending_mv_started_at: std::collections::HashMap<String, std::time::Instant>,
 }
 
 impl App {
@@ -98,6 +102,7 @@ impl App {
             pending_edits: std::collections::HashMap::new(),
             pending_deletes: std::collections::HashSet::new(),
             pending_mv_intents: std::collections::HashMap::new(),
+            pending_mv_started_at: std::collections::HashMap::new(),
         }
     }
 

@@ -169,6 +169,12 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 return;
             }
         }
+        // Card optimistically in Implementing with mv RPC still in flight —
+        // show a provisioning loader instead of the static card detail.
+        if app.pending_mvs.contains_key(&card.id) {
+            render_provisioning_loader(f, area, app, &card.id);
+            return;
+        }
     }
 
     // Fallback: card detail block.
@@ -200,6 +206,76 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     ];
     let para =
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("detail"));
+    f.render_widget(para, area);
+}
+
+/// Drill-in loader shown when the card is optimistically in Implementing but
+/// its mv RPC hasn't returned yet — i.e., the daemon is still running
+/// ensure_running (clone + devcontainer up + postCreate + tmux start).
+fn render_provisioning_loader(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, card_id: &str) {
+    // Braille-dots spinner. Pick a frame based on the wall clock so the
+    // animation runs without any explicit tick.
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let frame_idx =
+        (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as usize / 80)
+            .unwrap_or(0))
+            % FRAMES.len();
+    let spinner = FRAMES[frame_idx];
+
+    let elapsed_secs = app
+        .pending_mv_started_at
+        .get(card_id)
+        .map(|t| t.elapsed().as_secs());
+    let elapsed_str = elapsed_secs
+        .map(|s| {
+            if s < 60 {
+                format!("{s}s elapsed")
+            } else {
+                format!("{}m{}s elapsed", s / 60, s % 60)
+            }
+        })
+        .unwrap_or_else(|| "starting…".into());
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {spinner}  Provisioning workspace…"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {elapsed_str}"),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  First-time provisioning of a card typically takes",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  30 – 90 seconds (image build, postCreate, claude install).",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  Subsequent reprovisions reuse the cached image.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Tail /tmp/reeved.log for live daemon progress.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title("provisioning"),
+    );
     f.render_widget(para, area);
 }
 
