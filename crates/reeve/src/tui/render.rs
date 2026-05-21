@@ -38,12 +38,18 @@ fn render_status_bar(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn title_line(app: &App) -> Paragraph<'static> {
-    let hint = match app.layout {
-        crate::tui::layout::LayoutMode::KanbanFull => {
-            "q quit  r refresh  Enter drill-in  h/j/k/l navigate"
-        }
-        crate::tui::layout::LayoutMode::FocusedColumnPlusDetail => {
-            "Esc close drill-in  j/k navigate"
+    // Session-pane focus overrides layout-based hints — keys are forwarded
+    // to the PTY, so kanban bindings don't apply.
+    let hint = if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
+        "Shift+Tab back to kanban  (other keys forwarded to session)"
+    } else {
+        match app.layout {
+            crate::tui::layout::LayoutMode::KanbanFull => {
+                "q quit  r refresh  Enter drill-in  h/j/k/l navigate"
+            }
+            crate::tui::layout::LayoutMode::FocusedColumnPlusDetail => {
+                "Esc close drill-in  j/k navigate  Tab focus session"
+            }
         }
     };
     Paragraph::new(Line::from(vec![

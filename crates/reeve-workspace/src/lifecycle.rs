@@ -140,12 +140,33 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             .await?;
         self.listeners.spawn(card_id, socket).await;
 
+        // Repair claude-dir ownership. The daemon mounts individual files
+        // under /home/vscode/.claude/ via devcontainer up's --mount; docker
+        // auto-creates the parent dir AS ROOT (drwxr-xr-x root:root), which
+        // means vscode can read mounted files but can't write into the dir.
+        // Any later `claude` install/refresh that needs to mkdir there fails.
+        // Chowning the dir back to vscode restores the intended ownership
+        // without touching the bind-mounted files themselves.
+        if let Err(e) = chown_claude_dir_to_vscode(&container_name).await {
+            tracing::warn!(
+                "claude-dir ownership repair failed in {container_name}: {e:#} \
+                 — claude may not be able to write its state files",
+            );
+        }
+
         // M5: start the per-card claude session inside the container's tmux.
         // Defensive `|| bash` so a broken claude install doesn't lock the user out.
         // Warn-not-bail: if tmux isn't installed in the container, the column
         // transition still succeeds; the user discovers the issue when they
         // run `reeve attach`.
-        let tmux_cmd = format!("cd /workspaces/{card_id} && (claude || bash)");
+        // `docker exec` doesn't inherit devcontainer's remoteEnv (PATH etc.) —
+        // it gets only the image's baked-in Env. Per the witan-household
+        // template's postCreate, claude is installed at $HOME/.local/bin/
+        // (vscode user); prepend that explicitly so the `claude` lookup
+        // here finds it before falling through to bash.
+        let tmux_cmd = format!(
+            "export PATH=\"$HOME/.local/bin:$PATH\" && cd /workspaces/{card_id} && (claude || bash)"
+        );
         if let Err(e) = self
             .containers
             .exec_in_tmux(&container_name, "reeve", &tmux_cmd)
@@ -183,6 +204,34 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
         self.workspaces.remove_container(card_id).await?;
         Ok(())
     }
+}
+
+/// Chown /home/vscode/.claude/ to vscode:vscode. Docker creates that
+/// directory as root when bind-mounting files into it, leaving vscode
+/// unable to write to its own claude state dir. Run after the container
+/// is up and before exec_in_tmux.
+async fn chown_claude_dir_to_vscode(container_name: &str) -> Result<()> {
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "root",
+            container_name,
+            "chown",
+            "vscode:vscode",
+            "/home/vscode/.claude",
+        ])
+        .output()
+        .await
+        .context("exec docker chown")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "docker exec chown failed (exit {}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(())
 }
 
 async fn discover_with_deadline(ops: &dyn ContainerOps, card_id: &str) -> Result<String> {
