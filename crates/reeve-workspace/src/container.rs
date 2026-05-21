@@ -232,13 +232,17 @@ pub fn devcontainer_up_command(
         ),
     ];
 
-    // Mounts go to /home/vscode/.claude/ — matching the vscode user that
-    // DockerOps::exec_in_tmux uses. (Previous target /home/agent/.claude/
-    // was a leftover from an earlier convention and never reached the
-    // claude process.) The credentials file is included so claude doesn't
-    // require re-login on every fresh container; it must be writable so
-    // OAuth token refresh can update it in place.
-    let ro_mounts: [(std::path::PathBuf, &str); 4] = [
+    // Mounts go to /home/vscode/.claude/ (and the sibling ~/.claude.json) —
+    // matching the vscode user that DockerOps::exec_in_tmux uses. The
+    // credentials file alone isn't enough to skip login; claude also reads
+    // ~/.claude.json for account binding + startup state. Mounted writable
+    // so OAuth refresh and the auto-incremented numStartups field can
+    // persist back to the host.
+    //
+    // The host source for .claude.json sits one level up from claude_dir
+    // (alongside the .claude/ dir, not inside it).
+    let dot_claude_json = claude_dir.parent().map(|p| p.join(".claude.json"));
+    let mut mounts: Vec<(std::path::PathBuf, &str)> = vec![
         (claude_dir.join("skills"), "/home/vscode/.claude/skills"),
         (
             claude_dir.join("settings.json"),
@@ -253,6 +257,10 @@ pub fn devcontainer_up_command(
             "/home/vscode/.claude/.credentials.json",
         ),
     ];
+    if let Some(p) = dot_claude_json {
+        mounts.push((p, "/home/vscode/.claude.json"));
+    }
+    let ro_mounts = mounts;
     for (host, container_target) in ro_mounts {
         if host.exists() {
             args.push("--mount".into());
