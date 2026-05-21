@@ -4,7 +4,7 @@
 //! the parser's screen.
 
 use anyhow::{Context, Result};
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -17,8 +17,16 @@ use vt100::Parser;
 pub struct Session {
     pub card_id: String,
     pub parser: Arc<Mutex<Parser>>,
+    /// Held so we can issue SIGWINCH via `master.resize()` when the pane
+    /// is rendered at a new size. Kept alongside `master_writer` which
+    /// is the byte-write half taken from the same master.
+    pub master: Box<dyn MasterPty + Send>,
     pub master_writer: Box<dyn Write + Send>,
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Most recent PTY rows × cols. Tracked so we don't issue a SIGWINCH
+    /// every frame when nothing has changed. Behind a Mutex so the render
+    /// path (which holds only `&Session`) can drive size changes.
+    pub current_size: Arc<Mutex<(u16, u16)>>,
     /// Wall-clock of the most recent output byte (used by Task 14 activity badge).
     pub last_output_at: Arc<Mutex<Instant>>,
     /// Respawn counter (used by Task 14 loop guard).
@@ -37,6 +45,10 @@ impl Session {
         let reeve_path = std::env::current_exe().context("locate reeve binary")?;
         let mut cmd = CommandBuilder::new(reeve_path);
         cmd.args(["attach", card_id]);
+        // Hint a sensible TERM in case the inheriting environment doesn't
+        // forward one. xterm-256color avoids legacy ACS line-drawing paths
+        // that some apps (tmux, ncurses) fall back to under bare 'screen'.
+        cmd.env("TERM", "xterm-256color");
         let child = pair.slave.spawn_command(cmd).context("spawn reeve attach")?;
 
         // Drop slave end now that the child holds it.
@@ -71,8 +83,10 @@ impl Session {
         Ok(Self {
             card_id: card_id.to_string(),
             parser,
+            master: pair.master,
             master_writer,
             child,
+            current_size: Arc::new(Mutex::new((rows, cols))),
             last_output_at,
             respawn_count: 0,
             respawn_window_start: Instant::now(),
@@ -85,10 +99,26 @@ impl Session {
         Ok(())
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+    /// Resize the PTY (sending SIGWINCH to the child) and the vt100 parser.
+    /// No-op if the size hasn't changed. Takes `&self` so the render path
+    /// can fit the embedded terminal to the actual pane area each frame.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
+        {
+            let cur = self.current_size.lock().unwrap();
+            if (rows, cols) == *cur {
+                return Ok(());
+            }
+        }
+        self.master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .context("resize pty master")?;
         if let Ok(mut p) = self.parser.lock() {
             p.set_size(rows, cols);
         }
+        *self.current_size.lock().unwrap() = (rows, cols);
         Ok(())
     }
 

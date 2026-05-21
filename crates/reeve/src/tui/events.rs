@@ -36,6 +36,8 @@ pub enum KeyMatcher {
     Char(char),
     Code(KeyCode),
     Shift(KeyCode),
+    /// Ctrl-modified key. Compared case-insensitively for char codes.
+    Ctrl(KeyCode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +83,11 @@ pub const BINDINGS: &[Binding] = &[
     Binding { key: KeyMatcher::Char('n'), action: Action::New, description: "new card", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Char('d'), action: Action::Delete, description: "delete card", section: HelpSection::Mutations },
     Binding { key: KeyMatcher::Code(KeyCode::Tab), action: Action::FocusSessionPane, description: "focus session pane", section: HelpSection::Navigation },
-    Binding { key: KeyMatcher::Shift(KeyCode::BackTab), action: Action::FocusKanban, description: "focus kanban", section: HelpSection::Navigation },
+    // Shift+Tab was previously bound here but it conflicts with claude's
+    // mode-cycle binding. Use Ctrl+G (primary) or Ctrl+] (alternate) to
+    // exit the session pane back to the kanban.
+    Binding { key: KeyMatcher::Ctrl(KeyCode::Char('g')), action: Action::FocusKanban, description: "exit session pane back to kanban", section: HelpSection::Navigation },
+    Binding { key: KeyMatcher::Ctrl(KeyCode::Char(']')), action: Action::FocusKanban, description: "exit session pane (alternate)", section: HelpSection::Navigation },
 ];
 
 pub fn translate(event: KeyEvent) -> Option<Action> {
@@ -96,10 +102,14 @@ pub fn translate(event: KeyEvent) -> Option<Action> {
 fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
     match matcher {
         KeyMatcher::Char(c) => {
-            event.code == KeyCode::Char(c) && !event.modifiers.contains(KeyModifiers::SHIFT)
+            event.code == KeyCode::Char(c)
+                && !event.modifiers.contains(KeyModifiers::SHIFT)
+                && !event.modifiers.contains(KeyModifiers::CONTROL)
         }
         KeyMatcher::Code(code) => {
-            event.code == code && !event.modifiers.contains(KeyModifiers::SHIFT)
+            event.code == code
+                && !event.modifiers.contains(KeyModifiers::SHIFT)
+                && !event.modifiers.contains(KeyModifiers::CONTROL)
         }
         KeyMatcher::Shift(code) => {
             if !event.modifiers.contains(KeyModifiers::SHIFT) {
@@ -109,6 +119,17 @@ fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
             // with the SHIFT modifier set. Compare case-insensitively so a
             // binding written as `Shift(Char('g'))` matches both `(Char('G'),
             // SHIFT)` and `(Char('g'), SHIFT)`.
+            match (code, event.code) {
+                (KeyCode::Char(want), KeyCode::Char(got)) => {
+                    want.to_ascii_lowercase() == got.to_ascii_lowercase()
+                }
+                _ => code == event.code,
+            }
+        }
+        KeyMatcher::Ctrl(code) => {
+            if !event.modifiers.contains(KeyModifiers::CONTROL) {
+                return false;
+            }
             match (code, event.code) {
                 (KeyCode::Char(want), KeyCode::Char(got)) => {
                     want.to_ascii_lowercase() == got.to_ascii_lowercase()

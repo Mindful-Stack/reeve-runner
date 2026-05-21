@@ -41,7 +41,7 @@ fn title_line(app: &App) -> Paragraph<'static> {
     // Session-pane focus overrides layout-based hints — keys are forwarded
     // to the PTY, so kanban bindings don't apply.
     let hint = if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
-        "Shift+Tab back to kanban  (other keys forwarded to session)"
+        "Ctrl+G back to kanban  (other keys forwarded to session)"
     } else {
         match app.layout {
             crate::tui::layout::LayoutMode::KanbanFull => {
@@ -142,6 +142,12 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     if card.column == Column::Implementing {
         if let Some(session) = app.sessions.get(&card.id) {
+            // Fit the PTY + parser to the pane's inner area (minus border).
+            // Cheap no-op when the size hasn't changed; on actual resizes it
+            // issues SIGWINCH so tmux / claude redraw at the right width.
+            let inner_rows = area.height.saturating_sub(2);
+            let inner_cols = area.width.saturating_sub(2);
+            let _ = session.resize(inner_rows, inner_cols);
             if let Ok(parser) = session.parser.lock() {
                 let screen = parser.screen();
                 let border_style =
@@ -396,6 +402,10 @@ fn key_label(matcher: crate::tui::events::KeyMatcher) -> String {
             format!("Shift+{}", c.to_ascii_uppercase())
         }
         crate::tui::events::KeyMatcher::Shift(c) => format!("Shift+{c:?}"),
+        crate::tui::events::KeyMatcher::Ctrl(KeyCode::Char(c)) => {
+            format!("Ctrl+{}", c.to_ascii_uppercase())
+        }
+        crate::tui::events::KeyMatcher::Ctrl(c) => format!("Ctrl+{c:?}"),
     }
 }
 

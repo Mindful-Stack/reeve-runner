@@ -268,14 +268,11 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                     if app.modal.is_some() {
                         crate::tui::actions::handle_modal_key(&mut app, key).await;
                     } else if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
-                        // Two escape paths back to kanban: Shift+Tab and Ctrl+G.
-                        let is_shift_tab = key.code == crossterm::event::KeyCode::BackTab
-                            && key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
-                        // BackTab without explicit modifier check — some terminals report it without SHIFT
-                        let is_back_tab_bare = key.code == crossterm::event::KeyCode::BackTab;
-                        let is_ctrl_g = key.code == crossterm::event::KeyCode::Char('g')
-                            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
-                        if is_shift_tab || is_back_tab_bare || is_ctrl_g {
+                        // In session-pane mode only FocusKanban is intercepted
+                        // (Ctrl+G / Ctrl+]). Everything else — including
+                        // Shift+Tab, which claude uses for its mode cycle — is
+                        // forwarded raw to the PTY.
+                        if events::translate(key) == Some(events::Action::FocusKanban) {
                             crate::tui::actions::handle(&mut app, events::Action::FocusKanban).await;
                         } else {
                             crate::tui::actions::forward_to_session(&mut app, key).await;
