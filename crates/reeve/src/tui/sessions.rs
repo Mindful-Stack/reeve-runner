@@ -27,6 +27,12 @@ pub struct Session {
     /// every frame when nothing has changed. Behind a Mutex so the render
     /// path (which holds only `&Session`) can drive size changes.
     pub current_size: Arc<Mutex<(u16, u16)>>,
+    /// Most recently *requested* size that hasn't been applied yet, plus
+    /// when it was requested. Used to debounce live drag-resizes:
+    /// firing SIGWINCH every frame causes tmux+claude to redraw at
+    /// 30–60 Hz, pinning a CPU core. We hold the request and only apply
+    /// it when the user stops resizing.
+    pub pending_resize: Arc<Mutex<Option<(u16, u16, Instant)>>>,
     /// Wall-clock of the most recent output byte (used by Task 14 activity badge).
     pub last_output_at: Arc<Mutex<Instant>>,
     /// Respawn counter (used by Task 14 loop guard).
@@ -87,6 +93,7 @@ impl Session {
             master_writer,
             child,
             current_size: Arc::new(Mutex::new((rows, cols))),
+            pending_resize: Arc::new(Mutex::new(None)),
             last_output_at,
             respawn_count: 0,
             respawn_window_start: Instant::now(),
@@ -99,27 +106,51 @@ impl Session {
         Ok(())
     }
 
-    /// Resize the PTY (sending SIGWINCH to the child) and the vt100 parser.
-    /// No-op if the size hasn't changed. Takes `&self` so the render path
-    /// can fit the embedded terminal to the actual pane area each frame.
+    /// Request a resize from the render path. Doesn't fire SIGWINCH
+    /// immediately — that would cascade into a tmux/claude redraw every
+    /// frame during a live drag-resize and pin a CPU core. Instead,
+    /// stash the target size + a timestamp; `apply_pending_resize` later
+    /// commits it once the user has stopped resizing.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         if rows == 0 || cols == 0 {
             return Ok(());
         }
-        {
-            let cur = self.current_size.lock().unwrap();
-            if (rows, cols) == *cur {
-                return Ok(());
-            }
+        let cur = *self.current_size.lock().unwrap();
+        if (rows, cols) == cur {
+            // Already the right size — clear any stale pending request.
+            *self.pending_resize.lock().unwrap() = None;
+            return Ok(());
         }
-        self.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .context("resize pty master")?;
-        if let Ok(mut p) = self.parser.lock() {
-            p.set_size(rows, cols);
-        }
-        *self.current_size.lock().unwrap() = (rows, cols);
+        *self.pending_resize.lock().unwrap() = Some((rows, cols, Instant::now()));
         Ok(())
+    }
+
+    /// Apply a pending resize if the user has been quiet for `quiet_ms`.
+    /// Called from the drive loop on each tick. Returns true if a resize
+    /// fired (caller may want to repaint).
+    pub fn apply_pending_resize_if_due(&self, quiet_ms: u64) -> bool {
+        let target = {
+            let pending = self.pending_resize.lock().unwrap();
+            match *pending {
+                Some((r, c, when)) if when.elapsed().as_millis() as u64 >= quiet_ms => (r, c),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.master.resize(PtySize {
+            rows: target.0,
+            cols: target.1,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            tracing::warn!("pty resize failed: {e:#}");
+            return false;
+        }
+        if let Ok(mut p) = self.parser.lock() {
+            p.set_size(target.0, target.1);
+        }
+        *self.current_size.lock().unwrap() = target;
+        *self.pending_resize.lock().unwrap() = None;
+        true
     }
 
     pub fn poll_child_exit(&mut self) -> Option<i32> {

@@ -199,6 +199,14 @@ async fn drive(terminal: &mut Term) -> Result<()> {
 
         terminal.draw(|f| render::render(f, &app))?;
 
+        // Apply any debounced PTY resize requests that have settled.
+        // 150ms of quiet means the user stopped dragging; safe to SIGWINCH.
+        for id in app.sessions.ids() {
+            if let Some(s) = app.sessions.get(&id) {
+                s.apply_pending_resize_if_due(150);
+            }
+        }
+
         // Activity badge: mark cards whose session emitted output since the
         // user last viewed it. Skip the currently-focused session.
         {
