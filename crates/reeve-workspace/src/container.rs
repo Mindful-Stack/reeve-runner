@@ -142,11 +142,21 @@ impl ContainerOps for DockerOps {
         session_name: &str,
         command: &str,
     ) -> Result<()> {
+        // TERM=xterm-256color + UTF-8 locale: without these the container's
+        // bare defaults (TERM=dumb, LC_CTYPE=POSIX) make tmux fall back to
+        // ACS line-drawing — surfacing in the embedded session pane as raw
+        // 'q'/'x'/'l'/'k' chars instead of ─/│/└/┌ box characters.
         let output = Command::new("docker")
             .args([
                 "exec",
                 "-u",
                 "vscode",
+                "-e",
+                "TERM=xterm-256color",
+                "-e",
+                "LANG=C.UTF-8",
+                "-e",
+                "LC_ALL=C.UTF-8",
                 container_name,
                 "tmux",
                 "new-session",
