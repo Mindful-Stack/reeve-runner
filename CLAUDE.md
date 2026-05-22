@@ -1,165 +1,72 @@
-# Reeve — Architecture & Conventions
+# Reeve
 
-This file is the entry point for agents (and humans) reading the Reeve daemon codebase.
-Spec lives at `docs/superpowers/specs/2026-04-29-reeve-design.md`; per-milestone designs
-and the recent architecture refactor are alongside it.
+Reeve is a Rust-based, daemon-driven kanban orchestrator for parallel Claude Code sessions. This directory is a **witan-household meta-repo**: it bundles the daemon (`crates/reeved`), CLI/TUI client (`crates/reeve`), three bounded-context crates (`reeve-card`, `reeve-workspace`, `reeve-household`), the wire protocol (`reeve-protocol`), and an inline knowledge base at `lore/`.
 
-## Architecture
+## Reading order for new contributors
 
-Reeve uses **vertical-slice per-context crates** with **inverted-dependency ports**.
-Each bounded context owns its domain, persistence, and RPC entry points.
+1. **Domain and standards** — start with `lore/knowledge/general/architecture.md` (the rules every change follows), then read the three domain nodes:
+   - `lore/knowledge/domain/card.md` — the Card aggregate (kanban metadata + column transitions)
+   - `lore/knowledge/domain/workspace.md` — per-card materialization (clones + container + fetch)
+   - `lore/knowledge/domain/household.md` — registered project bundles (manifest + scaffold)
+2. **Rust patterns** — `lore/knowledge/frameworks/rust/` has 4 nodes covering the recurring patterns (port-adapter, inverted-dep ports, async-over-sync rusqlite, γ type pattern).
+3. **Specs and plans** — `docs/superpowers/specs/` (point-in-time design docs per milestone) and `docs/superpowers/plans/` (implementation plans). Read these for history; don't treat them as living documentation.
 
-### Crates
-
-- `reeve-protocol` — wire DTOs (`Card`, `Column`, `ContainerStatus`, etc.), `paths::`,
-  and lifecycle helpers. No daemon-side logic. Both `reeved` and the `reeve` CLI/TUI
-  depend on it.
-- `reeve-card` — **Card aggregate**. Kanban metadata + column-transition policy.
-  Defines the two cross-aggregate port traits consumed by Card (`WorkspaceLifecycle`,
-  `HouseholdLookup`).
-- `reeve-workspace` — **Workspace aggregate**. Per-card materialization: git clones,
-  docker/devcontainer ops, fetch worker, the `LiveWorkspaceLifecycle` impl of
-  `reeve_card::WorkspaceLifecycle`.
-- `reeve-household` — **Household aggregate**. Registered project bundle: manifest,
-  scaffold, repos. Impls `reeve_card::HouseholdLookup`.
-- `reeved` — daemon binary. Composition root (`app/state.rs`, `app/lifecycle.rs`),
-  transport sub-module (`transport/server.rs`, `transport/listener.rs`), dispatch table
-  (`dispatch.rs`), startup reconcile pass (`reconcile.rs`).
-- `reeve` — CLI + TUI client. Depends only on `reeve-protocol`.
-
-### Aggregate roots
-
-| Aggregate | Identity | Lifecycle |
-|---|---|---|
-| **Card** | `id: String` (UUID) | Created in Backlog; mutates through columns; persists indefinitely |
-| **Workspace** | `card_id` (1:1 with Card) | Created on `→ Implementing`; torn down on `→ Done` |
-| **Household** | `name: String` (PK) | Registered via `household add/new`; persists until `household rm` |
-
-Cross-aggregate references are by ID only. The cross-cutting policy
-`reeve_card::transitions::on_column_change(old, new, card, &dyn WorkspaceLifecycle)`
-is the *only* code that knows how a Card column change maps to Workspace actions.
-
-### Per-context interior (the four-file pattern)
-
-Each context crate follows:
-
-```
-reeve-<context>/
-├── Cargo.toml
-└── src/
-    ├── lib.rs        ← facade: pub re-exports + factory functions
-    ├── domain.rs     ← pure entity + invariants + constructors (no rusqlite/tokio)
-    ├── repo.rs       ← trait XxxRepo + pub(crate) SqliteXxxRepo + factory + init_schema
-    └── handler.rs    ← thin RPC handlers taking port references as args
-```
-
-Workspace adds `git.rs`, `clones.rs`, `container.rs`, `fetch.rs`, `lifecycle.rs`.
-Household adds `manifest.rs`, `scaffold.rs`.
-Card adds `transitions.rs` (the kanban policy + cross-aggregate port traits).
-
-### Architectural rules
-
-1. **Cross-context coupling only through ports.** A port trait lives with its
-   *consumer*. Its implementations live with the *supplier*. So:
-   `reeve-workspace` depends on `reeve-card` (to impl `WorkspaceLifecycle`).
-   `reeve-household` depends on `reeve-card` (to impl `HouseholdLookup`).
-   `reeve-card` depends on no other context crate.
-2. **Adapters are `pub(crate)`.** Every `Sqlite*Repo`, `Real*`, `Docker*` struct is
-   crate-private. Cross-crate consumers obtain trait objects only via factory
-   functions (`make_card_repo`, `make_workspace_repo`,
-   `make_household_components`, `make_scaffold`, `make_git_ops`,
-   `make_container_ops`).
-3. **Domain has no infra deps** (convention within each crate). `domain.rs` and
-   `transitions.rs` must not `use rusqlite`, `tokio::process`, or `docker`-related
-   types.
-4. **One bounded context per crate.** Don't put cross-cutting "shared" code into
-   one of the context crates. Genuinely-shared infra lives in `reeve-protocol`
-   (e.g., `paths::`, `lifecycle::`) or — only after the rule-of-three is hit —
-   a new `reeve-shared` crate.
-5. **Type strategy.** Card uses the γ pattern (domain entity in `reeve-card`
-   with private fields + `From`/`TryFrom` to the wire DTO `reeve_protocol::Card`).
-   Workspace and Household are domain-only — they're never transmitted whole;
-   wire-side they appear as read-model projections (`HouseholdSummary`,
-   `StatusSelfResult.container_status`).
-
-### Enforcement
-
-- **Cargo.toml dependencies** are the crate-level firewall. Adding a forbidden
-  dep does not compile until the Cargo.toml is updated.
-- **`pub(crate)` on adapters** compile-enforces "use the port, not the impl".
-- **`scripts/check-context-isolation.sh`** is a CI grep lint catching
-  cross-context internal-path imports (`use reeve_X::submodule::Type`). Run
-  before pushing.
-
-## Adding a new RPC method
-
-1. Decide which aggregate owns the operation. Add the handler in that crate's
-   `handler.rs`.
-2. Re-export it from that crate's `lib.rs`.
-3. Add a match arm in `crates/reeved/src/dispatch.rs` routing the method name
-   to the handler.
-
-## Schema independence
-
-Each context owns its tables. No cross-context FKs. Schema-init is delegated
-to per-crate `init_schema` functions, orchestrated by
-`reeved/src/app/lifecycle.rs::migrate`:
-
-```rust
-pub fn migrate(conn: &Connection) -> Result<()> {
-    reeve_card::init_schema(conn)?;       // cards table
-    reeve_household::init_schema(conn)?;  // households table
-    reeve_workspace::init_schema(conn)?;  // containers table (no FK to cards)
-    Ok(())
-}
-```
-
-This lets each context's `cargo test -p reeve-X` against a real SQLite stand
-on its own — no cross-crate fixture wiring.
-
-## Manifest schema migration
-
-`Manifest.workspace` was renamed to `Manifest.meta_repo` in 2026-05. The
-serde field has `#[serde(rename = "meta_repo", alias = "workspace")]` so
-existing `household.json` files still parse; a `tracing::warn!` fires when
-the old name is encountered. The witan-household template repo writes the
-new name unconditionally. Alias support will be removed in a future release.
-
-## Refactor history
-
-- `docs/superpowers/specs/2026-04-29-reeve-design.md` — parent design
-- `docs/superpowers/specs/2026-05-18-domain-driven-refactor-design.md` —
-  the spec that produced this structure
-- `docs/superpowers/plans/2026-05-18-domain-driven-refactor.md` —
-  the implementation plan executed on the `feat/domain-refactor` branch
-
-<!-- witan-household additions: -->
-# CLAUDE.md
-
-Workspace-level guidance for Claude Code across this household.
-
-This directory is a **witan-household meta-repo**. The manifest at `household.json` declares which sibling repos make up the household; each is cloned alongside this one as a gitignored subdirectory. The Lorekeeper plugin (if installed) reads the knowledge base from `lore/` via its sibling-fallback resolution.
+Lorekeeper (`/plugin install lorekeeper@witan`) finds `lore/` automatically when CC launches from this directory. Use `/lore:help`, `/lore:prime <node>`, `/lore:explore`, `/lore:review`, `/lore:doctor`.
 
 ## Layout
 
 ```
-reeve/                       ← this directory (the meta-repo)
-├── household.json                      ← workspace manifest
-├── .devcontainer/devcontainer.json
-├── CLAUDE.md                       ← you are here
-├── lore/                           ← knowledge base (tracked in this repo by default)
-│   └── knowledge/
-│       ├── general/, domain/, frameworks/, languages/, learnings/
-└── <sibling>/                      ← cloned in by your bootstrap; gitignored
+reeve/                              ← this directory (the meta-repo)
+├── Cargo.toml                      ← workspace root: 6 crates
+├── household.json                  ← witan-household manifest
+├── crates/                         ← the source
+│   ├── reeve-protocol/             ← wire DTOs, paths::, lifecycle helpers
+│   ├── reeve-card/                 ← Card aggregate + ports
+│   ├── reeve-workspace/            ← Workspace aggregate (impls WorkspaceLifecycle)
+│   ├── reeve-household/            ← Household aggregate (impls HouseholdLookup)
+│   ├── reeved/                     ← daemon binary (composition root)
+│   └── reeve/                      ← CLI + TUI
+├── lore/                           ← knowledge base (inline; tracked here)
+│   ├── knowledge/                  ← domain/, general/, frameworks/, languages/, learnings/
+│   └── _tools/                     ← build-index + validators (run via make)
+├── docs/superpowers/               ← specs and plans (per-milestone design history)
+├── scripts/                        ← check-context-isolation.sh + witan-household helpers
+├── tests/                          ← cross-crate e2e
+└── .devcontainer/                  ← for Reeve cards spawned from this repo
 ```
 
-## Shell hygiene
+## Adding things — quick map
 
-- Use `git -C <subdir>` instead of `cd <subdir> && git ...`. Sibling repos sit right alongside; `git -C backend status` is shorter and doesn't leak cwd.
+- **A new RPC method:** pick the owning aggregate; add the handler in that crate's `handler.rs`; re-export from `lib.rs`; add a match arm in `crates/reeved/src/dispatch.rs`. If it changes a card's column state, the dispatch arm must acquire `state.lock_card(&id).await` first. See `lore/knowledge/general/architecture.md` for the full rules.
+- **A new cross-aggregate port:** define the trait in the *consumer* crate; implement in the *supplier* crate (which depends on the consumer). See `lore/knowledge/frameworks/rust/inverted-dependency-ports.md`.
+- **A new repository:** trait + `pub(crate)` adapter + factory returning `Arc<dyn Trait>`. All three live in `<crate>/src/repo.rs`. See `lore/knowledge/frameworks/rust/repo-port-adapter.md`.
+- **A new TUI binding:** edit `crates/reeve/src/tui/events.rs::BINDINGS`, add an `Action` variant, handle it in `crates/reeve/src/tui/actions.rs::handle`. Render layer in `render.rs` consumes `&App`.
+
+## Shell hygiene for the household layout
+
+- Use `git -C <subdir>` instead of `cd <subdir> && git ...` when working with sibling repos (none today, but the convention applies if you add some).
 - Prefer relative paths over absolute paths when the target is inside the workspace.
 
-## Where to read more
+## Build and verify
 
-- `README.md` — human onboarding for this workspace, including how to add sibling repos and (optionally) split the `lore/` into its own repo later.
-- `lore/knowledge/` — domain context, standards, learnings. Each `_starter.md` is a placeholder; replace with real content as the workspace matures.
-- Each sibling's own `CLAUDE.md` if it has one — project-specific guidance.
+| Goal | Command |
+|---|---|
+| All unit + lib tests | `cargo test --workspace --lib && cargo test -p reeved` |
+| Format check | `cargo fmt --check` |
+| Lints (deny warnings) | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Context isolation lint | `scripts/check-context-isolation.sh` |
+| Lore validators (frontmatter, links, orphans) | `make validate` |
+| Full diagnostic (workspace + KB) | `make doctor` |
+
+Run all of the above before opening a PR. See `lore/knowledge/general/testing.md` for the four test layers and what each pins.
+
+## Commit conventions
+
+Imperative + lowercase + conventional-commit prefix with milestone or task number: `feat(m6): ...`, `refactor(N.X): ...`, `fix(m3-followup): ...`, `chore: ...`. Heredoc body for non-trivial commits. `Co-Authored-By: Claude` trailer on agent-coauthored commits. Full spec at `lore/knowledge/general/commit-conventions.md`.
+
+## Refactor history
+
+- `docs/superpowers/specs/2026-04-29-reeve-design.md` — parent design
+- `docs/superpowers/specs/2026-05-18-domain-driven-refactor-design.md` — the spec that produced the bounded-context structure
+- `docs/superpowers/plans/2026-05-18-domain-driven-refactor.md` — the implementation plan executed across the 2026-05-18/19 branch
+- Each milestone (M1–M6) has its own spec + plan in `docs/superpowers/`
