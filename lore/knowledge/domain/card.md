@@ -75,7 +75,7 @@ Tests in `reeve-card/src/transitions.rs::tests` pin each arm with a `MockFx` imp
 | `mv-self` | `handle_mv_self` | Same as `mv` but from the per-card socket — the agent moves *itself*. Caller context supplies the card id; the agent cannot move a different card. |
 | `status-self` | `handle_status_self` | From the per-card socket: return the calling card + its container status. Read-only. |
 | `edit` | `handle_edit` | Rename the card's brief. Invariants re-checked. |
-| `delete` | `handle_delete` | Delete a card. If currently Implementing/Testing/Review, tears down the workspace first via `WorkspaceLifecycle::ensure_stopped`. |
+| `delete` | `handle_delete` | Delete a card. If currently Implementing, tears down the workspace first via `WorkspaceLifecycle::ensure_stopped`. Other columns delete directly — for cards in Testing/Review, the user is responsible for `mv → Done` first if they want a guaranteed teardown (the transition matrix's `* → Done` ensures stopped). |
 
 The dispatch table at `crates/reeved/src/dispatch.rs` routes each method through the appropriate `reeve_card::handle_*` function. Handlers receive port references (`&dyn CardRepo`, `&dyn WorkspaceLifecycle`, `&dyn HouseholdLookup`) — no `DaemonState` kitchen sink.
 
@@ -93,7 +93,7 @@ The dispatch table at `crates/reeved/src/dispatch.rs` routes each method through
 2. **Moving to Implementing.** Host calls `mv id=X column=Implementing` → handler acquires `state.lock_card(X)` → reads existing card → `HouseholdLookup::exists(card.household)?` → if false, return `INVALID_ARGUMENT` → otherwise call `on_column_change(old=current, new=Implementing, card, workspace_lifecycle)` → policy calls `workspace.ensure_running(card)` → on success, `CardRepo::update_column` commits the column → wire DTO returned. On any failure, card stays in old column.
 3. **Self-move from inside a container.** Per-card socket → caller_context.card_id = X → handler calls `mv_self(X, new_column)` → same as `mv` except the card_id comes from the socket identity, not from params. The agent cannot move another card.
 4. **Renaming a card.** `edit id=X brief="new text"` → handler validates new brief → `CardRepo::update_brief(id, brief, now)` → wire DTO returned. No cross-aggregate effects.
-5. **Deleting a card.** `delete id=X` → handler reads card → if column in {Implementing, Testing, Review}: `workspace_lifecycle.ensure_stopped(X)` first → then `CardRepo::delete(X)` → empty result.
+5. **Deleting a card.** `delete id=X` → handler reads card → if column == Implementing: `workspace_lifecycle.ensure_stopped(X)` first → then `CardRepo::delete(X)` → empty result. Other columns skip the teardown step.
 
 ## See also
 

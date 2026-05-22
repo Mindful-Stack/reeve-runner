@@ -33,7 +33,7 @@ The Workspace aggregate *implements* the cross-aggregate `WorkspaceLifecycle` po
 - *Container* — the Docker container Reeve spawns to host the agent for one card. Tagged with `label=reeve.card_id=<id>` for discovery.
 - *Adopt* — at startup, find a surviving container by its label and re-attach to it without re-cloning or re-spawning. Survives daemon restarts.
 - *Tmux session* — the per-card tmux session inside the container, running `(claude || bash)`. Created on fresh-spawn (NOT on adopt); attached to via `reeve attach`.
-- *Fetch worker* — a tokio task spawned at daemon startup; polls every N seconds; for each card in Implementing/Testing/Review, runs `git fetch <card-workspace> '+refs/heads/*:refs/reeve/<card-id>/*'` against each sibling repo in the household.
+- *Fetch worker* — a tokio task spawned at daemon startup; polls every N seconds; for each card whose container row is `Running` or `Spawning`, runs `git fetch <card-workspace-clone> '+refs/heads/*:refs/reeve/<card-id>/*'` on each host-side repo declared in the manifest that has its own `.git/` directory. Includes the meta-repo (which has its own `.git/`); skips inline entries (which don't). See "Selection by container state" below.
 - *Namespaced refs* — refs at `refs/reeve/<card-id>/<branch>` in the host's meta-repo. The user's normal `refs/heads/` namespace is never touched.
 - *Push* — promote a card's namespaced refs to GitHub. `reeve push <card-id>` fast-forwards `refs/heads/<branch>` from the namespaced ref then `git push origin <branch>`. Per-branch outcome reported (`Pushed` / `NotFastForward` / `PushFailed`).
 - *Provision* — the full "create the workspace" sequence: clone repos, check devcontainer.json, spawn container, discover its name, write container row, spawn listener, start tmux. Triggered by `ensure_running`.
@@ -49,7 +49,8 @@ These are enforced in `reeve-workspace/src/lifecycle.rs::LiveWorkspaceLifecycle`
 - **Adopt-existing-running-container.** If `docker ps --filter label=reeve.card_id=<id>` returns a name, and `docker inspect --format {{.State.Status}}` returns `running`, the existing container is adopted: write the row, spawn the listener, return. Skip the clone+spawn step entirely. The adopt path does NOT call `exec_in_tmux` (preserves any pre-existing tmux state).
 - **`exec_in_tmux` only on fresh-spawn.** The M5 contract: when we spawn a brand-new container, we then `docker exec <name> tmux new-session -d -s reeve 'cd /workspaces/<id> && (claude || bash)'`. Warn-not-bail: if tmux isn't installed, we log and continue (the user gets a clearer error when `reeve attach` fails). This is the *only* invariant that was regressed and re-added during the refactor (commit `55a5752`); the post-Card-γ unit test in `lifecycle.rs::tests` pins it.
 - **Listener spawn after container is up.** `state.listeners.spawn(card_id, socket)` is called only after `discover_with_deadline` succeeds and the container row is written. The order matters: the per-card socket file at `~/reeve/cards/<id>.sock` only becomes useful once the container is running and has the cards socket dir bind-mounted.
-- **Fetch worker skips inline manifest entries.** Only sibling entries (those with their own `.git/` directory inside the meta-repo) have refs to fetch. Inline entries (tracked inside the meta-repo without their own `.git/`) share the meta-repo's refs and don't need separate fetching. Fixed in `59e38f9` after observing fetch errors on inline-KB households.
+- **Fetch worker selects by container state, not card column.** `FetchDeps::list_running_cards` queries `WorkspaceRepo::list_by_status(Running)` plus `list_by_status(Spawning)` and joins each to its card via `CardRepo::get`. The fetch follows the container, not the column. Consequence: a card in Implementing without a running container (e.g. mid-teardown, or after a reconcile-orphan) gets *no* fetches; a container row that outlives its card's column transition (briefly, before `ensure_stopped` removes it) *does* get fetched until the row is removed.
+- **Fetch iterates the meta-repo and every sibling that has `.git/` on disk.** The walk uses `reeve_household::iter_card_repos(&household, &manifest)`, which yields the meta-repo entry first (host_path = `household.meta_repo_path`), then each manifest sibling (host_path = `<meta_repo_path>/<sibling-name>`). Each entry is gated by `host_path.join(".git").exists()` — meta-repo always passes (it has `.git/`); manifest siblings pass iff they're "Sibling" on-disk classification, not "Inline" (no `.git/`) or "Missing" (no dir). The card-side source path for each fetch: meta-repo → `<card-workspace>/`; siblings → `<card-workspace>/<sibling-name>/`. Fixed in `59e38f9` after observing fetch errors on inline-KB households (the .git gate is what makes the inline case a no-op).
 
 ## RPC surface (2 methods)
 
@@ -110,11 +111,14 @@ This is what makes Reeve survive daemon restarts mid-card. Tested via `reconcile
    3. `containers.inspect_status(name)` → if `None`, container is already gone; just remove the row.
    4. Else, `containers.teardown(name)` (docker stop + rm).
    5. `workspaces.remove_container(card_id)`.
-3. **Fetch tick** (every interval; spawned at startup):
-   1. List cards in Implementing/Testing/Review via `CardRepo::list` (filtered by column).
-   2. For each running card, load its household, walk the manifest's `siblings()` (skipping the meta-repo entry AND inline entries).
-   3. For each sibling, `git fetch <card-workspace>/<sibling-name> '+refs/heads/*:refs/reeve/<card-id>/*'` on the host's sibling clone.
-   4. Log per-card outcomes; never propagate errors (the worker is best-effort).
+3. **Fetch tick** (every `FETCH_INTERVAL` seconds; spawned at startup):
+   1. `FetchDeps::list_running_cards()` → query `WorkspaceRepo::list_by_status(Running)` + `list_by_status(Spawning)`, then for each container row look up the card via `CardRepo::get` and emit `RunningCard { card_id, household }`. (Selection follows container state, not card column.)
+   2. For each `RunningCard`, `FetchDeps::get_household(name)` to resolve the meta-repo path; `load_household_manifest` to parse `household.json`. Missing household or unparseable manifest: log a warning and continue with the next card.
+   3. Walk `iter_card_repos(&household, &manifest)` — yields meta-repo first, then each manifest sibling. For each `(repo_name, host_path)`:
+      - Skip if `host_path.join(".git")` doesn't exist (inline entry or missing on disk).
+      - Compute the card-side source path: `<workspace>/` for the meta-repo entry, `<workspace>/<repo_name>/` for siblings.
+      - `git.fetch(host_path, card_clone, card_id)` — pushes refs from the card clone into the host's repo at `refs/reeve/<card-id>/*`. Per-repo errors are logged and don't abort the tick.
+   4. The worker is best-effort: no per-card errors propagate, only the next tick retries.
 4. **Push (`push id=X`)**: see RPC table above; the body iterates `iter_card_repos` (workspace + manifest order), per-branch fast-forward, per-branch `git push origin <branch>`, returns a `PushResult { branches }`.
 
 ## See also
