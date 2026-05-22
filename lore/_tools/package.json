@@ -1,0 +1,9 @@
+{
+  "name": "witan-lore-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Witan-household KB tooling: build-index, validate, check-orphans, doctor",
+  "scripts": {
+    "test": "node --test __tests__/*.test.js"
+  }
+}
