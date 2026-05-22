@@ -22,17 +22,22 @@ use reeve_household::Manifest;
 /// On failure of any clone, the partial workspace is left in place. The
 /// caller may retry; previously-cloned entries will be skipped, only the
 /// failed/missing ones re-attempted.
+///
+/// Each cloned entry (meta-repo + separate siblings) is wrapped in a
+/// `run_stage` call so the caller's `ProgressReporter` receives
+/// `Active` / `Completed` / `Failed` events. Inline entries (no `.git/`
+/// in the host meta-repo) produce NO stage because no clone happens.
 pub async fn clone_all_for_card(
     ops: &dyn GitOps,
     household: &Household,
     manifest: &Manifest,
     workspace: &Path,
+    progress: &dyn crate::ProgressReporter,
+    card_id: &str,
 ) -> Result<()> {
     let meta = &household.meta_repo_path;
 
-    // Pre-flight: validate every NON-workspace entry exists on disk in some
-    // form. Missing entirely => error. Existing without .git/ => inline.
-    // Existing with .git/ => sibling. Workspace entry doesn't need this check.
+    // Pre-flight check (unchanged) — no progress stage.
     for entry in manifest.siblings() {
         let dir = meta.join(&entry.name);
         if !dir.exists() {
@@ -45,29 +50,52 @@ pub async fn clone_all_for_card(
         }
     }
 
-    // Step 1: meta-repo → workspace.
-    ensure_cloned(ops, meta, workspace, "workspace meta-repo").await?;
+    // Step 1: meta-repo → workspace. Wrapped in run_stage.
+    crate::run_stage(
+        progress,
+        card_id,
+        reeve_protocol::ProgressKind::CloneMeta {
+            name: manifest.meta_repo.clone(),
+        },
+        ensure_cloned(ops, meta, workspace, "workspace meta-repo"),
+    )
+    .await?;
 
-    // Step 2: each sibling. Inline entries (subdirs of meta-repo with no
-    // own .git/) are not cloned — they arrived in step 1.
+    // Step 2: each separate-sibling (has source/.git/) gets a stage.
+    // Inline entries (no source/.git/) are NOT cloned and produce NO stage.
     for entry in manifest.siblings() {
         let source = meta.join(&entry.name);
+        if !source.join(".git").exists() {
+            continue; // inline; presence verified below
+        }
         let dest = workspace.join(&entry.name);
+        crate::run_stage(
+            progress,
+            card_id,
+            reeve_protocol::ProgressKind::CloneSibling {
+                name: entry.name.clone(),
+            },
+            ensure_cloned(ops, &source, &dest, &format!("sibling '{}'", entry.name)),
+        )
+        .await?;
+    }
+
+    // Step 3: verify inline entries arrived in step 1's clone.
+    for entry in manifest.siblings() {
+        let source = meta.join(&entry.name);
         if source.join(".git").exists() {
-            // Separate sibling repo.
-            ensure_cloned(ops, &source, &dest, &format!("sibling '{}'", entry.name)).await?;
-        } else {
-            // Inline directory. No clone needed — it travelled with the
-            // workspace clone. Verify it actually arrived (defensive).
-            if !dest.exists() {
-                anyhow::bail!(
-                    "inline entry '{}' is missing from workspace clone — \
-                     is it correctly tracked in the meta-repo?",
-                    entry.name,
-                );
-            }
+            continue; // separate sibling — handled above
+        }
+        let dest = workspace.join(&entry.name);
+        if !dest.exists() {
+            anyhow::bail!(
+                "inline entry '{}' is missing from workspace clone — \
+                 is it correctly tracked in the meta-repo?",
+                entry.name,
+            );
         }
     }
+
     Ok(())
 }
 
@@ -103,6 +131,27 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct RecordingProgress {
+        calls: Mutex<Vec<(String, reeve_protocol::ProgressKind, reeve_protocol::ProgressStatus)>>,
+    }
+
+    #[async_trait]
+    impl crate::ProgressReporter for RecordingProgress {
+        async fn report(
+            &self,
+            card_id: &str,
+            kind: reeve_protocol::ProgressKind,
+            status: reeve_protocol::ProgressStatus,
+        ) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((card_id.to_string(), kind, status));
+        }
+        async fn clear(&self, _: &str) {}
+    }
 
     /// Records every `clone` call.
     struct MockGitOps {
@@ -238,7 +287,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend", "lore"], Some("lore"));
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace)
+        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap();
         let calls = ops.calls.lock().unwrap();
@@ -324,7 +373,7 @@ mod tests {
             inner: MockGitOps::new(),
             inline_to_seed: vec![(meta.join("lore"), workspace.join("lore"))],
         };
-        clone_all_for_card(&ops, &household, &manifest, &workspace)
+        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap();
         let calls = ops.inner.calls.lock().unwrap();
@@ -351,7 +400,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace)
+        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap_err();
         let msg = format!("{err:#}");
@@ -377,7 +426,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace)
+        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap();
         let calls = ops.calls.lock().unwrap();
@@ -403,7 +452,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace)
+        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap();
         assert_eq!(
@@ -429,7 +478,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace)
+        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap();
         let calls = ops.calls.lock().unwrap();
@@ -458,7 +507,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace)
+        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap_err();
         let msg = format!("{err:#}");
@@ -485,7 +534,7 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace)
+        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
             .await
             .unwrap_err();
         let msg = format!("{err:#}");
@@ -494,6 +543,64 @@ mod tests {
             "expected 'not a git checkout' in error; got: {msg}",
         );
         assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clone calls issued");
+    }
+
+    #[tokio::test]
+    async fn clone_all_emits_stages_for_separate_siblings_skips_inline() {
+        use reeve_protocol::{ProgressKind, ProgressStatus};
+
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("meta");
+        std::fs::create_dir_all(meta.join(".git")).unwrap();
+        // separate sibling has its own .git/
+        std::fs::create_dir_all(meta.join("backend").join(".git")).unwrap();
+        // inline entry is just a dir, no .git/
+        std::fs::create_dir_all(meta.join("lore")).unwrap();
+
+        let workspace = dir.path().join("workspace");
+
+        let ops = MockGitOps::new();
+
+        let household = Household {
+            name: "h".into(),
+            meta_repo_path: meta.clone(),
+        };
+        let manifest = Manifest {
+            meta_repo: "meta".into(),
+            knowledge_base: None,
+            repos: vec![
+                RepoEntry { name: "meta".into(), url: None, tags: vec![], description: None },
+                RepoEntry { name: "backend".into(), url: None, tags: vec![], description: None },
+                RepoEntry { name: "lore".into(), url: None, tags: vec![], description: None },
+            ],
+        };
+        let progress = RecordingProgress::default();
+
+        // The mock clone never actually creates a workspace dir, so the inline
+        // presence check at the end will bail. For THIS test we only care about
+        // the progress stages emitted during the clone steps — assert what got
+        // emitted before the bail. Since the bail happens AFTER both clone
+        // stages, we get the 4 expected events.
+        let _ = clone_all_for_card(&ops, &household, &manifest, &workspace, &progress, "card-1").await;
+
+        let calls = progress.calls.lock().unwrap();
+        let kinds: Vec<&ProgressKind> = calls.iter().map(|(_, k, _)| k).collect();
+
+        // Expected: CloneMeta(Active+Completed), CloneSibling{backend}(Active+Completed).
+        // NO entries for inline 'lore'.
+        assert_eq!(calls.len(), 4, "two stages × 2 events: {calls:?}");
+        assert!(matches!(kinds[0], ProgressKind::CloneMeta { .. }));
+        assert!(matches!(kinds[1], ProgressKind::CloneMeta { .. }));
+        assert_eq!(calls[0].2, ProgressStatus::Active);
+        assert_eq!(calls[1].2, ProgressStatus::Completed);
+        assert!(matches!(kinds[2], ProgressKind::CloneSibling { name } if name == "backend"));
+        assert!(matches!(kinds[3], ProgressKind::CloneSibling { name } if name == "backend"));
+        assert_eq!(calls[2].2, ProgressStatus::Active);
+        assert_eq!(calls[3].2, ProgressStatus::Completed);
+        assert!(
+            !kinds.iter().any(|k| matches!(k, ProgressKind::CloneSibling { name } if name == "lore")),
+            "inline entries must not produce CloneSibling stages",
+        );
     }
 
     #[tokio::test]
@@ -623,8 +730,14 @@ mod integration_tests {
         };
         let workspace = dir.path().join("workspace");
 
+        struct NoopProgress;
+        #[async_trait::async_trait]
+        impl crate::ProgressReporter for NoopProgress {
+            async fn report(&self, _: &str, _: reeve_protocol::ProgressKind, _: reeve_protocol::ProgressStatus) {}
+            async fn clear(&self, _: &str) {}
+        }
         let ops = make_git_ops();
-        clone_all_for_card(&*ops, &household, &manifest, &workspace)
+        clone_all_for_card(&*ops, &household, &manifest, &workspace, &NoopProgress, "test-card")
             .await
             .unwrap();
 

@@ -245,17 +245,16 @@ mod tests {
         git: GitOpsHandle,
         containers: ContainerOpsHandle,
         listeners: &ListenerRegistry,
+        progress_handle: reeve_workspace::ProgressHandle,
     ) -> Arc<dyn reeve_card::WorkspaceLifecycle> {
         let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
-        let progress: reeve_workspace::ProgressHandle =
-            Arc::new(crate::app::progress::InMemoryProgress::new());
         Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
             workspaces,
             household_repo,
             git,
             containers,
             listeners_arc,
-            progress,
+            progress_handle,
             std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             None,
         ))
@@ -271,12 +270,14 @@ mod tests {
         let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
         let cards = reeve_card::make_card_repo(db.clone());
         let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        let progress = Arc::new(crate::app::progress::InMemoryProgress::new());
         let workspace_lifecycle = make_workspace_lifecycle(
             workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers.clone(),
             &listeners,
+            progress.clone() as reeve_workspace::ProgressHandle,
         );
         DaemonState {
             db,
@@ -288,7 +289,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
-            progress: Arc::new(crate::app::progress::InMemoryProgress::new()),
+            progress,
             card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -302,12 +303,14 @@ mod tests {
         let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
         let cards = reeve_card::make_card_repo(db.clone());
         let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        let progress = Arc::new(crate::app::progress::InMemoryProgress::new());
         let workspace_lifecycle = make_workspace_lifecycle(
             workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers.clone(),
             &listeners,
+            progress.clone() as reeve_workspace::ProgressHandle,
         );
         DaemonState {
             db,
@@ -319,7 +322,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
-            progress: Arc::new(crate::app::progress::InMemoryProgress::new()),
+            progress,
             card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -1140,12 +1143,14 @@ mod tests {
         );
         let cards = reeve_card::make_card_repo(db.clone());
         let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        let progress = std::sync::Arc::new(crate::app::progress::InMemoryProgress::new());
         let workspace_lifecycle = make_workspace_lifecycle(
             workspaces.clone(),
             household_repo.clone(),
             git_arc.clone(),
             containers.clone(),
             &listeners,
+            progress.clone() as reeve_workspace::ProgressHandle,
         );
         DaemonState {
             db,
@@ -1157,7 +1162,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
-            progress: std::sync::Arc::new(crate::app::progress::InMemoryProgress::new()),
+            progress,
             card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1323,12 +1328,14 @@ mod tests {
         );
         let cards = reeve_card::make_card_repo(db.clone());
         let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        let progress = std::sync::Arc::new(crate::app::progress::InMemoryProgress::new());
         let workspace_lifecycle = make_workspace_lifecycle(
             workspaces.clone(),
             household_repo.clone(),
             git.clone(),
             containers_arc.clone(),
             &listeners,
+            progress.clone() as reeve_workspace::ProgressHandle,
         );
         DaemonState {
             db,
@@ -1340,7 +1347,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
-            progress: std::sync::Arc::new(crate::app::progress::InMemoryProgress::new()),
+            progress,
             card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
