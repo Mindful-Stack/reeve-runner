@@ -19,8 +19,9 @@ use transport::server::{CallerContext, DbHandle};
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "reeved=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "reeved=info,reeve_workspace=info,reeve_card=info,reeve_household=info".into()
+            }),
         )
         .init();
 
@@ -100,6 +101,7 @@ async fn main() -> Result<()> {
         household_repo,
         household_lookup,
         workspace_lifecycle,
+        card_locks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     dispatcher_holder
         .state

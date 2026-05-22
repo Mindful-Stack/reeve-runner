@@ -145,7 +145,14 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
         // Warn-not-bail: if tmux isn't installed in the container, the column
         // transition still succeeds; the user discovers the issue when they
         // run `reeve attach`.
-        let tmux_cmd = format!("cd /workspaces/{card_id} && (claude || bash)");
+        // `docker exec` doesn't inherit devcontainer's remoteEnv (PATH etc.) —
+        // it gets only the image's baked-in Env. Per the witan-household
+        // template's postCreate, claude is installed at $HOME/.local/bin/
+        // (vscode user); prepend that explicitly so the `claude` lookup
+        // here finds it before falling through to bash.
+        let tmux_cmd = format!(
+            "export PATH=\"$HOME/.local/bin:$PATH\" && cd /workspaces/{card_id} && (claude || bash)"
+        );
         if let Err(e) = self
             .containers
             .exec_in_tmux(&container_name, "reeve", &tmux_cmd)

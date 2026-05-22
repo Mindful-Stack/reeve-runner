@@ -4,7 +4,9 @@
 use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
 use reeve_card::make_card_repo;
-use reeve_protocol::{MvParams, MvSelfParams, NewParams, RpcError, RpcRequest};
+use reeve_protocol::{
+    DeleteParams, EditParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest,
+};
 use serde_json::Value;
 
 fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -57,18 +59,32 @@ pub async fn dispatch(
             reeve_card::handle_new(&*cards, params).await
         }
         "mv" => {
+            let params = parse_params::<MvParams>(req.params)?;
+            let _card_guard = state.lock_card(&params.id).await;
             let cards = make_card_repo(state.db.clone());
             let households = state.household_lookup.clone();
             let workspace = state.workspace_lifecycle.clone();
-            let params = parse_params::<MvParams>(req.params)?;
             reeve_card::handle_mv(&*cards, &*households, &*workspace, params).await
+        }
+        "edit" => {
+            let cards = make_card_repo(state.db.clone());
+            let params = parse_params::<EditParams>(req.params)?;
+            reeve_card::handle_edit(&*cards, params).await
+        }
+        "delete" => {
+            let params = parse_params::<DeleteParams>(req.params)?;
+            let _card_guard = state.lock_card(&params.id).await;
+            let cards = make_card_repo(state.db.clone());
+            let workspace = state.workspace_lifecycle.clone();
+            reeve_card::handle_delete(&*cards, &*workspace, params).await
         }
         "mv-self" => {
             let card_id = require_card(&caller)?;
+            let params = parse_params::<MvSelfParams>(req.params)?;
+            let _card_guard = state.lock_card(&card_id).await;
             let cards = make_card_repo(state.db.clone());
             let households = state.household_lookup.clone();
             let workspace = state.workspace_lifecycle.clone();
-            let params = parse_params::<MvSelfParams>(req.params)?;
             reeve_card::handle_mv_self(&*cards, &*households, &*workspace, card_id, params).await
         }
         "status-self" => {
@@ -269,6 +285,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -298,6 +315,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -955,7 +973,11 @@ mod tests {
             .unwrap();
     }
 
-    /// Write a minimal household.json at `meta_repo_path`.
+    /// Write a minimal household.json at `meta_repo_path` AND create sentinel
+    /// .git/ markers for the workspace + each separate sibling. The push +
+    /// fetch workers skip entries without .git/ (treating them as inline
+    /// manifest content — see fix in 59e38f9); without these markers the
+    /// push iteration silently filters everything out and yields 0 branches.
     fn write_test_manifest(meta_repo_path: &std::path::Path, workspace: &str, repos: &[&str]) {
         let repos_json: Vec<String> = repos
             .iter()
@@ -966,6 +988,13 @@ mod tests {
             repos_json.join(",")
         );
         std::fs::write(meta_repo_path.join("household.json"), body).unwrap();
+        std::fs::create_dir_all(meta_repo_path.join(".git")).unwrap();
+        for repo in repos {
+            if *repo == workspace {
+                continue; // workspace's .git is meta_repo_path/.git itself
+            }
+            std::fs::create_dir_all(meta_repo_path.join(repo).join(".git")).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1123,6 +1152,9 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -1302,6 +1334,9 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -1425,5 +1460,273 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, RpcError::INTERNAL);
         assert!(err.message.contains("not running"), "msg: {}", err.message);
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-card lock / race-condition tests
+    // -----------------------------------------------------------------------
+
+    /// A WorkspaceLifecycle mock that:
+    /// - Sleeps `ensure_running_delay` BEFORE recording completion in `call_log`,
+    ///   simulating the slow clone+devcontainer-up path.
+    /// - Records "running_done" AFTER the sleep and "stopped" immediately.
+    ///
+    /// This means: without per-card serialization, "stopped" can appear in
+    /// the log BEFORE "running_done" when both mvs fire concurrently.
+    /// With the lock, "running_done" always precedes "stopped".
+    struct SlowLifecycle {
+        call_log: Arc<Mutex<Vec<&'static str>>>,
+        ensure_running_delay: std::time::Duration,
+    }
+
+    impl SlowLifecycle {
+        fn new(delay_ms: u64) -> (Arc<Self>, Arc<Mutex<Vec<&'static str>>>) {
+            let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(vec![]));
+            let mock = Arc::new(Self {
+                call_log: log.clone(),
+                ensure_running_delay: std::time::Duration::from_millis(delay_ms),
+            });
+            (mock, log)
+        }
+    }
+
+    #[async_trait]
+    impl reeve_card::WorkspaceLifecycle for SlowLifecycle {
+        async fn ensure_running(&self, _card: &reeve_card::Card) -> anyhow::Result<()> {
+            // Sleep FIRST (model slow work), then record completion.
+            // Without the per-card lock, ensure_stopped can run and record
+            // "stopped" during this sleep, producing an out-of-order log.
+            tokio::time::sleep(self.ensure_running_delay).await;
+            self.call_log.lock().await.push("running_done");
+            Ok(())
+        }
+        async fn ensure_stopped(&self, _card_id: &str) -> anyhow::Result<()> {
+            self.call_log.lock().await.push("stopped");
+            Ok(())
+        }
+    }
+
+    /// Build a DaemonState that uses the given WorkspaceLifecycle (bypassing
+    /// LiveWorkspaceLifecycle entirely so we can inject the mock).
+    fn fresh_state_with_lifecycle(
+        lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle>,
+    ) -> DaemonState {
+        let conn = crate::app::lifecycle::open_db(":memory:").unwrap();
+        let db: DbHandle = Arc::new(Mutex::new(conn));
+        let (household_repo, household_lookup) =
+            reeve_household::make_household_components(db.clone());
+        let containers: ContainerOpsHandle = Arc::new(NoopOps);
+        let git: GitOpsHandle = Arc::new(NoopGit);
+        let listeners = ListenerRegistry::new(db.clone(), Arc::new(NoopDispatcher));
+        let cards = reeve_card::make_card_repo(db.clone());
+        let workspaces = reeve_workspace::make_workspace_repo(db.clone());
+        DaemonState {
+            db,
+            cards,
+            workspaces,
+            containers,
+            git,
+            listeners,
+            household_repo,
+            household_lookup,
+            workspace_lifecycle: lifecycle,
+            card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Helper: create a card via `new` RPC and return its id.
+    async fn create_card(state: &DaemonState, brief: &str) -> String {
+        let value = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "new".into(),
+                params: serde_json::json!({
+                    "household": "h",
+                    "brief": brief,
+                    "needs_heavy": false,
+                }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        serde_json::from_value::<NewResult>(value).unwrap().card.id
+    }
+
+    /// Sequential mv: the lock must not deadlock and must permit two back-to-back
+    /// mv calls for the same card.
+    #[tokio::test]
+    async fn sequential_mv_with_lock_does_not_deadlock() {
+        let (lifecycle, _log) = SlowLifecycle::new(0);
+        let state = fresh_state_with_lifecycle(lifecycle);
+        let card_id = create_card(&state, "seq-test").await;
+
+        // Backlog → Review (no lifecycle calls, but exercises lock acquire/release)
+        let v1 = dispatch(
+            RpcRequest {
+                id: 2,
+                method: "mv".into(),
+                params: serde_json::json!({ "id": card_id, "column": "review" }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let c1 = serde_json::from_value::<MvResult>(v1).unwrap().card;
+        assert_eq!(c1.column, Column::Review);
+
+        // Review → Planning (another lock acquire for same card; must not deadlock)
+        let v2 = dispatch(
+            RpcRequest {
+                id: 3,
+                method: "mv".into(),
+                params: serde_json::json!({ "id": card_id, "column": "planning" }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let c2 = serde_json::from_value::<MvResult>(v2).unwrap().card;
+        assert_eq!(c2.column, Column::Planning);
+    }
+
+    /// Concurrent mv race test: two `mv` RPCs for the same card are fired
+    /// concurrently on a multi-threaded runtime. With the per-card lock, they
+    /// must execute one after the other — ensure_running finishes completely
+    /// before ensure_stopped begins.
+    ///
+    /// The mock records "running_done" only AFTER its 50 ms sleep, and
+    /// "stopped" immediately. Without the lock, "stopped" can appear in the
+    /// log before "running_done" because the second task runs during the sleep
+    /// window — exactly the production orphan-container race. With the lock,
+    /// "running_done" always precedes "stopped".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_mv_for_same_card_serializes_lifecycle_calls() {
+        // 50 ms delay models the slow clone/devcontainer path.
+        let (lifecycle, call_log) = SlowLifecycle::new(50);
+        let state = fresh_state_with_lifecycle(lifecycle);
+
+        // Register household "h" so mv → implementing passes the household check.
+        state
+            .household_repo
+            .insert(reeve_household::HouseholdRow {
+                name: "h".to_string(),
+                meta_repo_path: std::path::PathBuf::from("/tmp/test-meta"),
+                added_at: 0,
+            })
+            .await
+            .unwrap();
+
+        let card_id = create_card(&state, "race-test").await;
+
+        // First mv: Backlog → Implementing  (triggers ensure_running, slow)
+        let state_a = state.clone();
+        let id_a = card_id.clone();
+        let mv_to_implementing = tokio::spawn(async move {
+            dispatch(
+                RpcRequest {
+                    id: 10,
+                    method: "mv".into(),
+                    params: serde_json::json!({ "id": id_a, "column": "implementing" }),
+                },
+                state_a,
+                CallerContext::host(),
+            )
+            .await
+        });
+
+        // Second mv: → Backlog  (triggers ensure_stopped)
+        // Give the first task a small head-start so it acquires the lock first
+        // and the serialization guarantee is exercised (not just luck of scheduling).
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let state_b = state.clone();
+        let id_b = card_id.clone();
+        let mv_to_backlog = tokio::spawn(async move {
+            dispatch(
+                RpcRequest {
+                    id: 11,
+                    method: "mv".into(),
+                    params: serde_json::json!({ "id": id_b, "column": "backlog" }),
+                },
+                state_b,
+                CallerContext::host(),
+            )
+            .await
+        });
+
+        let (res_a, res_b) = tokio::join!(mv_to_implementing, mv_to_backlog);
+        res_a.unwrap().unwrap(); // no panic, no RpcError
+        res_b.unwrap().unwrap();
+
+        // With serialization the mock log must be:
+        //   ["running_done", "stopped"]
+        // — ensure_running completed in full before ensure_stopped began.
+        //
+        // Without the lock (multi-threaded runtime, 50 ms sleep), the second
+        // task runs during the sleep window and produces:
+        //   ["stopped", "running_done"]
+        // — exactly the orphan-container state that caused production bugs.
+        let log = call_log.lock().await;
+        assert_eq!(
+            *log,
+            vec!["running_done", "stopped"],
+            "lifecycle calls must be strictly ordered (running_done before stopped); got: {log:?}"
+        );
+    }
+
+    /// Concurrent mv for DIFFERENT cards must NOT serialize — both lifecycle
+    /// calls should complete concurrently (both ensure_running calls overlap).
+    /// This test asserts no deadlock and correct final state for each card.
+    #[tokio::test]
+    async fn concurrent_mv_for_different_cards_are_independent() {
+        let (lifecycle, _) = SlowLifecycle::new(0);
+        let state = fresh_state_with_lifecycle(lifecycle);
+        let card_a = create_card(&state, "card-a").await;
+        let card_b = create_card(&state, "card-b").await;
+
+        let state_a = state.clone();
+        let id_a = card_a.clone();
+        let mv_a = tokio::spawn(async move {
+            dispatch(
+                RpcRequest {
+                    id: 20,
+                    method: "mv".into(),
+                    params: serde_json::json!({ "id": id_a, "column": "review" }),
+                },
+                state_a,
+                CallerContext::host(),
+            )
+            .await
+            .unwrap()
+        });
+
+        let state_b = state.clone();
+        let id_b = card_b.clone();
+        let mv_b = tokio::spawn(async move {
+            dispatch(
+                RpcRequest {
+                    id: 21,
+                    method: "mv".into(),
+                    params: serde_json::json!({ "id": id_b, "column": "planning" }),
+                },
+                state_b,
+                CallerContext::host(),
+            )
+            .await
+            .unwrap()
+        });
+
+        let (va, vb) = tokio::join!(mv_a, mv_b);
+        let ca = serde_json::from_value::<MvResult>(va.unwrap())
+            .unwrap()
+            .card;
+        let cb = serde_json::from_value::<MvResult>(vb.unwrap())
+            .unwrap()
+            .card;
+        assert_eq!(ca.column, Column::Review);
+        assert_eq!(cb.column, Column::Planning);
     }
 }

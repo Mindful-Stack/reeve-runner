@@ -107,6 +107,12 @@ pub async fn handle_push(
     // 4. For each repo, for each branch in the namespace, FF + push.
     let mut branches = Vec::new();
     for (repo_name, host_path) in reeve_household::iter_card_repos(&household, &manifest) {
+        // Inline entries (subdirs of meta-repo without their own .git/, e.g.
+        // a `lore/` knowledge-base directory) aren't independently pushable.
+        // Skip them — they travel with the meta-repo and ship via its push.
+        if !host_path.join(".git").exists() {
+            continue;
+        }
         let listed = git
             .list_namespace_refs(&host_path, card.id())
             .await

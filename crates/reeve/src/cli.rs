@@ -143,13 +143,26 @@ async fn attach(id: String) -> Result<()> {
                 "attaching to {}:{} (ctrl-b d to detach, claude keeps running)",
                 result.container_name, result.session_name
             );
-            // Process-replace ourselves with `docker exec -it <container> tmux attach -t <session>`.
+            // Process-replace ourselves with `docker exec -u vscode -it <container>
+            // tmux attach -t <session>`. The `-u vscode` matches what
+            // `reeve_workspace::container::DockerOps::exec_in_tmux` uses on the
+            // daemon side — tmux servers are per-uid, so client and daemon
+            // must agree on the user or the client lands on a different
+            // (empty) tmux socket and exits with 'no server running'.
             // `CommandExt::exec` either replaces the process (never returns) or
             // returns the error that prevented exec from succeeding.
             use std::os::unix::process::CommandExt;
             let err = std::process::Command::new("docker")
                 .args([
                     "exec",
+                    "-u",
+                    "vscode",
+                    "-e",
+                    "TERM=xterm-256color",
+                    "-e",
+                    "LANG=C.UTF-8",
+                    "-e",
+                    "LC_ALL=C.UTF-8",
                     "-it",
                     &result.container_name,
                     "tmux",

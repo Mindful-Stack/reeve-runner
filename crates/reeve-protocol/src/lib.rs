@@ -326,6 +326,22 @@ pub struct AttachResult {
     pub in_container_workspace: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditParams {
+    pub id: String,
+    pub brief: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditResult {
+    pub card: Card,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteParams {
+    pub id: String,
+}
+
 /// Shared runtime-directory helpers (used by both the daemon and clients).
 pub mod paths {
     use std::path::PathBuf;

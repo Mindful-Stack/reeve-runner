@@ -78,6 +78,24 @@ impl Card {
         self.parent_id.as_deref()
     }
 
+    /// Return a new Card with the given brief and the provided updated_at.
+    /// Validates the same brief constraints as `Card::new` (non-empty, ≤200 chars).
+    /// The caller (handler) owns the clock; this method is pure validation + assembly.
+    pub fn with_updated_brief(&self, brief: String, now: i64) -> Result<Self, CardError> {
+        if brief.is_empty() {
+            return Err(CardError::EmptyBrief);
+        }
+        let n = brief.chars().count();
+        if n > 200 {
+            return Err(CardError::BriefTooLong(n));
+        }
+        Ok(Self {
+            brief,
+            updated_at: now,
+            ..self.clone()
+        })
+    }
+
     /// Construct a Card directly from validated fields. Used by the repo when
     /// reading from persisted SQL rows.
     #[allow(clippy::too_many_arguments)]

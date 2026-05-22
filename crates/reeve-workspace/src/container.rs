@@ -142,11 +142,21 @@ impl ContainerOps for DockerOps {
         session_name: &str,
         command: &str,
     ) -> Result<()> {
+        // TERM=xterm-256color + UTF-8 locale: without these the container's
+        // bare defaults (TERM=dumb, LC_CTYPE=POSIX) make tmux fall back to
+        // ACS line-drawing — surfacing in the embedded session pane as raw
+        // 'q'/'x'/'l'/'k' chars instead of ─/│/└/┌ box characters.
         let output = Command::new("docker")
             .args([
                 "exec",
                 "-u",
                 "vscode",
+                "-e",
+                "TERM=xterm-256color",
+                "-e",
+                "LANG=C.UTF-8",
+                "-e",
+                "LC_ALL=C.UTF-8",
                 container_name,
                 "tmux",
                 "new-session",
@@ -232,17 +242,28 @@ pub fn devcontainer_up_command(
         ),
     ];
 
-    let ro_mounts: [(std::path::PathBuf, &str); 3] = [
-        (claude_dir.join("skills"), "/home/agent/.claude/skills"),
-        (
-            claude_dir.join("settings.json"),
-            "/home/agent/.claude/settings.json",
-        ),
-        (
-            claude_dir.join("CLAUDE.md"),
-            "/home/agent/.claude/CLAUDE.md",
-        ),
-    ];
+    // Mount the WHOLE ~/.claude/ directory, not individual files inside it.
+    // Why: claude does atomic writes for credential refresh (write temp, rename
+    // to .credentials.json). Docker bind-mounts of individual *files* pin to
+    // the inode at mount time, so after an atomic rename on host the container
+    // still sees the unlinked OLD inode — surfacing as
+    //   API Error: 401 Invalid authentication credentials
+    // a few hours into the container's lifetime. Bind-mounting the parent
+    // directory tracks the path instead of the inode, so renames within it
+    // are visible to the container immediately.
+    //
+    // ~/.claude.json (the file at home-root, not inside ~/.claude/) gets the
+    // same treatment in spirit — but we can't mount $HOME for the obvious
+    // reason. Keep it as an individual file mount; it goes stale on token
+    // refresh of account binding (rare), which is acceptable for daily-driver
+    // use since the binding rarely changes within a single session.
+    let dot_claude_json = claude_dir.parent().map(|p| p.join(".claude.json"));
+    let mut mounts: Vec<(std::path::PathBuf, &str)> =
+        vec![(claude_dir.to_path_buf(), "/home/vscode/.claude")];
+    if let Some(p) = dot_claude_json {
+        mounts.push((p, "/home/vscode/.claude.json"));
+    }
+    let ro_mounts = mounts;
     for (host, container_target) in ro_mounts {
         if host.exists() {
             args.push("--mount".into());
@@ -431,38 +452,62 @@ mod tests {
         let claude = dir.path().join("claude"); // does not exist
 
         let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
-        let claude_mounts = argv.iter().filter(|s| s.contains("/.claude/")).count();
+        // No claude dir → no /home/vscode/.claude mount AND no .claude.json
+        // sibling either (its parent path was synthesized from a missing dir).
+        let claude_mounts = argv
+            .iter()
+            .filter(|s| s.contains("/home/vscode/.claude"))
+            .count();
         assert_eq!(claude_mounts, 0);
     }
 
     #[test]
-    fn devcontainer_up_command_only_includes_existing_claude_mounts() {
+    fn devcontainer_up_command_mounts_claude_dir_when_present() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("c");
         let dc = dir.path().join("dc.json");
         let socket = dir.path().join("s");
         let claude = dir.path().join("claude");
-        std::fs::create_dir_all(claude.join("skills")).unwrap();
-        std::fs::write(claude.join("CLAUDE.md"), "x").unwrap();
-        // settings.json deliberately missing
+        std::fs::create_dir_all(&claude).unwrap();
 
         let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
-        assert!(argv.iter().any(|s| s.contains("/.claude/skills")));
-        assert!(argv.iter().any(|s| s.contains("/CLAUDE.md")));
-        assert!(!argv.iter().any(|s| s.contains("settings.json")));
-        // M3 ships claude mounts without `,readonly` because devcontainer
-        // CLI's --mount flag doesn't parse it (M3-F5 follow-up will
-        // restore readonly via an --override-config devcontainer.json).
-        // Pin that we currently produce a 3-field mount per claude path.
+        // Whole-dir mount targeting /home/vscode/.claude
+        assert!(
+            argv.iter()
+                .any(|s| s.contains("target=/home/vscode/.claude") && !s.contains(".claude.json")),
+            "expected /home/vscode/.claude dir mount in argv: {argv:?}",
+        );
+        // Mount shape: type=bind,source=...,target=...
         for arg in &argv {
-            if arg.contains("/.claude/") {
+            if arg.contains("/home/vscode/.claude") {
                 assert!(arg.starts_with("type=bind,source="), "shape: {arg}");
                 assert!(
                     !arg.contains(",readonly"),
-                    "should not have readonly (M3-F5): {arg}"
+                    "should not have readonly: {arg}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn devcontainer_up_command_mounts_dot_claude_json_when_sibling_exists() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let claude = dir.path().join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // Sibling file at <claude_dir>/../.claude.json — matching the host
+        // shape where ~/.claude/ and ~/.claude.json live side-by-side.
+        let dot_json = dir.path().join(".claude.json");
+        std::fs::write(&dot_json, b"{}").unwrap();
+
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        assert!(
+            argv.iter()
+                .any(|s| s.contains("target=/home/vscode/.claude.json")),
+            "expected /home/vscode/.claude.json file mount: {argv:?}",
+        );
     }
 
     #[test]
