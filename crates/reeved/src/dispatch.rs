@@ -973,7 +973,11 @@ mod tests {
             .unwrap();
     }
 
-    /// Write a minimal household.json at `meta_repo_path`.
+    /// Write a minimal household.json at `meta_repo_path` AND create sentinel
+    /// .git/ markers for the workspace + each separate sibling. The push +
+    /// fetch workers skip entries without .git/ (treating them as inline
+    /// manifest content — see fix in 59e38f9); without these markers the
+    /// push iteration silently filters everything out and yields 0 branches.
     fn write_test_manifest(meta_repo_path: &std::path::Path, workspace: &str, repos: &[&str]) {
         let repos_json: Vec<String> = repos
             .iter()
@@ -984,6 +988,13 @@ mod tests {
             repos_json.join(",")
         );
         std::fs::write(meta_repo_path.join("household.json"), body).unwrap();
+        std::fs::create_dir_all(meta_repo_path.join(".git")).unwrap();
+        for repo in repos {
+            if *repo == workspace {
+                continue; // workspace's .git is meta_repo_path/.git itself
+            }
+            std::fs::create_dir_all(meta_repo_path.join(repo).join(".git")).unwrap();
+        }
     }
 
     #[tokio::test]
