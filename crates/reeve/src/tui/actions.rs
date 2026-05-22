@@ -799,6 +799,41 @@ pub async fn refresh(app: &mut App) {
     }
 }
 
+/// Polls card_progress for every card in pending_mvs whose last fetch is
+/// at least `poll_interval_ms` old. Updates app.card_progress in place.
+/// GC's entries for cards that now have a live session — the session pane
+/// takes over the visible display.
+pub async fn poll_card_progress(app: &mut App, poll_interval_ms: u64) {
+    let now = std::time::Instant::now();
+    let pending_ids: Vec<String> = app.pending_mvs.keys().cloned().collect();
+    for card_id in pending_ids {
+        let due = app
+            .card_progress_last_poll
+            .get(&card_id)
+            .map(|t| now.duration_since(*t).as_millis() as u64 >= poll_interval_ms)
+            .unwrap_or(true);
+        if !due {
+            continue;
+        }
+        if let Ok(Ok(r)) = crate::tui::client_ext::rpc_card_progress(
+            reeve_protocol::CardProgressParams { id: card_id.clone() },
+        )
+        .await
+        {
+            app.card_progress.insert(card_id.clone(), r.stages);
+            app.card_progress_last_poll.insert(card_id, now);
+        }
+    }
+
+    // GC: drop progress data for cards that now have a live session — the
+    // session pane has taken over the visible display. Failed cards (no
+    // session) keep their data so the user can still see what failed.
+    app.card_progress
+        .retain(|id, _| app.sessions.get(id).is_none());
+    app.card_progress_last_poll
+        .retain(|id, _| app.sessions.get(id).is_none());
+}
+
 pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
     let mut merged: Vec<reeve_protocol::Card> = Vec::with_capacity(server_cards.len());
     for s_card in server_cards {
@@ -821,7 +856,7 @@ pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
 
 /// Apply a completed background RPC result to the app state. Called by the
 /// drive loop each tick via `op_rx.try_recv()`.
-pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
+pub async fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     use crate::tui::app::OpEvent;
     match event {
         OpEvent::MvOk {
@@ -846,6 +881,17 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
             // Don't change focused_column — already done in spawn_mv.
         }
         OpEvent::MvErr { card_id, msg } => {
+            // One-shot fetch BEFORE decrementing pending_mvs, so the loader
+            // visibility gate ("card_progress has data + no session") catches
+            // the Failed state. The regular 400ms poll may have just sampled
+            // before the failure landed.
+            if let Ok(Ok(r)) = crate::tui::client_ext::rpc_card_progress(
+                reeve_protocol::CardProgressParams { id: card_id.clone() },
+            )
+            .await
+            {
+                app.card_progress.insert(card_id.clone(), r.stages);
+            }
             decrement_pending(&mut app.pending_mvs, &card_id);
             if !app.pending_mvs.contains_key(&card_id) {
                 app.pending_mv_started_at.remove(&card_id);
