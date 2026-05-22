@@ -45,7 +45,12 @@ impl Session {
     pub fn spawn(card_id: &str, rows: u16, cols: u16) -> Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("openpty")?;
 
         let reeve_path = std::env::current_exe().context("locate reeve binary")?;
@@ -55,12 +60,18 @@ impl Session {
         // forward one. xterm-256color avoids legacy ACS line-drawing paths
         // that some apps (tmux, ncurses) fall back to under bare 'screen'.
         cmd.env("TERM", "xterm-256color");
-        let child = pair.slave.spawn_command(cmd).context("spawn reeve attach")?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("spawn reeve attach")?;
 
         // Drop slave end now that the child holds it.
         drop(pair.slave);
 
-        let mut master_reader = pair.master.try_clone_reader().context("clone master reader")?;
+        let mut master_reader = pair
+            .master
+            .try_clone_reader()
+            .context("clone master reader")?;
         let master_writer = pair.master.take_writer().context("take master writer")?;
 
         let parser = Arc::new(Mutex::new(Parser::new(rows, cols, 1000)));
@@ -101,7 +112,9 @@ impl Session {
     }
 
     pub fn send_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        self.master_writer.write_all(bytes).context("write to PTY")?;
+        self.master_writer
+            .write_all(bytes)
+            .context("write to PTY")?;
         self.master_writer.flush().ok();
         Ok(())
     }
@@ -239,7 +252,8 @@ impl SessionManager {
         // Also clear failed-state for cards no longer in Implementing — they
         // get a fresh chance if/when they return.
         let still_implementing: std::collections::HashSet<&String> = implementing.iter().collect();
-        self.failed_sessions.retain(|id| still_implementing.contains(id));
+        self.failed_sessions
+            .retain(|id| still_implementing.contains(id));
 
         for id in implementing {
             if !self.sessions.contains_key(id) && !self.failed_sessions.contains(id) {

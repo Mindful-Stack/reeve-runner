@@ -18,7 +18,11 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     f.render_widget(title_line(app), chunks[0]);
@@ -39,17 +43,12 @@ fn render_daemon_down(f: &mut ratatui::Frame<'_>, area: Rect) {
         Line::raw(""),
         Line::from(Span::styled(
             "Cannot connect to the reeve daemon",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::raw(""),
         Line::from("Start it in another terminal:"),
         Line::raw(""),
-        Line::from(Span::styled(
-            "  reeved",
-            Style::default().fg(Color::Yellow),
-        )),
+        Line::from(Span::styled("  reeved", Style::default().fg(Color::Yellow))),
         Line::raw(""),
         Line::from("then press 'r' to retry."),
         Line::raw(""),
@@ -196,12 +195,11 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             let _ = session.resize(inner_rows, inner_cols);
             if let Ok(parser) = session.parser.lock() {
                 let screen = parser.screen();
-                let border_style =
-                    if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    };
+                let border_style = if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
                 let widget = PseudoTerminal::new(screen).block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -250,8 +248,7 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             Span::raw(card.updated_at.to_string()),
         ]),
     ];
-    let para =
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("detail"));
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("detail"));
     f.render_widget(para, area);
 }
 
@@ -262,12 +259,11 @@ fn render_provisioning_loader(f: &mut ratatui::Frame<'_>, area: Rect, app: &App,
     // Braille-dots spinner. Pick a frame based on the wall clock so the
     // animation runs without any explicit tick.
     const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let frame_idx =
-        (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as usize / 80)
-            .unwrap_or(0))
-            % FRAMES.len();
+    let frame_idx = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as usize / 80)
+        .unwrap_or(0))
+        % FRAMES.len();
     let spinner = FRAMES[frame_idx];
 
     let elapsed_secs = app
@@ -339,7 +335,12 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         crate::tui::modal::ModalKind::MoveColumn { choice, .. } => {
             render_move_picker(f, area, *choice);
         }
-        crate::tui::modal::ModalKind::EditBrief { buffer, cursor, error, .. } => {
+        crate::tui::modal::ModalKind::EditBrief {
+            buffer,
+            cursor,
+            error,
+            ..
+        } => {
             render_edit_modal(f, area, buffer, *cursor, error.as_deref());
         }
         crate::tui::modal::ModalKind::DeleteConfirm { card_id } => {
@@ -391,12 +392,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn render_action_menu(
-    f: &mut ratatui::Frame<'_>,
-    area: Rect,
-    app: &App,
-    selected_index: usize,
-) {
+fn render_action_menu(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, selected_index: usize) {
     let card_col = app
         .selected_card_id
         .as_ref()
@@ -426,8 +422,11 @@ fn render_action_menu(
             ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
-    let list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title("actions  (esc to close)"));
+    let list = List::new(list_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("actions  (esc to close)"),
+    );
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(list, area);
 }
@@ -500,8 +499,11 @@ fn render_help(f: &mut ratatui::Frame<'_>, area: Rect) {
         i = j;
     }
 
-    let para = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("help  (esc/?/q to close)"));
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("help  (esc/?/q to close)"),
+    );
     f.render_widget(ratatui::widgets::Clear, area);
     f.render_widget(para, area);
 }
@@ -556,17 +558,12 @@ fn render_edit_modal(
         Style::default().fg(Color::DarkGray),
     )));
 
-    let para = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("edit brief"));
+    let para =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("edit brief"));
     f.render_widget(para, popup_area);
 }
 
-fn render_delete_confirm(
-    f: &mut ratatui::Frame<'_>,
-    area: Rect,
-    _card_id: &str,
-    brief: &str,
-) {
+fn render_delete_confirm(f: &mut ratatui::Frame<'_>, area: Rect, _card_id: &str, brief: &str) {
     let popup_area = centered_rect(50, 25, area);
     f.render_widget(ratatui::widgets::Clear, popup_area);
 
@@ -582,13 +579,12 @@ fn render_delete_confirm(
             Style::default().fg(Color::DarkGray),
         )),
     ];
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
-                .title("delete card?"),
-        );
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .title("delete card?"),
+    );
     f.render_widget(para, popup_area);
 }
 
@@ -616,10 +612,7 @@ fn render_new_modal(
                 } else {
                     Style::default()
                 };
-                ListItem::new(Line::from(Span::styled(
-                    format!("  {}", h.name),
-                    style,
-                )))
+                ListItem::new(Line::from(Span::styled(format!("  {}", h.name), style)))
             })
             .collect();
         let list = List::new(items).block(
@@ -640,9 +633,10 @@ fn render_new_modal(
             Span::raw(hh_label),
         ]),
         Line::from(Span::raw("")),
-        Line::from(vec![
-            Span::styled("  brief: ", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  brief: ",
+            Style::default().fg(Color::DarkGray),
+        )]),
         build_buffer_line(brief, cursor),
     ];
     if let Some(err) = error {
@@ -658,8 +652,8 @@ fn render_new_modal(
         Style::default().fg(Color::DarkGray),
     )));
 
-    let para = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("new card"));
+    let para =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("new card"));
     f.render_widget(para, popup_area);
 }
 
@@ -674,7 +668,10 @@ fn build_buffer_line(buffer: &str, cursor: usize) -> Line<'static> {
 
     if len == 0 {
         // Empty buffer: show cursor as a single space.
-        spans.push(Span::styled(" ", Style::default().bg(Color::Yellow).fg(Color::Black)));
+        spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::Yellow).fg(Color::Black),
+        ));
     } else {
         // Characters before cursor.
         if cursor > 0 {
@@ -692,7 +689,10 @@ fn build_buffer_line(buffer: &str, cursor: usize) -> Line<'static> {
             }
         } else {
             // Cursor is past end — append a trailing-space cursor cell.
-            spans.push(Span::styled(" ", Style::default().bg(Color::Yellow).fg(Color::Black)));
+            spans.push(Span::styled(
+                " ",
+                Style::default().bg(Color::Yellow).fg(Color::Black),
+            ));
         }
     }
 

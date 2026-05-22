@@ -37,14 +37,34 @@ pub struct StatusMessage {
 
 #[derive(Debug)]
 pub enum OpEvent {
-    MvOk { card_id: String, updated: reeve_protocol::Card, target: reeve_protocol::Column },
-    MvErr { card_id: String, msg: String },
-    EditOk { card_id: String, updated: reeve_protocol::Card },
-    EditErr { card_id: String, msg: String },
+    MvOk {
+        card_id: String,
+        updated: reeve_protocol::Card,
+        target: reeve_protocol::Column,
+    },
+    MvErr {
+        card_id: String,
+        msg: String,
+    },
+    EditOk {
+        card_id: String,
+        updated: reeve_protocol::Card,
+    },
+    EditErr {
+        card_id: String,
+        msg: String,
+    },
     NewOk,
-    NewErr { msg: String },
-    DeleteOk { card_id: String },
-    DeleteErr { card_id: String, msg: String },
+    NewErr {
+        msg: String,
+    },
+    DeleteOk {
+        card_id: String,
+    },
+    DeleteErr {
+        card_id: String,
+        msg: String,
+    },
 }
 
 pub struct App {
@@ -72,7 +92,8 @@ pub struct App {
     /// Debounce buffer: card_id → (final-target-column, deadline).
     /// Each H/L/m on this card replaces the entry. When `Instant::now()` >= deadline,
     /// the drive loop spawns the actual mv RPC with the latest target.
-    pub pending_mv_intents: std::collections::HashMap<String, (reeve_protocol::Column, std::time::Instant)>,
+    pub pending_mv_intents:
+        std::collections::HashMap<String, (reeve_protocol::Column, std::time::Instant)>,
     /// card_id → when the FIRST in-flight mv RPC started. Used by the
     /// drill-in to show an elapsed-time loader while the daemon is busy
     /// with ensure_running. Cleared when pending_mvs drops to 0.
@@ -127,7 +148,11 @@ impl App {
     }
 
     pub fn focused_cards(&self) -> Vec<&Card> {
-        let mut v: Vec<&Card> = self.cards.iter().filter(|c| c.column == self.focused_column).collect();
+        let mut v: Vec<&Card> = self
+            .cards
+            .iter()
+            .filter(|c| c.column == self.focused_column)
+            .collect();
         v.sort_by_key(|c| c.created_at);
         v
     }
@@ -201,7 +226,8 @@ async fn drive(terminal: &mut Term) -> Result<()> {
             let session_ids: Vec<String> = app.sessions.ids();
             let now = std::time::Instant::now();
             for id in session_ids {
-                let is_currently_focused = app.pane_focus == crate::tui::app::PaneFocus::SessionPane
+                let is_currently_focused = app.pane_focus
+                    == crate::tui::app::PaneFocus::SessionPane
                     && app.selected_card_id.as_ref() == Some(&id);
                 if is_currently_focused {
                     continue;
@@ -232,9 +258,22 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                             s.respawn_count += 1;
                             (true, None)
                         } else if exit == 0 {
-                            (false, Some(format!("session {} respawned 3x in 5s, stopped — press 'r' to retry", &id[..8.min(id.len())])))
+                            (
+                                false,
+                                Some(format!(
+                                    "session {} respawned 3x in 5s, stopped — press 'r' to retry",
+                                    &id[..8.min(id.len())]
+                                )),
+                            )
                         } else {
-                            (false, Some(format!("session {} exited with status {}", &id[..8.min(id.len())], exit)))
+                            (
+                                false,
+                                Some(format!(
+                                    "session {} exited with status {}",
+                                    &id[..8.min(id.len())],
+                                    exit
+                                )),
+                            )
                         }
                     };
                     app.sessions.close(&id);
@@ -269,7 +308,8 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                         // Shift+Tab, which claude uses for its mode cycle — is
                         // forwarded raw to the PTY.
                         if events::translate(key) == Some(events::Action::FocusKanban) {
-                            crate::tui::actions::handle(&mut app, events::Action::FocusKanban).await;
+                            crate::tui::actions::handle(&mut app, events::Action::FocusKanban)
+                                .await;
                         } else {
                             crate::tui::actions::forward_to_session(&mut app, key).await;
                         }

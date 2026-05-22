@@ -2,7 +2,6 @@
 //! daemon RPC calls. Keeps `app.rs` free of business logic.
 
 use crate::tui::app::App;
-use crate::tui::client_ext;
 use crate::tui::events::Action;
 use reeve_protocol::Column;
 
@@ -33,7 +32,10 @@ pub async fn handle(app: &mut App, action: Action) {
         }
         Action::FocusPrevColumn => {
             let cols = Column::ALL;
-            let idx = cols.iter().position(|c| c == &app.focused_column).unwrap_or(0);
+            let idx = cols
+                .iter()
+                .position(|c| c == &app.focused_column)
+                .unwrap_or(0);
             if idx > 0 {
                 app.focused_column = cols[idx - 1];
             }
@@ -41,7 +43,10 @@ pub async fn handle(app: &mut App, action: Action) {
         }
         Action::FocusNextColumn => {
             let cols = Column::ALL;
-            let idx = cols.iter().position(|c| c == &app.focused_column).unwrap_or(0);
+            let idx = cols
+                .iter()
+                .position(|c| c == &app.focused_column)
+                .unwrap_or(0);
             if idx + 1 < cols.len() {
                 app.focused_column = cols[idx + 1];
             }
@@ -115,8 +120,7 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::MoveRight => mv_relative(app, 1),
         Action::OpenMovePicker => {
             if app.selected_card_id.is_some() {
-                let current =
-                    selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
+                let current = selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
                 app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
                     card_id: app.selected_card_id.clone().unwrap(),
                     choice: current,
@@ -151,35 +155,33 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
         return;
     };
     match modal {
-        crate::tui::modal::ModalKind::ActionMenu { selected_index } => {
-            match key.code {
-                KeyCode::Esc => app.modal = None,
-                KeyCode::Up => {
-                    let new = selected_index.saturating_sub(1);
-                    app.modal =
-                        Some(crate::tui::modal::ModalKind::ActionMenu { selected_index: new });
-                }
-                KeyCode::Down => {
-                    let items =
-                        crate::tui::modal::build_action_menu(selected_card_column(app));
-                    let new = (selected_index + 1).min(items.len().saturating_sub(1));
-                    app.modal =
-                        Some(crate::tui::modal::ModalKind::ActionMenu { selected_index: new });
-                }
-                KeyCode::Enter => {
-                    let items =
-                        crate::tui::modal::build_action_menu(selected_card_column(app));
-                    if let Some(item) = items.get(selected_index) {
-                        if item.enabled {
-                            app.modal = None;
-                            execute_menu_kind(app, item.action_kind).await;
-                        }
+        crate::tui::modal::ModalKind::ActionMenu { selected_index } => match key.code {
+            KeyCode::Esc => app.modal = None,
+            KeyCode::Up => {
+                let new = selected_index.saturating_sub(1);
+                app.modal = Some(crate::tui::modal::ModalKind::ActionMenu {
+                    selected_index: new,
+                });
+            }
+            KeyCode::Down => {
+                let items = crate::tui::modal::build_action_menu(selected_card_column(app));
+                let new = (selected_index + 1).min(items.len().saturating_sub(1));
+                app.modal = Some(crate::tui::modal::ModalKind::ActionMenu {
+                    selected_index: new,
+                });
+            }
+            KeyCode::Enter => {
+                let items = crate::tui::modal::build_action_menu(selected_card_column(app));
+                if let Some(item) = items.get(selected_index) {
+                    if item.enabled {
+                        app.modal = None;
+                        execute_menu_kind(app, item.action_kind).await;
                     }
                 }
-                KeyCode::Char(c) => handle_menu_letter(app, c).await,
-                _ => {}
             }
-        }
+            KeyCode::Char(c) => handle_menu_letter(app, c).await,
+            _ => {}
+        },
         crate::tui::modal::ModalKind::Help => {
             if matches!(
                 key.code,
@@ -221,7 +223,12 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 _ => {}
             }
         }
-        crate::tui::modal::ModalKind::EditBrief { card_id, buffer, cursor, error: _ } => {
+        crate::tui::modal::ModalKind::EditBrief {
+            card_id,
+            buffer,
+            cursor,
+            error: _,
+        } => {
             let mut buffer = buffer;
             let mut cursor = cursor;
             match key.code {
@@ -236,7 +243,10 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     }
                     // Mark as in-flight so ls poll doesn't revert our local brief.
                     *app.pending_edits.entry(card_id.clone()).or_insert(0) += 1;
-                    let params = reeve_protocol::EditParams { id: card_id.clone(), brief: new_brief };
+                    let params = reeve_protocol::EditParams {
+                        id: card_id.clone(),
+                        brief: new_brief,
+                    };
                     let tx = app.op_tx.clone();
                     let card_id_for_event = card_id.clone();
                     app.modal = None;
@@ -370,7 +380,9 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     // Mark as in-flight so ls poll doesn't re-add this card.
                     app.pending_deletes.insert(card_id.clone());
 
-                    let params = reeve_protocol::DeleteParams { id: card_id.clone() };
+                    let params = reeve_protocol::DeleteParams {
+                        id: card_id.clone(),
+                    };
                     let tx = app.op_tx.clone();
                     let card_id_for_event = card_id.clone();
                     app.modal = None;
@@ -652,8 +664,7 @@ async fn execute_menu_kind(app: &mut App, kind: crate::tui::modal::ActionMenuKin
         ActionMenuKind::MoveRight => mv_relative(app, 1),
         ActionMenuKind::MovePicker => {
             if let Some(card_id) = app.selected_card_id.clone() {
-                let cur =
-                    selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
+                let cur = selected_card_column(app).unwrap_or(reeve_protocol::Column::Backlog);
                 app.modal = Some(crate::tui::modal::ModalKind::MoveColumn {
                     card_id,
                     choice: cur,
@@ -701,8 +712,7 @@ fn schedule_mv(app: &mut App, card_id: String, target: Column) {
 
     // Debounce: replace any pending intent for this card with the latest
     // target and a fresh deadline. Rapid presses coalesce into one RPC.
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(MV_DEBOUNCE_MS);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(MV_DEBOUNCE_MS);
     app.pending_mv_intents.insert(card_id, (target, deadline));
 }
 
@@ -719,14 +729,19 @@ pub(crate) fn fire_pending_mv(app: &mut App, card_id: String, target: Column) {
     }
     *entry += 1;
 
-    let params = reeve_protocol::MvParams { id: card_id.clone(), column: target };
+    let params = reeve_protocol::MvParams {
+        id: card_id.clone(),
+        column: target,
+    };
     let tx = app.op_tx.clone();
     let card_id_for_event = card_id.clone();
     tokio::spawn(async move {
         let event = match crate::tui::client_ext::rpc_mv(params).await {
-            Ok(Ok(updated)) => {
-                crate::tui::app::OpEvent::MvOk { card_id: card_id_for_event, updated, target }
-            }
+            Ok(Ok(updated)) => crate::tui::app::OpEvent::MvOk {
+                card_id: card_id_for_event,
+                updated,
+                target,
+            },
             Ok(Err(e)) => crate::tui::app::OpEvent::MvErr {
                 card_id: card_id_for_event,
                 msg: e.message,
@@ -809,7 +824,11 @@ pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
 pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     use crate::tui::app::OpEvent;
     match event {
-        OpEvent::MvOk { card_id, updated, target: _ } => {
+        OpEvent::MvOk {
+            card_id,
+            updated,
+            target: _,
+        } => {
             decrement_pending(&mut app.pending_mvs, &card_id);
             if !app.pending_mvs.contains_key(&card_id) {
                 app.pending_mv_started_at.remove(&card_id);
@@ -943,8 +962,12 @@ fn open_delete_modal(app: &mut App) {
 
 /// Forward a raw keypress to the focused session's PTY master.
 pub async fn forward_to_session(app: &mut App, key: crossterm::event::KeyEvent) {
-    let Some(id) = app.selected_card_id.clone() else { return; };
-    let Some(session) = app.sessions.get_mut(&id) else { return; };
+    let Some(id) = app.selected_card_id.clone() else {
+        return;
+    };
+    let Some(session) = app.sessions.get_mut(&id) else {
+        return;
+    };
     let bytes = key_event_to_bytes(key);
     if !bytes.is_empty() {
         if let Err(e) = session.send_bytes(&bytes) {
@@ -1117,7 +1140,10 @@ mod tests {
         app.cards = vec![card("a", Column::Backlog, 0)];
         app.selected_card_id = Some("a".into());
         handle(&mut app, Action::OpenDrillIn).await;
-        assert_eq!(app.layout, crate::tui::layout::LayoutMode::FocusedColumnPlusDetail);
+        assert_eq!(
+            app.layout,
+            crate::tui::layout::LayoutMode::FocusedColumnPlusDetail
+        );
     }
 
     #[tokio::test]

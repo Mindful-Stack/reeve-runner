@@ -11,9 +11,17 @@ pub enum ModalKind {
     /// Help cheatsheet.
     Help,
     /// Column picker: move the given card to the highlighted column.
-    MoveColumn { card_id: String, choice: reeve_protocol::Column },
+    MoveColumn {
+        card_id: String,
+        choice: reeve_protocol::Column,
+    },
     /// Edit the brief of an existing card.
-    EditBrief { card_id: String, buffer: String, cursor: usize, error: Option<String> },
+    EditBrief {
+        card_id: String,
+        buffer: String,
+        cursor: usize,
+        error: Option<String>,
+    },
     /// Create a new card: optionally pick a household first, then enter brief.
     NewCard {
         household: Option<String>,
@@ -58,14 +66,22 @@ pub fn build_action_menu(card_column: Option<Column>) -> Vec<ActionMenuItem> {
             description: "edit brief",
             action_kind: ActionMenuKind::Edit,
             enabled: has_card,
-            disabled_reason: if !has_card { Some("no card selected") } else { None },
+            disabled_reason: if !has_card {
+                Some("no card selected")
+            } else {
+                None
+            },
         },
         ActionMenuItem {
             key_hint: "m",
             description: "move to column...",
             action_kind: ActionMenuKind::MovePicker,
             enabled: has_card,
-            disabled_reason: if !has_card { Some("no card selected") } else { None },
+            disabled_reason: if !has_card {
+                Some("no card selected")
+            } else {
+                None
+            },
         },
         ActionMenuItem {
             key_hint: "H",
@@ -109,7 +125,11 @@ pub fn build_action_menu(card_column: Option<Column>) -> Vec<ActionMenuItem> {
             description: "delete",
             action_kind: ActionMenuKind::Delete,
             enabled: has_card,
-            disabled_reason: if !has_card { Some("no card selected") } else { None },
+            disabled_reason: if !has_card {
+                Some("no card selected")
+            } else {
+                None
+            },
         },
         ActionMenuItem {
             key_hint: "n",

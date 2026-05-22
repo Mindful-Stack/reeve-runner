@@ -15,8 +15,8 @@ use reeve_protocol::{
     AttachParams, AttachResult, Card, DeleteParams, EditParams, EditResult, HouseholdSummary,
     LsResult, MvParams, MvResult, NewParams, NewResult, RpcError, paths,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// Internal helper: serialize `params`, call the daemon, deserialize `R`.
 async fn call<P, R>(method: &str, params: P) -> Result<std::result::Result<R, RpcError>>
@@ -58,7 +58,9 @@ pub async fn rpc_delete(params: DeleteParams) -> Result<std::result::Result<(), 
     result.map(|r| r.map(|_| ()))
 }
 
-pub async fn rpc_attach(params: AttachParams) -> Result<std::result::Result<AttachResult, RpcError>> {
+pub async fn rpc_attach(
+    params: AttachParams,
+) -> Result<std::result::Result<AttachResult, RpcError>> {
     call("attach", params).await
 }
 

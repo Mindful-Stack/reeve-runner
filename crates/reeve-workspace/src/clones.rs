@@ -76,12 +76,7 @@ pub async fn clone_all_for_card(
 /// - `dest` doesn't exist → `git clone source dest`.
 /// - `dest` exists with `.git/` → no-op (already cloned).
 /// - `dest` exists without `.git/` → error: dest is in an unknown state.
-async fn ensure_cloned(
-    ops: &dyn GitOps,
-    source: &Path,
-    dest: &Path,
-    label: &str,
-) -> Result<()> {
+async fn ensure_cloned(ops: &dyn GitOps, source: &Path, dest: &Path, label: &str) -> Result<()> {
     if dest.exists() {
         if dest.join(".git").exists() {
             tracing::debug!("skipping {label}: already cloned at {}", dest.display());
@@ -93,7 +88,9 @@ async fn ensure_cloned(
             dest.display(),
         );
     }
-    ops.clone(source, dest).await.context(format!("clone {label}"))
+    ops.clone(source, dest)
+        .await
+        .context(format!("clone {label}"))
 }
 
 #[cfg(test)]
@@ -140,7 +137,6 @@ mod tests {
         fn set_fast_forward_response(&self, outcome: FfOutcome) {
             *self.fast_forward_response.lock().unwrap() = outcome;
         }
-
     }
 
     #[async_trait]
@@ -439,7 +435,11 @@ mod tests {
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "only the missing sibling is cloned");
         assert_eq!(calls[0].0, meta.join("backend"), "source is the sibling");
-        assert_eq!(calls[0].1, workspace.join("backend"), "dest is workspace/backend");
+        assert_eq!(
+            calls[0].1,
+            workspace.join("backend"),
+            "dest is workspace/backend"
+        );
     }
 
     #[tokio::test]
@@ -466,11 +466,7 @@ mod tests {
             msg.contains("not a git checkout"),
             "expected 'not a git checkout' in error; got: {msg}",
         );
-        assert_eq!(
-            ops.calls.lock().unwrap().len(),
-            0,
-            "no clone calls issued"
-        );
+        assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clone calls issued");
     }
 
     #[tokio::test]
@@ -497,11 +493,7 @@ mod tests {
             msg.contains("not a git checkout"),
             "expected 'not a git checkout' in error; got: {msg}",
         );
-        assert_eq!(
-            ops.calls.lock().unwrap().len(),
-            0,
-            "no clone calls issued"
-        );
+        assert_eq!(ops.calls.lock().unwrap().len(), 0, "no clone calls issued");
     }
 
     #[tokio::test]

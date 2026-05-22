@@ -4,7 +4,9 @@
 use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
 use reeve_card::make_card_repo;
-use reeve_protocol::{DeleteParams, EditParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest};
+use reeve_protocol::{
+    DeleteParams, EditParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest,
+};
 use serde_json::Value;
 
 fn parse_params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -1707,8 +1709,12 @@ mod tests {
         });
 
         let (va, vb) = tokio::join!(mv_a, mv_b);
-        let ca = serde_json::from_value::<MvResult>(va.unwrap()).unwrap().card;
-        let cb = serde_json::from_value::<MvResult>(vb.unwrap()).unwrap().card;
+        let ca = serde_json::from_value::<MvResult>(va.unwrap())
+            .unwrap()
+            .card;
+        let cb = serde_json::from_value::<MvResult>(vb.unwrap())
+            .unwrap()
+            .card;
         assert_eq!(ca.column, Column::Review);
         assert_eq!(cb.column, Column::Planning);
     }

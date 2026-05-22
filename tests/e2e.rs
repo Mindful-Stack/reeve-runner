@@ -1225,3 +1225,114 @@ fn m5_attach_drops_into_running_tmux_session() {
         String::from_utf8_lossy(&out_done.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// M6: TUI flow proxy. No docker required — confirms the daemon's CLI-visible
+// round-trip works after all M6 changes (per-card mv lock, idempotent clones,
+// handle_mv reorder, daemon-down banner refactor). The TUI render layer is
+// not exercised here — see Task 16's note in the plan: a full TUI snapshot
+// test requires exposing render with a TestBackend Frame, which is a follow-up.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m6_daemon_round_trip_for_tui_smoke() {
+    build_workspace();
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut env = isolated_env_with_config(temp.path());
+    // household.add's manifest load eventually does a git operation
+    // somewhere — supply an identity so any internal commit doesn't bail.
+    env.push(("GIT_AUTHOR_NAME".into(), "t".into()));
+    env.push(("GIT_AUTHOR_EMAIL".into(), "t@t.com".into()));
+    env.push(("GIT_COMMITTER_NAME".into(), "t".into()));
+    env.push(("GIT_COMMITTER_EMAIL".into(), "t@t.com".into()));
+
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+
+    // Wait for the socket the daemon binds (matches m1).
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "daemon socket not created within 2s");
+
+    // Set up a minimal local meta-repo to register as a household.
+    let meta = temp.path().join("meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    git_in(&meta, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        meta.join("household.json"),
+        r#"{"meta_repo":"meta","repos":[{"name":"meta"}]}"#,
+    )
+    .unwrap();
+    commit_meta_changes(&meta);
+
+    // Register the household via the CLI — exercises household.add dispatch.
+    let out_h = cmd("reeve", &env)
+        .args(["household", "add", "h1", &meta.to_string_lossy()])
+        .output()
+        .expect("reeve household add");
+    assert!(
+        out_h.status.success(),
+        "household add: {}",
+        String::from_utf8_lossy(&out_h.stderr),
+    );
+
+    // Create a card via CLI — exercises new dispatch.
+    let out_new = cmd("reeve", &env)
+        .args(["new", "--household", "h1", "--brief", "m6-tui-smoke-card"])
+        .output()
+        .expect("reeve new");
+    assert!(
+        out_new.status.success(),
+        "reeve new: {}",
+        String::from_utf8_lossy(&out_new.stderr),
+    );
+
+    // ls must see the card — the same RPC the TUI's refresh helper uses.
+    let out_ls = cmd("reeve", &env).arg("ls").output().expect("reeve ls");
+    assert!(
+        out_ls.status.success(),
+        "reeve ls: {}",
+        String::from_utf8_lossy(&out_ls.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out_ls.stdout);
+    assert!(
+        stdout.contains("m6-tui-smoke-card"),
+        "card brief visible via ls: {stdout}",
+    );
+    assert!(
+        stdout.contains("h1"),
+        "household name visible via ls: {stdout}",
+    );
+
+    // mv to planning (non-Implementing → no docker required) — exercises
+    // the reorder'd handle_mv + per-card mv lock from M3-followups 1 + 5.
+    let card_id = parse_card_id_from_new_output(&String::from_utf8_lossy(&out_new.stdout));
+    let out_mv = cmd("reeve", &env)
+        .args(["mv", &card_id, "planning"])
+        .output()
+        .expect("reeve mv");
+    assert!(
+        out_mv.status.success(),
+        "reeve mv: {}",
+        String::from_utf8_lossy(&out_mv.stderr),
+    );
+
+    // Final ls confirms the column flipped — the column commit happens
+    // AFTER on_column_change per the M3-followup 5 reorder.
+    let out_ls2 = cmd("reeve", &env).arg("ls").output().expect("reeve ls #2");
+    let stdout = String::from_utf8_lossy(&out_ls2.stdout);
+    assert!(
+        stdout.contains("Planning"),
+        "card now in Planning: {stdout}",
+    );
+}

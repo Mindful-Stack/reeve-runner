@@ -258,9 +258,8 @@ pub fn devcontainer_up_command(
     // refresh of account binding (rare), which is acceptable for daily-driver
     // use since the binding rarely changes within a single session.
     let dot_claude_json = claude_dir.parent().map(|p| p.join(".claude.json"));
-    let mut mounts: Vec<(std::path::PathBuf, &str)> = vec![
-        (claude_dir.to_path_buf(), "/home/vscode/.claude"),
-    ];
+    let mut mounts: Vec<(std::path::PathBuf, &str)> =
+        vec![(claude_dir.to_path_buf(), "/home/vscode/.claude")];
     if let Some(p) = dot_claude_json {
         mounts.push((p, "/home/vscode/.claude.json"));
     }
@@ -474,14 +473,18 @@ mod tests {
         let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
         // Whole-dir mount targeting /home/vscode/.claude
         assert!(
-            argv.iter().any(|s| s.contains("target=/home/vscode/.claude") && !s.contains(".claude.json")),
+            argv.iter()
+                .any(|s| s.contains("target=/home/vscode/.claude") && !s.contains(".claude.json")),
             "expected /home/vscode/.claude dir mount in argv: {argv:?}",
         );
         // Mount shape: type=bind,source=...,target=...
         for arg in &argv {
             if arg.contains("/home/vscode/.claude") {
                 assert!(arg.starts_with("type=bind,source="), "shape: {arg}");
-                assert!(!arg.contains(",readonly"), "should not have readonly: {arg}");
+                assert!(
+                    !arg.contains(",readonly"),
+                    "should not have readonly: {arg}"
+                );
             }
         }
     }
