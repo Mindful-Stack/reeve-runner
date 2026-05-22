@@ -185,6 +185,8 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         return;
     };
 
+    // 1. Live session takes priority — column-gated (only show when card
+    //    is in Implementing AND we have a session).
     if card.column == Column::Implementing {
         if let Some(session) = app.sessions.get(&card.id) {
             // Fit the PTY + parser to the pane's inner area (minus border).
@@ -213,12 +215,14 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 return;
             }
         }
-        // Card optimistically in Implementing with mv RPC still in flight —
-        // show a provisioning loader instead of the static card detail.
-        if app.pending_mvs.contains_key(&card.id) {
-            render_provisioning_loader(f, area, app, &card.id);
-            return;
-        }
+    }
+
+    // 2. Progress data available → loader. NOT gated on card.column or
+    //    pending_mvs. A failed spawn whose optimistic column has reverted
+    //    still surfaces the Failed checklist while the user is on the card.
+    if app.card_progress.contains_key(&card.id) {
+        render_provisioning_loader(f, area, app, &card.id);
+        return;
     }
 
     // Fallback: card detail block.
@@ -252,73 +256,115 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     f.render_widget(para, area);
 }
 
-/// Drill-in loader shown when the card is optimistically in Implementing but
-/// its mv RPC hasn't returned yet — i.e., the daemon is still running
-/// ensure_running (clone + devcontainer up + postCreate + tmux start).
+/// Drill-in loader shown while the daemon is provisioning the workspace for a
+/// card. Renders a per-stage checklist sourced from `app.card_progress`; falls
+/// back to a generic animated spinner when no stages have arrived yet (first
+/// ~400 ms after the mv RPC fires).
 fn render_provisioning_loader(f: &mut ratatui::Frame<'_>, area: Rect, app: &App, card_id: &str) {
-    // Braille-dots spinner. Pick a frame based on the wall clock so the
-    // animation runs without any explicit tick.
-    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let frame_idx = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as usize / 80)
-        .unwrap_or(0))
-        % FRAMES.len();
-    let spinner = FRAMES[frame_idx];
-
-    let elapsed_secs = app
-        .pending_mv_started_at
+    let stages: &[reeve_protocol::ProgressStage] = app
+        .card_progress
         .get(card_id)
-        .map(|t| t.elapsed().as_secs());
-    let elapsed_str = elapsed_secs
-        .map(|s| {
-            if s < 60 {
-                format!("{s}s elapsed")
-            } else {
-                format!("{}m{}s elapsed", s / 60, s % 60)
-            }
-        })
-        .unwrap_or_else(|| "starting…".into());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-    let lines = vec![
+    let elapsed = elapsed_str_from(&app.pending_mv_started_at, card_id);
+
+    let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  {spinner}  Provisioning workspace…"),
+            "  Provisioning workspace…",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            format!("  {elapsed_str}"),
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  First-time provisioning of a card typically takes",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  30 – 90 seconds (image build, postCreate, claude install).",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "  Subsequent reprovisions reuse the cached image.",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Tail /tmp/reeved.log for live daemon progress.",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
+
+    if stages.is_empty() {
+        // No progress events yet — show a generic animated spinner.
+        lines.push(Line::from(Span::styled(
+            format!("  {}  starting…", spinner_frame()),
+            Style::default().fg(Color::Yellow),
+        )));
+    } else {
+        for stage in stages {
+            let label = format_stage(&stage.kind);
+            let span = match stage.status {
+                reeve_protocol::ProgressStatus::Completed => Span::styled(
+                    format!("  ✓ {label}"),
+                    Style::default().fg(Color::Green),
+                ),
+                reeve_protocol::ProgressStatus::Active => Span::styled(
+                    format!("  {} {label}", spinner_frame()),
+                    Style::default().fg(Color::Yellow),
+                ),
+                reeve_protocol::ProgressStatus::Failed => Span::styled(
+                    format!("  ✗ {label}"),
+                    Style::default().fg(Color::Red),
+                ),
+            };
+            lines.push(Line::from(span));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  {elapsed}"),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  First-time provisioning of a card typically takes 30–90 seconds.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Subsequent reprovisions reuse the cached image.",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let title_id = card_id.get(..8.min(card_id.len())).unwrap_or(card_id);
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow))
-            .title("provisioning"),
+            .title(format!(" card {} — provisioning ", title_id)),
     );
     f.render_widget(para, area);
+}
+
+fn format_stage(kind: &reeve_protocol::ProgressKind) -> String {
+    match kind {
+        reeve_protocol::ProgressKind::CloneMeta { name } => format!("Cloning meta-repo {name}"),
+        reeve_protocol::ProgressKind::CloneSibling { name } => format!("Cloning sibling {name}"),
+        reeve_protocol::ProgressKind::DevcontainerUp => "Building container".into(),
+        reeve_protocol::ProgressKind::StartingTmux => "Starting session".into(),
+        reeve_protocol::ProgressKind::Done => "Ready".into(),
+    }
+}
+
+fn spinner_frame() -> &'static str {
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    FRAMES[(ms / 80) as usize % FRAMES.len()]
+}
+
+fn elapsed_str_from(
+    started: &std::collections::HashMap<String, std::time::Instant>,
+    card_id: &str,
+) -> String {
+    match started.get(card_id) {
+        Some(t) => {
+            let s = t.elapsed().as_secs();
+            if s < 60 {
+                format!("{s}s elapsed")
+            } else {
+                format!("{}m {}s elapsed", s / 60, s % 60)
+            }
+        }
+        None => "elapsed: —".into(),
+    }
 }
 
 pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
