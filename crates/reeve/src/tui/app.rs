@@ -102,6 +102,12 @@ pub struct App {
     /// While true the TUI renders a full-screen daemon-down overlay
     /// instead of the kanban. Cleared by the next successful refresh.
     pub daemon_unreachable: bool,
+    /// card_id → most recent CardProgressResult.stages. Survives MvErr;
+    /// GC'd when a live session exists for the card.
+    pub card_progress: std::collections::HashMap<String, Vec<reeve_protocol::ProgressStage>>,
+    /// Last poll instant per card; used to rate-limit the card_progress
+    /// fetch to ~400ms while pending_mvs has the card.
+    pub card_progress_last_poll: std::collections::HashMap<String, std::time::Instant>,
 }
 
 impl App {
@@ -128,6 +134,8 @@ impl App {
             pending_mv_intents: std::collections::HashMap::new(),
             pending_mv_started_at: std::collections::HashMap::new(),
             daemon_unreachable: false,
+            card_progress: std::collections::HashMap::new(),
+            card_progress_last_poll: std::collections::HashMap::new(),
         }
     }
 

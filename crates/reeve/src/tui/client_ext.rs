@@ -12,8 +12,9 @@
 
 use anyhow::Result;
 use reeve_protocol::{
-    AttachParams, AttachResult, Card, DeleteParams, EditParams, EditResult, HouseholdSummary,
-    LsResult, MvParams, MvResult, NewParams, NewResult, RpcError, paths,
+    AttachParams, AttachResult, Card, CardProgressParams, CardProgressResult, DeleteParams,
+    EditParams, EditResult, HouseholdSummary, LsResult, MvParams, MvResult, NewParams, NewResult,
+    RpcError, paths,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -62,6 +63,12 @@ pub async fn rpc_attach(
     params: AttachParams,
 ) -> Result<std::result::Result<AttachResult, RpcError>> {
     call("attach", params).await
+}
+
+pub async fn rpc_card_progress(
+    params: CardProgressParams,
+) -> Result<std::result::Result<CardProgressResult, RpcError>> {
+    call("card_progress", params).await
 }
 
 pub async fn rpc_household_ls() -> Result<std::result::Result<Vec<HouseholdSummary>, RpcError>> {
