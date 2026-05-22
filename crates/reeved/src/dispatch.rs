@@ -124,6 +124,17 @@ pub async fn dispatch(
             reeve_household::handle_household_show(&*state.household_repo, cards, params).await
         }
 
+        // --- progress (read-only) ---
+        "card_progress" => {
+            let params = parse_params::<reeve_protocol::CardProgressParams>(req.params)?;
+            let stages = state.progress.get(&params.id).await;
+            serde_json::to_value(reeve_protocol::CardProgressResult {
+                card_id: params.id,
+                stages,
+            })
+            .map_err(internal)
+        }
+
         // --- workspace aggregate ---
         "attach" => {
             let cards = make_card_repo(state.db.clone());
@@ -1690,6 +1701,44 @@ mod tests {
             vec!["running_done", "stopped"],
             "lifecycle calls must be strictly ordered (running_done before stopped); got: {log:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn card_progress_unknown_card_returns_empty_stages() {
+        let state = fresh_state();
+        let req = RpcRequest {
+            id: 1,
+            method: "card_progress".into(),
+            params: serde_json::json!({"id": "no-such-card"}),
+        };
+        let v = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: reeve_protocol::CardProgressResult = serde_json::from_value(v).unwrap();
+        assert_eq!(result.card_id, "no-such-card");
+        assert!(result.stages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn card_progress_returns_reported_stages() {
+        use reeve_protocol::{ProgressKind, ProgressStatus};
+        use reeve_workspace::ProgressReporter;
+        let state = fresh_state();
+        // Report directly into the InMemoryProgress instance held by DaemonState.
+        state
+            .progress
+            .report("c1", ProgressKind::DevcontainerUp, ProgressStatus::Active)
+            .await;
+
+        let req = RpcRequest {
+            id: 1,
+            method: "card_progress".into(),
+            params: serde_json::json!({"id": "c1"}),
+        };
+        let v = dispatch(req, state, CallerContext::host()).await.unwrap();
+        let result: reeve_protocol::CardProgressResult = serde_json::from_value(v).unwrap();
+        assert_eq!(result.card_id, "c1");
+        assert_eq!(result.stages.len(), 1);
+        assert_eq!(result.stages[0].kind, ProgressKind::DevcontainerUp);
+        assert_eq!(result.stages[0].status, ProgressStatus::Active);
     }
 
     /// Concurrent mv for DIFFERENT cards must NOT serialize — both lifecycle
