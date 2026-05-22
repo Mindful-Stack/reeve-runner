@@ -20,7 +20,7 @@ M7 adds two complementary improvements:
 
 **Progress events.** A new `card_progress` RPC returns the stage-by-stage state of an in-flight `ensure_running` call for a given card. The daemon emits Active/Completed/Failed events as it transitions through each stage; the TUI polls the RPC at ~400 ms while the drill-in loader is visible and renders a stage checklist (✓ for done, spinner for active, dim for pending) inside the same panel the M6 generic loader occupies.
 
-**Destructive-mv confirmation.** A modal prompt before any mv that would trigger `ensure_stopped` — i.e., moving an Implementing-column card to a non-Implementing column, or any card to Done. `y`/`Enter` confirms, `n`/`Esc` cancels. Wraps the existing mv-mutation path (`schedule_mv`) without changing the daemon side.
+**Destructive-mv confirmation.** A modal prompt before any mv that would trigger `ensure_stopped`. The exact trigger matrix matches `reeve_card::transitions::on_column_change` — i.e., `Implementing | Testing | Review → Backlog | Planning`, or any column → `Done`. `y`/`Enter` confirms, `n`/`Esc` cancels. Wraps the existing mv-mutation path (`schedule_mv`) without changing the daemon side.
 
 Both ship together because they touch the same code paths and are conceptually paired: "tell the user what expensive operations are doing" + "make expensive operations harder to start by accident."
 
@@ -55,9 +55,12 @@ pub struct CardProgressResult {
 pub struct ProgressStage {
     pub kind: ProgressKind,
     pub status: ProgressStatus,
-    /// Unix-epoch seconds. Set on entry; rewritten to completion-time on
-    /// status transition (so consumers can compute per-stage duration).
-    pub at: i64,
+    /// Unix-epoch seconds when the stage started (`Active` report fired).
+    /// Never mutated after creation.
+    pub started_at: i64,
+    /// Unix-epoch seconds when the stage transitioned to Completed/Failed.
+    /// `None` while Active. Duration = finished_at - started_at when set.
+    pub finished_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -103,41 +106,124 @@ pub type ProgressHandle = Arc<dyn ProgressReporter>;
 
 Wired through `LiveWorkspaceLifecycle::new(..., progress: ProgressHandle)` and stored as a field. Passed down to `clones::clone_all_for_card` as `&dyn ProgressReporter` along with `card_id`.
 
-#### Where reports fire
+#### `run_stage` helper
 
-In `LiveWorkspaceLifecycle::ensure_running`:
+Every fallible step in `ensure_running` (clone, devcontainer up, discover, upsert, tmux start) must be wrapped so an `Err` propagating via `?` ALWAYS emits a matching `Failed` event. Introduce a single helper that enforces this:
 
-```
-clones::clone_all_for_card(..., &*self.progress, card_id).await?;
-self.progress.report(card_id, ProgressKind::DevcontainerUp, Active).await;
-self.containers.spawn(argv).await?;
-self.progress.report(card_id, ProgressKind::DevcontainerUp, Completed).await;
-// ... discover, upsert, listeners.spawn ...
-self.progress.report(card_id, ProgressKind::StartingTmux, Active).await;
-let tmux_result = self.containers.exec_in_tmux(...).await;
-self.progress.report(card_id, ProgressKind::StartingTmux,
-    if tmux_result.is_ok() { Completed } else { Failed }).await;
-self.progress.report(card_id, ProgressKind::Done, Completed).await;
-```
-
-In `clones::clone_all_for_card`, each `ensure_cloned` call is wrapped:
-
-```
-ops.report(card_id, kind_for(entry), Active).await;
-match ensure_cloned(...).await {
-    Ok(_)  => ops.report(card_id, kind_for(entry), Completed).await,
-    Err(e) => {
-        ops.report(card_id, kind_for(entry), Failed).await;
-        return Err(e);
+```rust
+// reeve-workspace/src/lifecycle.rs (or a sibling progress.rs module)
+async fn run_stage<T, F>(
+    progress: &dyn ProgressReporter,
+    card_id: &str,
+    kind: ProgressKind,
+    f: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    progress.report(card_id, kind.clone(), ProgressStatus::Active).await;
+    match f.await {
+        Ok(v) => {
+            progress.report(card_id, kind, ProgressStatus::Completed).await;
+            Ok(v)
+        }
+        Err(e) => {
+            progress.report(card_id, kind, ProgressStatus::Failed).await;
+            Err(e)
+        }
     }
 }
 ```
 
-#### Failure path
+Every fallible step in the lifecycle MUST go through `run_stage`. Reviewers should flag any new `?` inside `ensure_running` that isn't inside a `run_stage` wrapper.
 
-On any `?` propagation out of `ensure_running`, the lifecycle has already reported `Failed` for the current stage (per the per-step wrapping above). The caller (`handle_mv`) propagates the error as today; with the M3-followup-5 reorder the column stays in its old value.
+#### Stage grouping
 
-The `Failed` entry sits on the Vec until cleared by `ensure_stopped` or by a fresh `ensure_running` start (which resets the Vec on its first `Active` report).
+A stage covers a semantic unit, not a single function call. `DevcontainerUp` groups three operations (spawn + discover + upsert) because they're a single conceptual step from the user's POV ("container is building"). Decomposing further would surface internal daemon bookkeeping (`upsert_container` is just a DB write) that the user doesn't care about.
+
+#### Where reports fire
+
+In `LiveWorkspaceLifecycle::ensure_running`:
+
+```rust
+clones::clone_all_for_card(
+    &*self.git, &household, &manifest, &workspace_path,
+    &*self.progress, card_id,
+).await?;
+
+let container_name = run_stage(
+    &*self.progress, card_id, ProgressKind::DevcontainerUp,
+    async {
+        self.containers.spawn(argv).await?;
+        let name = discover_with_deadline(&*self.containers, card_id).await?;
+        self.workspaces
+            .upsert_container(card_id, &name, ContainerStatus::Running, now_secs())
+            .await?;
+        Ok(name)
+    },
+).await?;
+
+self.listeners.spawn(card_id, socket).await; // infallible; no stage
+
+// tmux start is now FATAL on failure (see "Tmux failure semantics" below).
+let tmux_cmd = format!(
+    "export PATH=\"$HOME/.local/bin:$PATH\" && cd /workspaces/{card_id} && (claude || bash)"
+);
+run_stage(
+    &*self.progress, card_id, ProgressKind::StartingTmux,
+    self.containers.exec_in_tmux(&container_name, "reeve", &tmux_cmd),
+).await?;
+
+self.progress
+    .report(card_id, ProgressKind::Done, ProgressStatus::Completed)
+    .await;
+Ok(())
+```
+
+In `clones::clone_all_for_card`, each per-entry clone gets its own stage:
+
+```rust
+// Step 1 — meta-repo. Inline entries don't apply here.
+run_stage(progress, card_id,
+    ProgressKind::CloneMeta { name: manifest.meta_repo.clone() },
+    ensure_cloned(ops, meta, workspace, "workspace meta-repo"),
+).await?;
+
+// Step 2 — each sibling. ONLY entries with `source/.git/` get a stage;
+// inline entries (no .git/ on the source side) don't produce progress
+// events because there's no clone to track.
+for entry in manifest.siblings() {
+    let source = meta.join(&entry.name);
+    if !source.join(".git").exists() {
+        continue; // inline; verified-present check still happens later
+    }
+    let dest = workspace.join(&entry.name);
+    run_stage(progress, card_id,
+        ProgressKind::CloneSibling { name: entry.name.clone() },
+        ensure_cloned(ops, &source, &dest, &format!("sibling '{}'", entry.name)),
+    ).await?;
+}
+
+// Inline-entry presence check (existing behaviour, unchanged).
+for entry in manifest.siblings() {
+    let source = meta.join(&entry.name);
+    if source.join(".git").exists() { continue; }
+    let dest = workspace.join(&entry.name);
+    if !dest.exists() {
+        anyhow::bail!("inline entry '{}' missing from workspace clone", entry.name);
+    }
+}
+```
+
+#### Tmux failure semantics
+
+M5/M6 lifecycle was warn-not-bail on `exec_in_tmux` failure: the column transition still succeeded; the user discovered the issue when they ran `reeve attach`. With M6's embedded session pane integral to the UX, that rationale is obsolete — a card in Implementing without a tmux session is broken from the TUI's POV. **M7 makes tmux-start failure fatal**: `run_stage` propagates the error via `?`, `handle_mv` returns Err, and (per M3-followup-5's reorder) the card stays in its previous column.
+
+Consequence: the stage Vec ending in `StartingTmux(Failed)` is the terminal state for a tmux-start failure. No `Done` event fires. The TUI renders the Failed checklist; the user retries with `r` or by mv'ing in again.
+
+#### Failure path (cleaned up)
+
+Every `?` inside `ensure_running` flows through a `run_stage` call, which means an in-progress stage's `Failed` event is guaranteed to fire before the error propagates out. The caller (`handle_mv`) propagates the error; with the M3-followup-5 reorder the column stays in its old value. The `Failed` entry sits on the Vec until cleared by `ensure_stopped` or by a fresh `ensure_running` start (which resets the Vec on its first `Active` report).
 
 ### Storage (in `reeved`)
 
@@ -221,11 +307,15 @@ for card_id in pending_ids {
         }
     }
 }
-app.card_progress.retain(|id, _| app.pending_mvs.contains_key(id));
-app.card_progress_last_poll.retain(|id, _| app.pending_mvs.contains_key(id));
+// On MvOk: once the session pane appears, the progress data isn't useful
+// anymore. GC card_progress for cards that now have a live session.
+app.card_progress.retain(|id, _| app.sessions.get(id).is_none());
+app.card_progress_last_poll.retain(|id, _| app.sessions.get(id).is_none());
 ```
 
-Polling is gated on `pending_mvs.contains_key(card_id)` — the same gate the drill-in loader uses. Once the mv RPC returns and `pending_mvs` decrements to 0, the next drive-loop tick GC's `card_progress` for that id.
+Polling is gated on `pending_mvs` (active spawn → fetch progress). GC is gated on `sessions` (live session → progress data is stale). The gap between the two is intentional: a **failed** spawn decrements `pending_mvs` (polling stops) but doesn't create a session — so its last known progress Vec stays in `app.card_progress` and remains renderable until either the user re-attempts the mv (which fresh-polls and overwrites) or the card transitions to a live session.
+
+For an extra robustness step, on `OpEvent::MvErr` fire one final `rpc_card_progress` fetch synchronously before the handler returns, so the post-failure render shows the terminal `Failed` stage even if the last polling tick happened just before the failure landed.
 
 Renderer replaces the body of `render_provisioning_loader`:
 
@@ -270,6 +360,40 @@ fn format_stage(kind: &ProgressKind) -> String {
 ```
 
 When `stages` is empty (RPC hasn't returned yet — first 400 ms), the loader falls back to the M6 "Provisioning workspace…" + elapsed counter alone. Same animation framing as today.
+
+#### Loader-visibility gate (changed from M6)
+
+The drill-in's detail pane chooses between three render paths. M6 gated the loader on `card.column == Implementing && sessions.get(card_id).is_none() && pending_mvs.contains_key(card_id)`. M7 changes the third condition: gate on `card_progress.contains_key(card_id)` (i.e., we have progress data to show), and drop the column check entirely:
+
+```rust
+fn render_detail_pane(f, area, app) {
+    let Some(card) = selected_card(app) else { return render_no_selection(f, area); };
+
+    // 1. Live session takes priority — column-gated as today.
+    if card.column == Column::Implementing {
+        if let Some(session) = app.sessions.get(&card.id) {
+            return render_session_pane(f, area, app, session);
+        }
+    }
+
+    // 2. Progress data available → loader. NOT gated on card.column, so a
+    //    failed spawn whose optimistic column has reverted to Backlog still
+    //    shows the Failed checklist while the user is on the card.
+    if app.card_progress.contains_key(&card.id) {
+        return render_provisioning_loader(f, area, app, &card.id);
+    }
+
+    // 3. Static card detail.
+    render_card_detail(f, area, app, card);
+}
+```
+
+User dismisses a lingering Failed checklist by either:
+- Closing the drill-in (`Esc`) — the loader simply isn't rendered.
+- Re-attempting the mv — `OpEvent::MvOk` cleans up `card_progress` via the session-presence GC; `MvErr` overwrites with fresh stages.
+- Moving the card out of Implementing → daemon's `ensure_stopped` calls `clear`, next TUI poll (next mv) would see empty stages.
+
+No explicit "clear progress" keybinding for now — the auto-cleanup paths cover the common cases.
 
 Sketch mid-spawn:
 
@@ -381,7 +505,8 @@ Example body:
 | reeved | `InMemoryProgress::report_active_after_terminal_resets` | Vec ending in Done(Completed) or X(Failed) is replaced |
 | reeved | `InMemoryProgress::clear_removes_entry` | get returns vec![] after clear |
 | reeved | `InMemoryProgress::get_unknown_returns_empty` | no panic, returns vec![] |
-| reeve-workspace | `clones::clone_all_for_card_emits_active_completed_per_repo` | mock reporter records Active+Completed for meta + each sibling in declaration order |
+| reeve-workspace | `clones::clone_all_for_card_emits_active_completed_per_repo` | mock reporter records Active+Completed for meta + each **separate-sibling** (source/.git/ exists) in declaration order |
+| reeve-workspace | `clones::clone_all_for_card_skips_inline_entries_in_progress` | manifest with one inline (no source/.git/) and one separate sibling: reporter sees CloneMeta + CloneSibling for the separate one, **no** stage for the inline |
 | reeve-workspace | `clones::clone_all_for_card_emits_failed_on_clone_error` | sibling clone fails → Active then Failed for that sibling, no further reports |
 | reeve-workspace | `lifecycle::ensure_running_happy_path_emits_full_stage_sequence` | full Vec: clones, DevcontainerUp(Active+Completed), StartingTmux(Active+Completed), Done(Completed) |
 | reeve-workspace | `lifecycle::ensure_running_devcontainer_up_failure_reports_failed` | DevcontainerUp(Failed), no later stages, returns Err |
@@ -393,7 +518,16 @@ Example body:
 
 ### E2E
 
-Extend `m6_daemon_round_trip_for_tui_smoke` (or new sibling): after creating a card, call `card_progress` via the CLI proxy and assert the response is an empty Vec for a card whose mv hasn't started, and (post-mv) check that the dispatch arm wires correctly. Won't exercise the lifecycle (no docker in proxy test) — verifies routing only.
+Extend `m6_daemon_round_trip_for_tui_smoke` (or new sibling): the reeve CLI doesn't expose a raw-RPC subcommand, so the test invokes the daemon's `card_progress` directly via `reeve::client::call` against the same UDS the daemon binds. Assert the response shape — for a card whose mv hasn't started, stages is `vec![]`; for an unknown id, also `vec![]` (no NOT_FOUND). Without docker we can't exercise the lifecycle producing stages, so this verifies routing + empty-vec semantics only.
+
+```rust
+// Sketch:
+let socket = temp.path().join("reeved.sock");
+let value = reeve::client::call(&socket, "card_progress",
+    serde_json::json!({"id": card_id})).await.unwrap().unwrap();
+let result: CardProgressResult = serde_json::from_value(value).unwrap();
+assert!(result.stages.is_empty());
+```
 
 Render-snapshot tests for the loader and modal are deferred to a follow-up render-test infrastructure task (no existing pattern in the repo to extend).
 
@@ -413,11 +547,13 @@ After implementation, smoke list:
 ## Risks / open notes
 
 1. **Lock contention on `InMemoryProgress`.** Single global `Mutex<HashMap>`. Fine for ≤ 10 concurrent provisions. Switch to `DashMap` if parallelism scales.
-2. **`Done` lingers indefinitely in the daemon's HashMap** unless cleared. Acceptable: the TUI side GC's its own copy on `pending_mvs` decrement; the daemon-side entry is reset by the next `ensure_running` for the same card or wiped on `ensure_stopped`. Memory cost: tens of bytes per Implementing card ever provisioned in this daemon's lifetime. If a user runs the daemon for weeks across thousands of provisions, prune by removing entries whose only stage is `Done(Completed)` older than 1 hour.
+2. **`Done` lingers indefinitely in the daemon's HashMap** unless cleared. Acceptable: the daemon-side entry is reset by the next `ensure_running` for the same card or wiped on `ensure_stopped`. TUI-side GC is now gated on `sessions.get(id).is_some()` (i.e., the spawn succeeded and the user is in the session pane) so the data hangs around for failure-visibility but disappears once the card transitions to its live session. Memory cost on the daemon: tens of bytes per Implementing card ever provisioned in this daemon's lifetime. If a user runs the daemon for weeks across thousands of provisions, prune by removing entries whose only stage is `Done(Completed)` older than 1 hour.
 3. **In-flight progress lost on daemon restart.** A spawn the previous daemon was running is dead with it (the subprocess dies). The user retries via `r`; new daemon starts fresh. Surfaced as a slight UI flicker — loader briefly empty, then re-fills as the new spawn reports.
 4. **Reporter `report` holds the inner `Mutex` briefly inside an async fn.** No await held across the lock — `lock → mutate → drop` is synchronous within the fn body, then the fn awaits nothing further. Safe.
 5. **`is_destructive` matrix can drift from `on_column_change` matrix.** They're in different crates (`reeve` vs `reeve-card`). Two-line comment in `actions.rs` next to `is_destructive` cross-referencing the source-of-truth, and a unit test (`is_destructive_matrix_matches_lifecycle_routing`) that asserts they agree. Refactoring `on_column_change` to expose an `is_side_effecting()` query would eliminate the duplication; deferred — the matrix is stable.
 6. **The 400 ms progress poll is in addition to the 500 ms ls poll.** Two RPCs per pending card during the spawn window. Both are sub-ms over UDS, both are short responses. No observable impact on daemon load. If we later scale to dozens of concurrent provisions, batch via a `card_progress_many` variant.
+7. **Tmux-fatal behavior change.** M5/M6 was warn-not-bail; M7 makes it fatal. Side-effect: any household template that ships without tmux installed in the container now FAILS the mv to Implementing rather than silently producing a card with no session. Mitigation: the `Failed` stage in the loader makes the diagnosis immediate ("✗ Starting session"). Affected templates: the witan-household template was updated in `7eff816` (during M6 smoke) to install tmux, so the bundled template is fine. Third-party templates without tmux will trip.
+8. **Failure visibility persists beyond pending_mvs.** With the visibility gate changed to "card_progress has data + no session", a Failed checklist stays visible in the drill-in until the user re-attempts the mv or the card transitions to a session. This is intentional. If a user wants to forget a failure exists, they can close the drill-in (the checklist is only rendered in the drill-in's detail pane, never in the kanban-full layout).
 
 ---
 
@@ -427,6 +563,15 @@ After implementation, smoke list:
   - "Tell user what stage daemon is in" → `card_progress` RPC + stage checklist render ✓
   - "Don't lose work to accidental destructive mvs" → `ConfirmDestructiveMv` modal ✓
 - **Placeholders:** none. Every interface is named, every flow traced.
-- **Internal consistency:** `is_destructive` matrix matches `on_column_change` for "Done from anywhere" + "(Implementing|Testing|Review) → (Backlog|Planning)" — yes. The matrix appears in two places (spec + planned source) but the spec self-flags this as a known duplication with a test guarding drift.
+- **Internal consistency:** `is_destructive` matrix matches `on_column_change` for "Done from anywhere" + "(Implementing|Testing|Review) → (Backlog|Planning)" — yes. The matrix appears in two places (spec + planned source) but the spec self-flags this as a known duplication with a test guarding drift. Summary text and detail sections agree on the matrix.
 - **Scope creep check:** kept tight to the two needs. Stream output, render snapshots, configurable confirmation all explicitly deferred.
 - **Architecture fit:** `ProgressReporter` follows the existing `ListenerOps` pattern (port in workspace, impl in reeved, wired in main.rs). Storage stays in `reeved`'s memory — no DB schema change, no cross-context FKs. Card aggregate untouched.
+
+### Changes from the first draft (pre-user-review)
+
+- **`ProgressStage` timestamps**: dropped overwrite-on-completion semantics; now `started_at: i64` + `finished_at: Option<i64>` so consumers can compute per-stage duration without losing start time.
+- **Failure reporting**: introduced a single `run_stage` helper that wraps EVERY fallible step (clones, devcontainer up, discover, upsert, tmux start). Reviewer flagged that the old draft only wrapped clones + spawn + tmux, leaving discover/upsert failures without a `Failed` event.
+- **Tmux failure semantics**: now fatal (`?`-propagated). The old draft emitted `StartingTmux(Failed)` followed by `Done(Completed)`, which was a contradictory signal. The M5 warn-not-bail rationale ("user discovers via reeve attach") is obsolete under M6's session pane.
+- **UI failure visibility**: the loader-render gate no longer requires `card.column == Implementing` or `pending_mvs`. Now: "card_progress has entries + no session." A failed spawn whose optimistic column reverts to Backlog still shows the Failed checklist in the drill-in until the user re-attempts or moves on. TUI-side GC moved from `pending_mvs.contains_key` to `sessions.get(id).is_some()`.
+- **Inline entries**: explicitly call out that they don't produce progress stages (the clone step doesn't apply); only separate-sibling repos with `source/.git/` do.
+- **E2E test**: uses `reeve::client::call` directly (no raw-RPC CLI exists), with a sketch.
