@@ -12,9 +12,11 @@ use std::sync::Arc;
 
 #[async_trait]
 pub trait ProgressReporter: Send + Sync {
-    /// Active = stage just started; Completed/Failed = update the most-recent
-    /// matching stage's status. See InMemoryProgress for the exact mutation
-    /// rules.
+    /// Active appends a new stage with the given `kind` and `status: Active`.
+    /// Completed/Failed locates the most-recent stage with matching `kind`
+    /// and flips its status + sets `finished_at`. If no matching Active
+    /// stage exists (shouldn't happen — `run_stage` always emits Active
+    /// first), implementations may log a warn and append a synthetic.
     async fn report(&self, card_id: &str, kind: ProgressKind, status: ProgressStatus);
 
     /// Drop all progress entries for this card. Called on ensure_stopped.
