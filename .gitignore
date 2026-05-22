@@ -2,3 +2,22 @@
 **/*.rs.bk
 .cargo/
 *.pdb
+
+# witan-household additions:
+# A witan-household meta-repo tracks only its own workspace artefacts:
+# the manifest, the devcontainer config, this gitignore, the README,
+# the workspace-level CLAUDE.md, and the bundled `lore/` knowledge base.
+# Sibling code repos clone into this directory at runtime (manually, by a
+# user-owned bootstrap, or by `reeve household add`) and are intentionally
+# left untracked.
+
+/*
+
+!/.devcontainer/
+!/.gitignore
+!/CLAUDE.md
+!/Makefile
+!/README.md
+!/lore/
+!/household.json
+!/scripts/

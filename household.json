@@ -1,0 +1,15 @@
+{
+  "meta_repo": "reeve",
+  "knowledge_base": "lore",
+  "repos": [
+    {
+      "name": "reeve",
+      "url": "git@github.com:Daniel-Thyselius/reeve.git",
+      "description": "The Reeve orchestrator daemon + CLI/TUI. This meta-repo holds the inline lore/ KB documenting Reeve's domain model and standards."
+    },
+    {
+      "name": "lore",
+      "description": "Inline knowledge-base. Domain entries (Card/Workspace/Household aggregates) + standards (architecture rules, Rust patterns). Split into a sibling repo via scripts/split-lore.sh if it outgrows the meta-repo."
+    }
+  ]
+}
