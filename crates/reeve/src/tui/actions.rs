@@ -15,9 +15,11 @@ pub async fn handle(app: &mut App, action: Action) {
             // Manual retry: clear the failed-session memo so reconcile will
             // attempt fresh spawns this tick.
             app.sessions.clear_failed();
-            if let Ok(Ok(result)) = client_ext::rpc_ls().await {
-                merge_cards(app, result.cards);
-                app.last_refresh = std::time::Instant::now();
+            // Shared refresh: updates daemon_unreachable, merges cards,
+            // reconciles sessions, etc. On daemon-down the flag stays set
+            // and the banner remains; on success the banner clears.
+            refresh(app).await;
+            if !app.daemon_unreachable {
                 let still_present = prev_id
                     .as_ref()
                     .map(|id| app.focused_cards().iter().any(|c| &c.id == id))
@@ -27,13 +29,6 @@ pub async fn handle(app: &mut App, action: Action) {
                 } else {
                     reset_selection(app);
                 }
-                let implementing: Vec<String> = app
-                    .cards
-                    .iter()
-                    .filter(|c| c.column == reeve_protocol::Column::Implementing)
-                    .map(|c| c.id.clone())
-                    .collect();
-                app.sessions.reconcile(&implementing);
             }
         }
         Action::FocusPrevColumn => {
@@ -757,6 +752,38 @@ pub(crate) fn fire_pending_mv(app: &mut App, card_id: String, target: Column) {
 /// - If a card has a pending edit, keep the local card (preserves the
 ///   optimistic brief).
 /// - Otherwise, use the server's version.
+/// Cards the server confirms in Implementing AND for which no mv RPC is
+/// in flight. Drives the session pane's spawn loop — without this filter,
+/// optimistically-flipped cards would attach before the daemon committed.
+pub fn confirmed_implementing(app: &App) -> Vec<String> {
+    app.cards
+        .iter()
+        .filter(|c| c.column == reeve_protocol::Column::Implementing)
+        .filter(|c| !app.pending_mvs.contains_key(&c.id))
+        .map(|c| c.id.clone())
+        .collect()
+}
+
+/// Single source of truth for periodic ls-poll. Updates cards via
+/// merge_cards, refreshes session pane reconciliation, and toggles
+/// app.daemon_unreachable based on the RPC outcome — so the full-screen
+/// daemon-down banner appears/disappears automatically.
+pub async fn refresh(app: &mut App) {
+    match crate::tui::client_ext::rpc_ls().await {
+        Ok(Ok(result)) => {
+            merge_cards(app, result.cards);
+            app.daemon_unreachable = false;
+            app.last_refresh = std::time::Instant::now();
+            ensure_selection_valid(app);
+            let implementing = confirmed_implementing(app);
+            app.sessions.reconcile(&implementing);
+        }
+        Ok(Err(_)) | Err(_) => {
+            app.daemon_unreachable = true;
+        }
+    }
+}
+
 pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
     let mut merged: Vec<reeve_protocol::Card> = Vec::with_capacity(server_cards.len());
     for s_card in server_cards {

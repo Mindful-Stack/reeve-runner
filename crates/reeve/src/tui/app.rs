@@ -1,4 +1,3 @@
-use crate::tui::client_ext;
 use crate::tui::events;
 use crate::tui::render;
 use anyhow::Result;
@@ -78,6 +77,10 @@ pub struct App {
     /// drill-in to show an elapsed-time loader while the daemon is busy
     /// with ensure_running. Cleared when pending_mvs drops to 0.
     pub pending_mv_started_at: std::collections::HashMap<String, std::time::Instant>,
+    /// Set when the most recent ls RPC failed (transport or RPC-level).
+    /// While true the TUI renders a full-screen daemon-down overlay
+    /// instead of the kanban. Cleared by the next successful refresh.
+    pub daemon_unreachable: bool,
 }
 
 impl App {
@@ -103,6 +106,7 @@ impl App {
             pending_deletes: std::collections::HashSet::new(),
             pending_mv_intents: std::collections::HashMap::new(),
             pending_mv_started_at: std::collections::HashMap::new(),
+            daemon_unreachable: false,
         }
     }
 
@@ -134,21 +138,6 @@ impl App {
     }
 }
 
-/// Cards that the SERVER reports in Implementing AND for which no mv RPC
-/// is currently in flight. Used to drive the session pane spawn loop —
-/// without this filter, optimistically-flipped cards would have
-/// `reeve attach` fired against them before the daemon committed the
-/// column change, causing immediate "card is in <column>; attach only
-/// works in Implementing" failures.
-fn confirmed_implementing(app: &App) -> Vec<String> {
-    app.cards
-        .iter()
-        .filter(|c| c.column == Column::Implementing)
-        .filter(|c| !app.pending_mvs.contains_key(&c.id))
-        .map(|c| c.id.clone())
-        .collect()
-}
-
 pub async fn run_loop() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let result = drive(&mut terminal).await;
@@ -173,13 +162,7 @@ fn restore_terminal(terminal: &mut Term) -> Result<()> {
 
 async fn drive(terminal: &mut Term) -> Result<()> {
     let mut app = App::new();
-    if let Ok(Ok(result)) = client_ext::rpc_ls().await {
-        app.cards = result.cards;
-        app.last_refresh = Instant::now();
-        crate::tui::actions::ensure_selection_valid(&mut app);
-        let implementing = confirmed_implementing(&app);
-        app.sessions.reconcile(&implementing);
-    }
+    crate::tui::actions::refresh(&mut app).await;
 
     while !app.quit {
         app.clear_expired_status();
@@ -298,13 +281,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
         }
 
         if app.last_refresh.elapsed() > Duration::from_millis(500) {
-            if let Ok(Ok(result)) = client_ext::rpc_ls().await {
-                crate::tui::actions::merge_cards(&mut app, result.cards);
-                app.last_refresh = Instant::now();
-                crate::tui::actions::ensure_selection_valid(&mut app);
-                let implementing = confirmed_implementing(&app);
-                app.sessions.reconcile(&implementing);
-            }
+            crate::tui::actions::refresh(&mut app).await;
         }
     }
     Ok(())

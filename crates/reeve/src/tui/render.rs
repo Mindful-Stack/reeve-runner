@@ -8,6 +8,14 @@ use tui_term::widget::PseudoTerminal;
 
 pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
     let area = f.area();
+
+    // Daemon-down overlay short-circuits the entire layout — when the
+    // daemon is unreachable, none of the kanban state is trustworthy.
+    if app.daemon_unreachable {
+        render_daemon_down(f, area);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
@@ -23,6 +31,44 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &App) {
     }
     render_status_bar(f, chunks[2], app);
     render_modal(f, area, app);
+}
+
+fn render_daemon_down(f: &mut ratatui::Frame<'_>, area: Rect) {
+    let popup = centered_rect(60, 40, area);
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Cannot connect to the reeve daemon",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::from("Start it in another terminal:"),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  reeved",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::raw(""),
+        Line::from("then press 'r' to retry."),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "'q' to quit",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let para = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("daemon not running"),
+        );
+    // Clear the underlying frame so previous content doesn't bleed through.
+    f.render_widget(ratatui::widgets::Clear, area);
+    f.render_widget(para, popup);
 }
 
 fn render_status_bar(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
