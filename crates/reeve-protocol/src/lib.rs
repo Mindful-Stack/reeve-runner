@@ -343,19 +343,19 @@ pub struct DeleteParams {
 }
 
 /// Parameters for the `card_progress` method.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CardProgressParams {
     pub id: String,
 }
 
 /// Result for the `card_progress` method.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CardProgressResult {
     pub card_id: String,
     pub stages: Vec<ProgressStage>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressStage {
     pub kind: ProgressKind,
     pub status: ProgressStatus,
@@ -367,7 +367,7 @@ pub struct ProgressStage {
     pub finished_at: Option<i64>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProgressKind {
     CloneMeta { name: String },
@@ -377,7 +377,7 @@ pub enum ProgressKind {
     Done,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgressStatus {
     Active,
@@ -796,8 +796,7 @@ mod tests {
         };
         let s = serde_json::to_string(&stage).unwrap();
         let back: ProgressStage = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.status, ProgressStatus::Active);
-        assert_eq!(back.finished_at, None);
+        assert_eq!(back, stage);
     }
 
     #[test]
@@ -808,7 +807,6 @@ mod tests {
         };
         let s = serde_json::to_string(&r).unwrap();
         let back: CardProgressResult = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.card_id, "abc");
-        assert!(back.stages.is_empty());
+        assert_eq!(back, r);
     }
 }
