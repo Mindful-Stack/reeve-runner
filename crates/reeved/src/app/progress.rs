@@ -10,15 +10,14 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+#[derive(Default)]
 pub struct InMemoryProgress {
     state: Arc<Mutex<HashMap<String, Vec<ProgressStage>>>>,
 }
 
 impl InMemoryProgress {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Arc::new(Mutex::new(HashMap::new())),
-        })
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Snapshot the stages for a card. Empty vec for unknown ids; never errors.
@@ -29,14 +28,6 @@ impl InMemoryProgress {
             .get(card_id)
             .cloned()
             .unwrap_or_default()
-    }
-}
-
-impl Default for InMemoryProgress {
-    fn default() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(HashMap::new())),
-        }
     }
 }
 
@@ -193,5 +184,35 @@ mod tests {
         p.report("c", ProgressKind::DevcontainerUp, ProgressStatus::Active).await;
         p.clear("c").await;
         assert!(p.get("c").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cards_are_independent() {
+        let p = InMemoryProgress::default();
+        p.report("a", ProgressKind::DevcontainerUp, ProgressStatus::Active).await;
+        p.report("b", ProgressKind::CloneMeta { name: "x".into() }, ProgressStatus::Active).await;
+        p.clear("a").await;
+        assert!(p.get("a").await.is_empty(), "a's clear didn't remove a's stages");
+        assert_eq!(p.get("b").await.len(), 1, "a's clear must not touch b");
+    }
+
+    #[tokio::test]
+    async fn report_completed_with_no_active_match_appends_synthetic() {
+        // Direct test of the no-match-append branch: a Completed report
+        // with no preceding Active for that kind. The synthetic stage
+        // should carry started_at == finished_at, matching kind, matching
+        // status.
+        let p = InMemoryProgress::default();
+        p.report("c", ProgressKind::DevcontainerUp, ProgressStatus::Completed).await;
+        let v = p.get("c").await;
+        assert_eq!(v.len(), 1, "synthetic stage appended");
+        assert_eq!(v[0].kind, ProgressKind::DevcontainerUp);
+        assert_eq!(v[0].status, ProgressStatus::Completed);
+        assert!(v[0].finished_at.is_some(), "synthetic stage has finished_at");
+        assert_eq!(
+            v[0].started_at,
+            v[0].finished_at.unwrap(),
+            "started_at == finished_at signals 'no active phase observed'"
+        );
     }
 }
