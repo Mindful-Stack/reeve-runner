@@ -342,6 +342,49 @@ pub struct DeleteParams {
     pub id: String,
 }
 
+/// Parameters for the `card_progress` method.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct CardProgressParams {
+    pub id: String,
+}
+
+/// Result for the `card_progress` method.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct CardProgressResult {
+    pub card_id: String,
+    pub stages: Vec<ProgressStage>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct ProgressStage {
+    pub kind: ProgressKind,
+    pub status: ProgressStatus,
+    /// Unix-epoch seconds when the stage started. Set on the Active report
+    /// and never mutated.
+    pub started_at: i64,
+    /// Unix-epoch seconds when the stage transitioned to Completed/Failed.
+    /// `None` while Active. Duration = finished_at - started_at when set.
+    pub finished_at: Option<i64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProgressKind {
+    CloneMeta { name: String },
+    CloneSibling { name: String },
+    DevcontainerUp,
+    StartingTmux,
+    Done,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressStatus {
+    Active,
+    Completed,
+    Failed,
+}
+
 /// Shared runtime-directory helpers (used by both the daemon and clients).
 pub mod paths {
     use std::path::PathBuf;
@@ -728,5 +771,44 @@ mod tests {
         let p = paths::card_workspace_path("abc-123");
         assert!(p.ends_with("abc-123"));
         assert_eq!(p.parent().unwrap(), paths::cards_workspace_dir());
+    }
+
+    #[test]
+    fn progress_kind_serializes_with_tag_kind() {
+        let k = ProgressKind::CloneSibling {
+            name: "reeve".into(),
+        };
+        let v = serde_json::to_value(&k).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"kind": "clone_sibling", "name": "reeve"}),
+            "snake_case + #[serde(tag = \"kind\")] discriminator",
+        );
+    }
+
+    #[test]
+    fn progress_stage_round_trips() {
+        let stage = ProgressStage {
+            kind: ProgressKind::DevcontainerUp,
+            status: ProgressStatus::Active,
+            started_at: 1_700_000_000,
+            finished_at: None,
+        };
+        let s = serde_json::to_string(&stage).unwrap();
+        let back: ProgressStage = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.status, ProgressStatus::Active);
+        assert_eq!(back.finished_at, None);
+    }
+
+    #[test]
+    fn card_progress_result_with_no_stages_round_trips() {
+        let r = CardProgressResult {
+            card_id: "abc".into(),
+            stages: vec![],
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let back: CardProgressResult = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.card_id, "abc");
+        assert!(back.stages.is_empty());
     }
 }
