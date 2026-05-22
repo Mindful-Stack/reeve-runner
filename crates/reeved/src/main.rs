@@ -80,6 +80,9 @@ async fn main() -> Result<()> {
     let workspaces = reeve_workspace::make_workspace_repo(db.clone());
     let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
 
+    let progress = Arc::new(app::progress::InMemoryProgress::new());
+    let progress_handle: reeve_workspace::ProgressHandle = progress.clone();
+
     let workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle> =
         Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
             workspaces.clone(),
@@ -87,6 +90,7 @@ async fn main() -> Result<()> {
             git.clone(),
             containers.clone(),
             listeners_arc,
+            progress_handle,
             claude_dir,
             api_key,
         ));
@@ -101,6 +105,7 @@ async fn main() -> Result<()> {
         household_repo,
         household_lookup,
         workspace_lifecycle,
+        progress,
         card_locks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     dispatcher_holder

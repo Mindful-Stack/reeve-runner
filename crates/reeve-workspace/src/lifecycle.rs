@@ -31,6 +31,7 @@ pub struct LiveWorkspaceLifecycle {
     git: Arc<dyn GitOps>,
     containers: Arc<dyn ContainerOps>,
     listeners: ListenerHandle,
+    progress: crate::ProgressHandle,
     claude_dir: PathBuf,
     api_key: Option<String>,
 }
@@ -42,6 +43,7 @@ impl LiveWorkspaceLifecycle {
         git: Arc<dyn GitOps>,
         containers: Arc<dyn ContainerOps>,
         listeners: ListenerHandle,
+        progress: crate::ProgressHandle,
         claude_dir: PathBuf,
         api_key: Option<String>,
     ) -> Self {
@@ -51,6 +53,7 @@ impl LiveWorkspaceLifecycle {
             git,
             containers,
             listeners,
+            progress,
             claude_dir,
             api_key,
         }

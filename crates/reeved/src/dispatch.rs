@@ -247,12 +247,15 @@ mod tests {
         listeners: &ListenerRegistry,
     ) -> Arc<dyn reeve_card::WorkspaceLifecycle> {
         let listeners_arc: reeve_workspace::ListenerHandle = Arc::new(listeners.clone());
+        let progress: reeve_workspace::ProgressHandle =
+            Arc::new(crate::app::progress::InMemoryProgress::new());
         Arc::new(reeve_workspace::LiveWorkspaceLifecycle::new(
             workspaces,
             household_repo,
             git,
             containers,
             listeners_arc,
+            progress,
             std::path::PathBuf::from("/tmp/nonexistent-test-claude-dir"),
             None,
         ))
@@ -285,6 +288,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            progress: Arc::new(crate::app::progress::InMemoryProgress::new()),
             card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -315,6 +319,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            progress: Arc::new(crate::app::progress::InMemoryProgress::new()),
             card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -1152,6 +1157,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            progress: std::sync::Arc::new(crate::app::progress::InMemoryProgress::new()),
             card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1334,6 +1340,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle,
+            progress: std::sync::Arc::new(crate::app::progress::InMemoryProgress::new()),
             card_locks: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1530,6 +1537,7 @@ mod tests {
             household_repo,
             household_lookup,
             workspace_lifecycle: lifecycle,
+            progress: Arc::new(crate::app::progress::InMemoryProgress::new()),
             card_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
