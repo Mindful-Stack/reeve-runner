@@ -1336,3 +1336,46 @@ fn m6_daemon_round_trip_for_tui_smoke() {
         "card now in Planning: {stdout}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// M7 Task 12 — e2e: card_progress dispatch returns empty stages for unknown card
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn m7_card_progress_returns_empty_for_unknown_card() {
+    build_workspace();
+    let temp = tempfile::tempdir().unwrap();
+    let env = isolated_env_with_config(temp.path());
+
+    let _daemon = DaemonGuard(
+        cmd("reeved", &env)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn reeved"),
+    );
+
+    let socket = temp.path().join("reeved.sock");
+    let mut waited = Duration::ZERO;
+    while !socket.exists() && waited < Duration::from_secs(2) {
+        sleep(Duration::from_millis(50));
+        waited += Duration::from_millis(50);
+    }
+    assert!(socket.exists(), "daemon socket not created within 2s");
+
+    // No CLI raw-RPC subcommand exists; talk to the daemon directly via the
+    // reeve client crate.
+    let result = reeve::client::call(
+        &socket,
+        "card_progress",
+        serde_json::json!({"id": "no-such-card"}),
+    )
+    .await
+    .expect("transport ok")
+    .expect("dispatch ok");
+
+    let parsed: reeve_protocol::CardProgressResult =
+        serde_json::from_value(result).expect("deserialize");
+    assert_eq!(parsed.card_id, "no-such-card");
+    assert!(parsed.stages.is_empty(), "no stages for unknown id");
+}
