@@ -290,18 +290,16 @@ fn render_provisioning_loader(f: &mut ratatui::Frame<'_>, area: Rect, app: &App,
         for stage in stages {
             let label = format_stage(&stage.kind);
             let span = match stage.status {
-                reeve_protocol::ProgressStatus::Completed => Span::styled(
-                    format!("  ✓ {label}"),
-                    Style::default().fg(Color::Green),
-                ),
+                reeve_protocol::ProgressStatus::Completed => {
+                    Span::styled(format!("  ✓ {label}"), Style::default().fg(Color::Green))
+                }
                 reeve_protocol::ProgressStatus::Active => Span::styled(
                     format!("  {} {label}", spinner_frame()),
                     Style::default().fg(Color::Yellow),
                 ),
-                reeve_protocol::ProgressStatus::Failed => Span::styled(
-                    format!("  ✗ {label}"),
-                    Style::default().fg(Color::Red),
-                ),
+                reeve_protocol::ProgressStatus::Failed => {
+                    Span::styled(format!("  ✗ {label}"), Style::default().fg(Color::Red))
+                }
             };
             lines.push(Line::from(span));
         }
@@ -416,7 +414,11 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 &app.households,
             );
         }
-        crate::tui::modal::ModalKind::ConfirmDestructiveMv { card_id: _, from, to } => {
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id: _,
+            from,
+            to,
+        } => {
             use reeve_protocol::Column::*;
             let popup = centered_rect(60, 25, area);
             let from_label = from.label();

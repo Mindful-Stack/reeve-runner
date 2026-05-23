@@ -721,11 +721,7 @@ const MV_DEBOUNCE_MS: u64 = 400;
 
 /// Public entry: check destructiveness, open modal if needed, else proceed.
 fn schedule_mv(app: &mut App, card_id: String, target: Column) {
-    let from = app
-        .cards
-        .iter()
-        .find(|c| c.id == card_id)
-        .map(|c| c.column);
+    let from = app.cards.iter().find(|c| c.id == card_id).map(|c| c.column);
     if let Some(from) = from {
         if from != target && is_destructive(from, target) {
             app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
@@ -869,10 +865,11 @@ pub async fn poll_card_progress(app: &mut App, poll_interval_ms: u64) {
         if !due {
             continue;
         }
-        if let Ok(Ok(r)) = crate::tui::client_ext::rpc_card_progress(
-            reeve_protocol::CardProgressParams { id: card_id.clone() },
-        )
-        .await
+        if let Ok(Ok(r)) =
+            crate::tui::client_ext::rpc_card_progress(reeve_protocol::CardProgressParams {
+                id: card_id.clone(),
+            })
+            .await
         {
             app.card_progress.insert(card_id.clone(), r.stages);
             app.card_progress_last_poll.insert(card_id, now);
@@ -939,10 +936,11 @@ pub async fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
             // visibility gate ("card_progress has data + no session") catches
             // the Failed state. The regular 400ms poll may have just sampled
             // before the failure landed.
-            if let Ok(Ok(r)) = crate::tui::client_ext::rpc_card_progress(
-                reeve_protocol::CardProgressParams { id: card_id.clone() },
-            )
-            .await
+            if let Ok(Ok(r)) =
+                crate::tui::client_ext::rpc_card_progress(reeve_protocol::CardProgressParams {
+                    id: card_id.clone(),
+                })
+                .await
             {
                 app.card_progress.insert(card_id.clone(), r.stages);
             }

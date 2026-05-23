@@ -47,9 +47,7 @@ where
             Ok(v)
         }
         Err(e) => {
-            progress
-                .report(card_id, kind, ProgressStatus::Failed)
-                .await;
+            progress.report(card_id, kind, ProgressStatus::Failed).await;
             Err(e)
         }
     }
@@ -90,8 +88,16 @@ mod tests {
         assert_eq!(
             *calls,
             vec![
-                ("c1".into(), ProgressKind::DevcontainerUp, ProgressStatus::Active),
-                ("c1".into(), ProgressKind::DevcontainerUp, ProgressStatus::Completed),
+                (
+                    "c1".into(),
+                    ProgressKind::DevcontainerUp,
+                    ProgressStatus::Active
+                ),
+                (
+                    "c1".into(),
+                    ProgressKind::DevcontainerUp,
+                    ProgressStatus::Completed
+                ),
             ],
         );
     }
@@ -108,8 +114,16 @@ mod tests {
         assert_eq!(
             *calls,
             vec![
-                ("c1".into(), ProgressKind::DevcontainerUp, ProgressStatus::Active),
-                ("c1".into(), ProgressKind::DevcontainerUp, ProgressStatus::Failed),
+                (
+                    "c1".into(),
+                    ProgressKind::DevcontainerUp,
+                    ProgressStatus::Active
+                ),
+                (
+                    "c1".into(),
+                    ProgressKind::DevcontainerUp,
+                    ProgressStatus::Failed
+                ),
             ],
         );
     }

@@ -120,7 +120,9 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
         )
         .await?;
 
-        let devcontainer_path = workspace_path.join(".devcontainer").join("devcontainer.json");
+        let devcontainer_path = workspace_path
+            .join(".devcontainer")
+            .join("devcontainer.json");
         if !devcontainer_path.exists() {
             anyhow::bail!(
                 "devcontainer.json missing at {} — every witan-household must ship one at the conventional location",

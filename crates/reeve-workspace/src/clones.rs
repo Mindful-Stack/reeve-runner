@@ -134,7 +134,13 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingProgress {
-        calls: Mutex<Vec<(String, reeve_protocol::ProgressKind, reeve_protocol::ProgressStatus)>>,
+        calls: Mutex<
+            Vec<(
+                String,
+                reeve_protocol::ProgressKind,
+                reeve_protocol::ProgressStatus,
+            )>,
+        >,
     }
 
     #[async_trait]
@@ -287,9 +293,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend", "lore"], Some("lore"));
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap();
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 3, "workspace + 2 separate siblings");
         assert_eq!(calls[0].0, meta, "workspace cloned first from meta path");
@@ -373,9 +386,16 @@ mod tests {
             inner: MockGitOps::new(),
             inline_to_seed: vec![(meta.join("lore"), workspace.join("lore"))],
         };
-        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap();
         let calls = ops.inner.calls.lock().unwrap();
         assert_eq!(
             calls.len(),
@@ -400,9 +420,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap_err();
+        let err = clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("declared in household.json but not cloned"),
@@ -426,9 +453,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap();
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, meta);
@@ -452,9 +486,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             ops.calls.lock().unwrap().len(),
             0,
@@ -478,9 +519,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap();
         let calls = ops.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "only the missing sibling is cloned");
         assert_eq!(calls[0].0, meta.join("backend"), "source is the sibling");
@@ -507,9 +555,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap_err();
+        let err = clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("not a git checkout"),
@@ -534,9 +589,16 @@ mod tests {
         };
         let manifest = workspace_manifest("test", &["test", "backend"], None);
         let ops = MockGitOps::new();
-        let err = clone_all_for_card(&ops, &household, &manifest, &workspace, &RecordingProgress::default(), "test-card")
-            .await
-            .unwrap_err();
+        let err = clone_all_for_card(
+            &ops,
+            &household,
+            &manifest,
+            &workspace,
+            &RecordingProgress::default(),
+            "test-card",
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("not a git checkout"),
@@ -569,9 +631,24 @@ mod tests {
             meta_repo: "meta".into(),
             knowledge_base: None,
             repos: vec![
-                RepoEntry { name: "meta".into(), url: None, tags: vec![], description: None },
-                RepoEntry { name: "backend".into(), url: None, tags: vec![], description: None },
-                RepoEntry { name: "lore".into(), url: None, tags: vec![], description: None },
+                RepoEntry {
+                    name: "meta".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+                RepoEntry {
+                    name: "backend".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
+                RepoEntry {
+                    name: "lore".into(),
+                    url: None,
+                    tags: vec![],
+                    description: None,
+                },
             ],
         };
         let progress = RecordingProgress::default();
@@ -581,7 +658,8 @@ mod tests {
         // the progress stages emitted during the clone steps — assert what got
         // emitted before the bail. Since the bail happens AFTER both clone
         // stages, we get the 4 expected events.
-        let _ = clone_all_for_card(&ops, &household, &manifest, &workspace, &progress, "card-1").await;
+        let _ =
+            clone_all_for_card(&ops, &household, &manifest, &workspace, &progress, "card-1").await;
 
         let calls = progress.calls.lock().unwrap();
         let kinds: Vec<&ProgressKind> = calls.iter().map(|(_, k, _)| k).collect();
@@ -598,7 +676,9 @@ mod tests {
         assert_eq!(calls[2].2, ProgressStatus::Active);
         assert_eq!(calls[3].2, ProgressStatus::Completed);
         assert!(
-            !kinds.iter().any(|k| matches!(k, ProgressKind::CloneSibling { name } if name == "lore")),
+            !kinds
+                .iter()
+                .any(|k| matches!(k, ProgressKind::CloneSibling { name } if name == "lore")),
             "inline entries must not produce CloneSibling stages",
         );
     }
@@ -733,13 +813,26 @@ mod integration_tests {
         struct NoopProgress;
         #[async_trait::async_trait]
         impl crate::ProgressReporter for NoopProgress {
-            async fn report(&self, _: &str, _: reeve_protocol::ProgressKind, _: reeve_protocol::ProgressStatus) {}
+            async fn report(
+                &self,
+                _: &str,
+                _: reeve_protocol::ProgressKind,
+                _: reeve_protocol::ProgressStatus,
+            ) {
+            }
             async fn clear(&self, _: &str) {}
         }
         let ops = make_git_ops();
-        clone_all_for_card(&*ops, &household, &manifest, &workspace, &NoopProgress, "test-card")
-            .await
-            .unwrap();
+        clone_all_for_card(
+            &*ops,
+            &household,
+            &manifest,
+            &workspace,
+            &NoopProgress,
+            "test-card",
+        )
+        .await
+        .unwrap();
 
         assert!(
             workspace.join(".git").exists(),
