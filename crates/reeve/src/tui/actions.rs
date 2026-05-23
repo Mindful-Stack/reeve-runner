@@ -608,7 +608,12 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         crate::tui::modal::ModalKind::ConfirmDestructiveMv { .. } => {
-            // Render + key handling wired in Task 11.
+            // Defensive Esc handling so an in-flight Task-10 commit doesn't
+            // leave users stuck if Task 11 hasn't landed yet. Full y/n logic
+            // arrives in Task 11.
+            if matches!(key.code, crossterm::event::KeyCode::Esc) {
+                app.modal = None;
+            }
         }
     }
 }
