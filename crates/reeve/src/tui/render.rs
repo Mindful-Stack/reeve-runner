@@ -416,8 +416,43 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 &app.households,
             );
         }
-        crate::tui::modal::ModalKind::ConfirmDestructiveMv { .. } => {
-            // Render wired in Task 11.
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv { card_id: _, from, to } => {
+            let popup = centered_rect(60, 25, area);
+            let from_label = from.label();
+            let to_label = to.label();
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  Move from {from_label} to {to_label}?"),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  This will tear down the container and end the",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "  claude session for this card.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Continue?     [y]es     [n]o",
+                    Style::default().fg(Color::Yellow),
+                )),
+            ];
+            let body = Paragraph::new(lines)
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Red))
+                        .title(" Tear down workspace? "),
+                );
+            f.render_widget(ratatui::widgets::Clear, popup);
+            f.render_widget(body, popup);
         }
     }
 }

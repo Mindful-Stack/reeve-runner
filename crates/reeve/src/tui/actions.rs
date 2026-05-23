@@ -607,12 +607,24 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
-        crate::tui::modal::ModalKind::ConfirmDestructiveMv { .. } => {
-            // Defensive Esc handling so an in-flight Task-10 commit doesn't
-            // leave users stuck if Task 11 hasn't landed yet. Full y/n logic
-            // arrives in Task 11.
-            if matches!(key.code, crossterm::event::KeyCode::Esc) {
-                app.modal = None;
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id,
+            from: _,
+            to,
+        } => {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    // User confirmed — close modal and proceed with the deferred mv.
+                    let id = card_id.clone();
+                    let target = to;
+                    app.modal = None;
+                    schedule_mv_unchecked(app, id, target);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.modal = None;
+                }
+                _ => {}
             }
         }
     }
@@ -1316,5 +1328,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn confirm_destructive_y_calls_unchecked_mv() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use reeve_protocol::Column;
+
+        // Build an app with one card in Implementing.
+        let mut app = App::new();
+        let card_id = "test-card".to_string();
+        app.cards.push(card(&card_id, Column::Implementing, 0));
+        app.selected_card_id = Some(card_id.clone());
+
+        // Open the modal (simulates schedule_mv detecting destructive).
+        app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id: card_id.clone(),
+            from: Column::Implementing,
+            to: Column::Backlog,
+        });
+
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        handle_modal_key(&mut app, key).await;
+
+        assert!(app.modal.is_none(), "modal should be dismissed");
+        assert!(
+            app.pending_mv_intents.contains_key(&card_id),
+            "schedule_mv_unchecked should have queued the mv intent",
+        );
+    }
+
+    #[tokio::test]
+    async fn confirm_destructive_n_cancels() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use reeve_protocol::Column;
+
+        let mut app = App::new();
+        let card_id = "test-card".to_string();
+        app.cards.push(card(&card_id, Column::Implementing, 0));
+        app.selected_card_id = Some(card_id.clone());
+
+        app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id: card_id.clone(),
+            from: Column::Implementing,
+            to: Column::Backlog,
+        });
+
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        handle_modal_key(&mut app, key).await;
+
+        assert!(app.modal.is_none(), "modal should be dismissed");
+        assert!(
+            !app.pending_mv_intents.contains_key(&card_id),
+            "no mv should have been queued",
+        );
     }
 }
