@@ -417,9 +417,25 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             );
         }
         crate::tui::modal::ModalKind::ConfirmDestructiveMv { card_id: _, from, to } => {
+            use reeve_protocol::Column::*;
             let popup = centered_rect(60, 25, area);
             let from_label = from.label();
             let to_label = to.label();
+            // Container only exists for cards that lived in
+            // Implementing/Testing/Review. Backlog/Planning → Done has
+            // nothing to tear down, just archives the card.
+            let (line1, line2, title) = match from {
+                Implementing | Testing | Review => (
+                    "  This will tear down the container and end the",
+                    "  claude session for this card.",
+                    " Tear down workspace? ",
+                ),
+                _ => (
+                    "  This card has no active container — moving to",
+                    "  Done archives it without further action.",
+                    " Archive card? ",
+                ),
+            };
             let lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
@@ -429,14 +445,8 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    "  This will tear down the container and end the",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                Line::from(Span::styled(
-                    "  claude session for this card.",
-                    Style::default().fg(Color::DarkGray),
-                )),
+                Line::from(Span::styled(line1, Style::default().fg(Color::DarkGray))),
+                Line::from(Span::styled(line2, Style::default().fg(Color::DarkGray))),
                 Line::from(""),
                 Line::from(Span::styled(
                     "  Continue?     [y]es     [n]o",
@@ -449,7 +459,7 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Red))
-                        .title(" Tear down workspace? "),
+                        .title(title),
                 );
             f.render_widget(ratatui::widgets::Clear, popup);
             f.render_widget(body, popup);
