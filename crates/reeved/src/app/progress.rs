@@ -60,7 +60,7 @@ impl ProgressReporter for InMemoryProgress {
             ProgressStatus::Active => {
                 // If the most recent stage was terminal (Completed or
                 // Failed), this is a fresh ensure_running attempt — reset.
-                let prior_terminal = entry.last().map(|s| is_run_terminal(s)).unwrap_or(false);
+                let prior_terminal = entry.last().map(is_run_terminal).unwrap_or(false);
                 if prior_terminal {
                     entry.clear();
                 }
