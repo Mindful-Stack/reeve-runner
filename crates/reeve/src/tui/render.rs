@@ -416,6 +416,9 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 &app.households,
             );
         }
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv { .. } => {
+            // Render wired in Task 11.
+        }
     }
 }
 

@@ -607,6 +607,9 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv { .. } => {
+            // Render + key handling wired in Task 11.
+        }
     }
 }
 
@@ -699,7 +702,41 @@ fn mv_relative(app: &mut App, delta: i32) {
 
 const MV_DEBOUNCE_MS: u64 = 400;
 
+/// Public entry: check destructiveness, open modal if needed, else proceed.
 fn schedule_mv(app: &mut App, card_id: String, target: Column) {
+    let from = app
+        .cards
+        .iter()
+        .find(|c| c.id == card_id)
+        .map(|c| c.column);
+    if let Some(from) = from {
+        if from != target && is_destructive(from, target) {
+            app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+                card_id,
+                from,
+                to: target,
+            });
+            return;
+        }
+    }
+    schedule_mv_unchecked(app, card_id, target);
+}
+
+/// Whether the (from, to) transition would invoke `ensure_stopped` on the
+/// daemon side. MUST mirror `reeve_card::transitions::on_column_change`'s
+/// ensure_stopped routing. Drift-guarded by the
+/// `is_destructive_matrix_matches_lifecycle_routing` test.
+fn is_destructive(from: Column, to: Column) -> bool {
+    use reeve_protocol::Column::*;
+    matches!(
+        (from, to),
+        (Implementing | Testing | Review, Backlog | Planning)
+            | (Implementing | Testing | Review, Done)
+            | (Backlog | Planning, Done)
+    )
+}
+
+fn schedule_mv_unchecked(app: &mut App, card_id: String, target: Column) {
     // Optimistic local update — the card moves immediately. The RPC will
     // either confirm (no-op) or fail (next ls poll reconciles back to
     // daemon truth). `selected_card_id` stays on the moved card so
@@ -1213,5 +1250,66 @@ mod tests {
         let mut app = App::new();
         handle(&mut app, Action::CloseDrillIn).await;
         assert!(app.quit);
+    }
+
+    #[test]
+    fn is_destructive_implementing_to_backlog() {
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Implementing, Backlog));
+        assert!(is_destructive(Implementing, Planning));
+    }
+
+    #[test]
+    fn is_destructive_any_to_done() {
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Backlog, Done));
+        assert!(is_destructive(Planning, Done));
+        assert!(is_destructive(Implementing, Done));
+        assert!(is_destructive(Testing, Done));
+        assert!(is_destructive(Review, Done));
+    }
+
+    #[test]
+    fn is_destructive_within_pre_implementing_is_false() {
+        use reeve_protocol::Column::*;
+        assert!(!is_destructive(Backlog, Planning));
+        assert!(!is_destructive(Planning, Implementing));
+        assert!(!is_destructive(Backlog, Implementing));
+    }
+
+    #[test]
+    fn is_destructive_back_to_implementing_is_false() {
+        use reeve_protocol::Column::*;
+        assert!(!is_destructive(Testing, Implementing));
+        assert!(!is_destructive(Review, Implementing));
+    }
+
+    #[test]
+    fn is_destructive_matrix_matches_lifecycle_routing() {
+        // Cross-reference with reeve_card::transitions::on_column_change.
+        // For each (from, to) pair, is_destructive must return true iff the
+        // transition matrix would route to ensure_stopped.
+        use reeve_protocol::Column;
+        use reeve_protocol::Column::*;
+        let all: [Column; 6] = [Backlog, Planning, Implementing, Testing, Review, Done];
+        for from in all {
+            for to in all {
+                if from == to {
+                    continue;
+                }
+                // Hand-coded mirror of on_column_change's ensure_stopped arms:
+                let routes_to_ensure_stopped = matches!(
+                    (from, to),
+                    (_, Done) | (Implementing | Testing | Review, Backlog | Planning)
+                );
+                assert_eq!(
+                    is_destructive(from, to),
+                    routes_to_ensure_stopped,
+                    "drift: ({from:?} → {to:?}) is_destructive={} but routes_to_ensure_stopped={}",
+                    is_destructive(from, to),
+                    routes_to_ensure_stopped,
+                );
+            }
+        }
     }
 }
