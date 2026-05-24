@@ -109,9 +109,13 @@ fn render_kanban_full(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_focused_plus_detail(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let kanban = app.sidebar_width_pct;
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([
+            Constraint::Percentage(kanban),
+            Constraint::Percentage(100 - kanban),
+        ])
         .split(area);
     render_one_column(f, split[0], app);
     render_detail_pane(f, split[1], app);

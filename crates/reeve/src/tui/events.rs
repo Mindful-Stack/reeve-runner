@@ -28,6 +28,8 @@ pub enum Action {
     New,
     Delete,
     FocusKanban,
+    ResizePaneLeft,
+    ResizePaneRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +238,22 @@ pub const BINDINGS: &[Binding] = &[
         key: KeyMatcher::Ctrl(KeyCode::Char(']')),
         action: Action::FocusKanban,
         description: "exit session pane (alternate)",
+        section: HelpSection::Navigation,
+    },
+    // Drill-in split resize. Only useful in FocusedColumnPlusDetail with
+    // kanban focus — the session-pane forwarding intercepts only
+    // FocusKanban actions, so Ctrl+Left/Right inside the session goes
+    // straight to the PTY (where it does word-motion in claude/shells).
+    Binding {
+        key: KeyMatcher::Ctrl(KeyCode::Left),
+        action: Action::ResizePaneLeft,
+        description: "shrink kanban / grow session",
+        section: HelpSection::Navigation,
+    },
+    Binding {
+        key: KeyMatcher::Ctrl(KeyCode::Right),
+        action: Action::ResizePaneRight,
+        description: "grow kanban / shrink session",
         section: HelpSection::Navigation,
     },
 ];

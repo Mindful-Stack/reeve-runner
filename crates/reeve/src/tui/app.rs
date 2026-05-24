@@ -112,6 +112,10 @@ pub struct App {
     /// Last poll instant per card; used to rate-limit the card_progress
     /// fetch to ~400ms while pending_mvs has the card.
     pub card_progress_last_poll: std::collections::HashMap<String, std::time::Instant>,
+    /// Width of the kanban column in the drill-in split, as a percentage
+    /// of the horizontal area. Adjusted via Ctrl+Left / Ctrl+Right.
+    /// Clamped 20..=65; the session pane gets `100 - sidebar_width_pct`.
+    pub sidebar_width_pct: u16,
 }
 
 impl App {
@@ -140,6 +144,7 @@ impl App {
             daemon_unreachable: false,
             card_progress: std::collections::HashMap::new(),
             card_progress_last_poll: std::collections::HashMap::new(),
+            sidebar_width_pct: 35,
         }
     }
 

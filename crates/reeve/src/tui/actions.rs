@@ -154,6 +154,8 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::FocusKanban => {
             app.pane_focus = crate::tui::app::PaneFocus::Kanban;
         }
+        Action::ResizePaneLeft => resize_sidebar(app, -5),
+        Action::ResizePaneRight => resize_sidebar(app, 5),
     }
 }
 
@@ -706,6 +708,16 @@ async fn execute_menu_kind(app: &mut App, kind: crate::tui::modal::ActionMenuKin
             // Wired in Task 13/14.
         }
     }
+}
+
+/// Step the kanban sidebar width by `delta` percentage points, clamped
+/// to the [20, 65] range. No-op outside the split layout.
+fn resize_sidebar(app: &mut App, delta: i32) {
+    if app.layout != crate::tui::layout::LayoutMode::FocusedColumnPlusDetail {
+        return;
+    }
+    let new = (app.sidebar_width_pct as i32 + delta).clamp(20, 65) as u16;
+    app.sidebar_width_pct = new;
 }
 
 fn mv_relative(app: &mut App, delta: i32) {
@@ -1304,6 +1316,43 @@ mod tests {
         handle(&mut app, Action::CloseDrillIn).await;
         assert!(!app.quit, "Esc in KanbanFull must not quit — `q` is the only quit");
         assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
+    }
+
+    #[tokio::test]
+    async fn resize_pane_left_shrinks_sidebar_in_drill_in() {
+        let mut app = App::new();
+        app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+        assert_eq!(app.sidebar_width_pct, 35);
+        handle(&mut app, Action::ResizePaneLeft).await;
+        assert_eq!(app.sidebar_width_pct, 30);
+    }
+
+    #[tokio::test]
+    async fn resize_pane_right_grows_sidebar_in_drill_in() {
+        let mut app = App::new();
+        app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+        handle(&mut app, Action::ResizePaneRight).await;
+        assert_eq!(app.sidebar_width_pct, 40);
+    }
+
+    #[tokio::test]
+    async fn resize_pane_clamps_at_bounds() {
+        let mut app = App::new();
+        app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+        app.sidebar_width_pct = 22;
+        handle(&mut app, Action::ResizePaneLeft).await; // would go to 17
+        assert_eq!(app.sidebar_width_pct, 20, "lower bound clamped at 20");
+        app.sidebar_width_pct = 63;
+        handle(&mut app, Action::ResizePaneRight).await; // would go to 68
+        assert_eq!(app.sidebar_width_pct, 65, "upper bound clamped at 65");
+    }
+
+    #[tokio::test]
+    async fn resize_pane_noop_in_kanban_full() {
+        let mut app = App::new();
+        assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
+        handle(&mut app, Action::ResizePaneLeft).await;
+        assert_eq!(app.sidebar_width_pct, 35, "no resize outside drill-in");
     }
 
     #[tokio::test]
