@@ -1097,7 +1097,7 @@ pub async fn forward_to_session(app: &mut App, key: crossterm::event::KeyEvent) 
 
 fn key_event_to_bytes(key: crossterm::event::KeyEvent) -> Vec<u8> {
     use crossterm::event::{KeyCode, KeyModifiers};
-    match key.code {
+    let mut bytes = match key.code {
         KeyCode::Char(c) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 let upper = c.to_ascii_uppercase() as u8;
@@ -1125,7 +1125,16 @@ fn key_event_to_bytes(key: crossterm::event::KeyEvent) -> Vec<u8> {
         KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
         KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
         _ => vec![],
+    };
+    // xterm "meta sends escape": Alt-modified keys arrive as a single
+    // KeyEvent with the ALT modifier set. Tmux and most TUIs expect the
+    // ESC-prefix encoding (e.g. Alt+N → ESC 'n', Alt+Up → ESC ESC[A).
+    // Without this prefix the receiver sees a bare 'n' / arrow and the
+    // user's prefix-c, alt-arrows, alt-number bindings never fire.
+    if !bytes.is_empty() && key.modifiers.contains(KeyModifiers::ALT) {
+        bytes.insert(0, 0x1b);
     }
+    bytes
 }
 
 /// Pick first card in focused column as the selection. Called after column
@@ -1385,6 +1394,39 @@ mod tests {
             app.pending_mv_intents.contains_key(&card_id),
             "schedule_mv_unchecked should have queued the mv intent",
         );
+    }
+
+    #[test]
+    fn key_event_to_bytes_alt_n_emits_meta_escape_prefix() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT);
+        assert_eq!(key_event_to_bytes(key), vec![0x1b, b'n']);
+    }
+
+    #[test]
+    fn key_event_to_bytes_alt_up_arrow_emits_double_escape_csi() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        // ESC + (ESC [ A) — tmux reads this as M-Up.
+        assert_eq!(key_event_to_bytes(key), vec![0x1b, 0x1b, b'[', b'A']);
+    }
+
+    #[test]
+    fn key_event_to_bytes_ctrl_alt_l_emits_esc_plus_ctrl_byte() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        // Ctrl-L = 0x0c; Alt prepends ESC.
+        assert_eq!(key_event_to_bytes(key), vec![0x1b, 0x0c]);
+    }
+
+    #[test]
+    fn key_event_to_bytes_plain_n_no_escape() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(key_event_to_bytes(key), vec![b'n']);
     }
 
     #[tokio::test]
