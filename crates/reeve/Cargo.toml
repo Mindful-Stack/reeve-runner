@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "reeve"
+path = "src/lib.rs"
+
 [[bin]]
 name = "reeve"
 path = "src/main.rs"

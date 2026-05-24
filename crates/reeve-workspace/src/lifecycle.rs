@@ -2,7 +2,6 @@
 //! Composes the workspace's git, container, and repo ports to provision and
 //! tear down a card's workspace.
 
-use crate::clones;
 use crate::container::{self, ContainerOps};
 use crate::git::GitOps;
 use crate::repo::WorkspaceRepo;
@@ -31,6 +30,7 @@ pub struct LiveWorkspaceLifecycle {
     git: Arc<dyn GitOps>,
     containers: Arc<dyn ContainerOps>,
     listeners: ListenerHandle,
+    progress: crate::ProgressHandle,
     claude_dir: PathBuf,
     api_key: Option<String>,
 }
@@ -42,6 +42,7 @@ impl LiveWorkspaceLifecycle {
         git: Arc<dyn GitOps>,
         containers: Arc<dyn ContainerOps>,
         listeners: ListenerHandle,
+        progress: crate::ProgressHandle,
         claude_dir: PathBuf,
         api_key: Option<String>,
     ) -> Self {
@@ -51,6 +52,7 @@ impl LiveWorkspaceLifecycle {
             git,
             containers,
             listeners,
+            progress,
             claude_dir,
             api_key,
         }
@@ -107,7 +109,16 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
                 .with_context(|| format!("create cards root {}", parent.display()))?;
         }
 
-        clones::clone_all_for_card(&*self.git, &household, &manifest, &workspace_path).await?;
+        // Clones are progress-reported per-entry inside clone_all_for_card.
+        crate::clones::clone_all_for_card(
+            &*self.git,
+            &household,
+            &manifest,
+            &workspace_path,
+            &*self.progress,
+            card_id,
+        )
+        .await?;
 
         let devcontainer_path = workspace_path
             .join(".devcontainer")
@@ -127,24 +138,37 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             &self.claude_dir,
             self.api_key.as_deref(),
         );
-        self.containers.spawn(argv).await?;
 
-        let container_name = discover_with_deadline(&*self.containers, card_id).await?;
-        self.workspaces
-            .upsert_container(
-                card_id,
-                &container_name,
-                ContainerStatus::Running,
-                now_secs(),
-            )
-            .await?;
+        // DevcontainerUp groups spawn + discover + upsert as one semantic stage.
+        let containers = &*self.containers;
+        let workspaces = &*self.workspaces;
+        let progress = &*self.progress;
+
+        let container_name = crate::run_stage(
+            progress,
+            card_id,
+            reeve_protocol::ProgressKind::DevcontainerUp,
+            async {
+                containers.spawn(argv).await?;
+                let name = discover_with_deadline(containers, card_id).await?;
+                workspaces
+                    .upsert_container(
+                        card_id,
+                        &name,
+                        reeve_protocol::ContainerStatus::Running,
+                        now_secs(),
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>(name)
+            },
+        )
+        .await?;
+
         self.listeners.spawn(card_id, socket).await;
 
-        // M5: start the per-card claude session inside the container's tmux.
-        // Defensive `|| bash` so a broken claude install doesn't lock the user out.
-        // Warn-not-bail: if tmux isn't installed in the container, the column
-        // transition still succeeds; the user discovers the issue when they
-        // run `reeve attach`.
+        // M7: tmux start is fatal — a card in Implementing without a tmux session
+        // is non-functional from the M6 session pane's POV. The M3-followup-5 mv
+        // handler reorder keeps the card's column in its old value if this errors.
         // `docker exec` doesn't inherit devcontainer's remoteEnv (PATH etc.) —
         // it gets only the image's baked-in Env. Per the witan-household
         // template's postCreate, claude is installed at $HOME/.local/bin/
@@ -153,18 +177,21 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
         let tmux_cmd = format!(
             "export PATH=\"$HOME/.local/bin:$PATH\" && cd /workspaces/{card_id} && (claude || bash)"
         );
-        if let Err(e) = self
-            .containers
-            .exec_in_tmux(&container_name, "reeve", &tmux_cmd)
-            .await
-        {
-            tracing::warn!(
-                "tmux session not started in {container_name}: {e:#} — \
-                 `reeve attach` will fail with 'session not found'; \
-                 install tmux in the container (add to devcontainer features)",
-            );
-        }
+        crate::run_stage(
+            progress,
+            card_id,
+            reeve_protocol::ProgressKind::StartingTmux,
+            containers.exec_in_tmux(&container_name, "reeve", &tmux_cmd),
+        )
+        .await?;
 
+        progress
+            .report(
+                card_id,
+                reeve_protocol::ProgressKind::Done,
+                reeve_protocol::ProgressStatus::Completed,
+            )
+            .await;
         Ok(())
     }
 
@@ -173,7 +200,10 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
 
         let row = match self.workspaces.get_container(card_id).await? {
             Some(r) => r,
-            None => return Ok(()), // never had one
+            None => {
+                self.progress.clear(card_id).await;
+                return Ok(());
+            }
         };
 
         if self
@@ -183,11 +213,13 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             .is_none()
         {
             self.workspaces.remove_container(card_id).await?;
+            self.progress.clear(card_id).await;
             return Ok(());
         }
 
         self.containers.teardown(&row.container_name).await?;
         self.workspaces.remove_container(card_id).await?;
+        self.progress.clear(card_id).await;
         Ok(())
     }
 }

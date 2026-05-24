@@ -102,6 +102,12 @@ pub struct App {
     /// While true the TUI renders a full-screen daemon-down overlay
     /// instead of the kanban. Cleared by the next successful refresh.
     pub daemon_unreachable: bool,
+    /// card_id → most recent CardProgressResult.stages. Survives MvErr;
+    /// GC'd when a live session exists for the card.
+    pub card_progress: std::collections::HashMap<String, Vec<reeve_protocol::ProgressStage>>,
+    /// Last poll instant per card; used to rate-limit the card_progress
+    /// fetch to ~400ms while pending_mvs has the card.
+    pub card_progress_last_poll: std::collections::HashMap<String, std::time::Instant>,
 }
 
 impl App {
@@ -128,6 +134,8 @@ impl App {
             pending_mv_intents: std::collections::HashMap::new(),
             pending_mv_started_at: std::collections::HashMap::new(),
             daemon_unreachable: false,
+            card_progress: std::collections::HashMap::new(),
+            card_progress_last_poll: std::collections::HashMap::new(),
         }
     }
 
@@ -194,7 +202,7 @@ async fn drive(terminal: &mut Term) -> Result<()> {
 
         // Drain background-RPC results (non-blocking).
         while let Ok(event) = app.op_rx.try_recv() {
-            crate::tui::actions::process_op_event(&mut app, event);
+            crate::tui::actions::process_op_event(&mut app, event).await;
         }
 
         // Fire any debounced mvs whose deadline has passed.
@@ -323,6 +331,9 @@ async fn drive(terminal: &mut Term) -> Result<()> {
         if app.last_refresh.elapsed() > Duration::from_millis(500) {
             crate::tui::actions::refresh(&mut app).await;
         }
+        // Card-progress poll runs every drive iteration (~50ms tick) but the
+        // helper rate-limits to 400ms per card. Cheap when no cards are pending.
+        crate::tui::actions::poll_card_progress(&mut app, 400).await;
     }
     Ok(())
 }

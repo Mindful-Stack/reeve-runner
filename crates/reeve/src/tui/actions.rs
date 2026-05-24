@@ -607,6 +607,26 @@ pub async fn handle_modal_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
+        crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id,
+            from: _,
+            to,
+        } => {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    // User confirmed — close modal and proceed with the deferred mv.
+                    let id = card_id.clone();
+                    let target = to;
+                    app.modal = None;
+                    schedule_mv_unchecked(app, id, target);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.modal = None;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -699,7 +719,48 @@ fn mv_relative(app: &mut App, delta: i32) {
 
 const MV_DEBOUNCE_MS: u64 = 400;
 
+/// Public entry: check destructiveness, open modal if needed, else proceed.
 fn schedule_mv(app: &mut App, card_id: String, target: Column) {
+    let from = app.cards.iter().find(|c| c.id == card_id).map(|c| c.column);
+    if let Some(from) = from {
+        if from != target && is_destructive(from, target) {
+            app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+                card_id,
+                from,
+                to: target,
+            });
+            return;
+        }
+    }
+    schedule_mv_unchecked(app, card_id, target);
+}
+
+/// Whether the (from, to) transition should prompt the user to confirm.
+///
+/// This is a superset of the daemon's ensure_stopped routing
+/// (`reeve_card::transitions::on_column_change`): every transition that
+/// would tear down the container also confirms, PLUS Implementing →
+/// Testing/Review. The latter pair keeps the container running by design
+/// (Testing/Review reuses the same env), but we still warn — users were
+/// accidentally bumping out of Implementing with a stray Shift+L and
+/// expected a safety net regardless of whether the daemon destroys
+/// anything.
+///
+/// Drift between this and the daemon's teardown matrix is intentional.
+/// `is_destructive_is_superset_of_lifecycle_routing` guards the invariant
+/// "confirm ⊇ daemon teardown".
+fn is_destructive(from: Column, to: Column) -> bool {
+    use reeve_protocol::Column::*;
+    matches!(
+        (from, to),
+        (Implementing | Testing | Review, Backlog | Planning)
+            | (Implementing | Testing | Review, Done)
+            | (Backlog | Planning, Done)
+            | (Implementing, Testing | Review)
+    )
+}
+
+fn schedule_mv_unchecked(app: &mut App, card_id: String, target: Column) {
     // Optimistic local update — the card moves immediately. The RPC will
     // either confirm (no-op) or fail (next ls poll reconciles back to
     // daemon truth). `selected_card_id` stays on the moved card so
@@ -799,6 +860,42 @@ pub async fn refresh(app: &mut App) {
     }
 }
 
+/// Polls card_progress for every card in pending_mvs whose last fetch is
+/// at least `poll_interval_ms` old. Updates app.card_progress in place.
+/// GC's entries for cards that now have a live session — the session pane
+/// takes over the visible display.
+pub async fn poll_card_progress(app: &mut App, poll_interval_ms: u64) {
+    let now = std::time::Instant::now();
+    let pending_ids: Vec<String> = app.pending_mvs.keys().cloned().collect();
+    for card_id in pending_ids {
+        let due = app
+            .card_progress_last_poll
+            .get(&card_id)
+            .map(|t| now.duration_since(*t).as_millis() as u64 >= poll_interval_ms)
+            .unwrap_or(true);
+        if !due {
+            continue;
+        }
+        if let Ok(Ok(r)) =
+            crate::tui::client_ext::rpc_card_progress(reeve_protocol::CardProgressParams {
+                id: card_id.clone(),
+            })
+            .await
+        {
+            app.card_progress.insert(card_id.clone(), r.stages);
+            app.card_progress_last_poll.insert(card_id, now);
+        }
+    }
+
+    // GC: drop progress data for cards that now have a live session — the
+    // session pane has taken over the visible display. Failed cards (no
+    // session) keep their data so the user can still see what failed.
+    app.card_progress
+        .retain(|id, _| app.sessions.get(id).is_none());
+    app.card_progress_last_poll
+        .retain(|id, _| app.sessions.get(id).is_none());
+}
+
 pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
     let mut merged: Vec<reeve_protocol::Card> = Vec::with_capacity(server_cards.len());
     for s_card in server_cards {
@@ -821,7 +918,7 @@ pub fn merge_cards(app: &mut App, server_cards: Vec<reeve_protocol::Card>) {
 
 /// Apply a completed background RPC result to the app state. Called by the
 /// drive loop each tick via `op_rx.try_recv()`.
-pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
+pub async fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
     use crate::tui::app::OpEvent;
     match event {
         OpEvent::MvOk {
@@ -846,6 +943,18 @@ pub fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
             // Don't change focused_column — already done in spawn_mv.
         }
         OpEvent::MvErr { card_id, msg } => {
+            // One-shot fetch BEFORE decrementing pending_mvs, so the loader
+            // visibility gate ("card_progress has data + no session") catches
+            // the Failed state. The regular 400ms poll may have just sampled
+            // before the failure landed.
+            if let Ok(Ok(r)) =
+                crate::tui::client_ext::rpc_card_progress(reeve_protocol::CardProgressParams {
+                    id: card_id.clone(),
+                })
+                .await
+            {
+                app.card_progress.insert(card_id.clone(), r.stages);
+            }
             decrement_pending(&mut app.pending_mvs, &card_id);
             if !app.pending_mvs.contains_key(&card_id) {
                 app.pending_mv_started_at.remove(&card_id);
@@ -1167,5 +1276,130 @@ mod tests {
         let mut app = App::new();
         handle(&mut app, Action::CloseDrillIn).await;
         assert!(app.quit);
+    }
+
+    #[test]
+    fn is_destructive_implementing_to_backlog() {
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Implementing, Backlog));
+        assert!(is_destructive(Implementing, Planning));
+    }
+
+    #[test]
+    fn is_destructive_any_to_done() {
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Backlog, Done));
+        assert!(is_destructive(Planning, Done));
+        assert!(is_destructive(Implementing, Done));
+        assert!(is_destructive(Testing, Done));
+        assert!(is_destructive(Review, Done));
+    }
+
+    #[test]
+    fn is_destructive_within_pre_implementing_is_false() {
+        use reeve_protocol::Column::*;
+        assert!(!is_destructive(Backlog, Planning));
+        assert!(!is_destructive(Planning, Implementing));
+        assert!(!is_destructive(Backlog, Implementing));
+    }
+
+    #[test]
+    fn is_destructive_back_to_implementing_is_false() {
+        use reeve_protocol::Column::*;
+        assert!(!is_destructive(Testing, Implementing));
+        assert!(!is_destructive(Review, Implementing));
+    }
+
+    #[test]
+    fn is_destructive_implementing_to_testing_or_review() {
+        // Container stays running by design on these — the daemon doesn't
+        // tear down — but we still confirm because users were accidentally
+        // bumping out of active Implementing work.
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Implementing, Testing));
+        assert!(is_destructive(Implementing, Review));
+    }
+
+    #[test]
+    fn is_destructive_is_superset_of_lifecycle_routing() {
+        // Cross-reference with reeve_card::transitions::on_column_change:
+        // every transition that routes to ensure_stopped MUST also confirm.
+        // The converse no longer holds — Implementing → Testing/Review
+        // confirms without tearing down. Drift-guarded as a superset, not
+        // an equality.
+        use reeve_protocol::Column;
+        use reeve_protocol::Column::*;
+        let all: [Column; 6] = [Backlog, Planning, Implementing, Testing, Review, Done];
+        for from in all {
+            for to in all {
+                if from == to {
+                    continue;
+                }
+                let routes_to_ensure_stopped = matches!(
+                    (from, to),
+                    (_, Done) | (Implementing | Testing | Review, Backlog | Planning)
+                );
+                if routes_to_ensure_stopped {
+                    assert!(
+                        is_destructive(from, to),
+                        "({from:?} → {to:?}) routes to ensure_stopped but is_destructive=false — drift!",
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_destructive_y_calls_unchecked_mv() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use reeve_protocol::Column;
+
+        // Build an app with one card in Implementing.
+        let mut app = App::new();
+        let card_id = "test-card".to_string();
+        app.cards.push(card(&card_id, Column::Implementing, 0));
+        app.selected_card_id = Some(card_id.clone());
+
+        // Open the modal (simulates schedule_mv detecting destructive).
+        app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id: card_id.clone(),
+            from: Column::Implementing,
+            to: Column::Backlog,
+        });
+
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        handle_modal_key(&mut app, key).await;
+
+        assert!(app.modal.is_none(), "modal should be dismissed");
+        assert!(
+            app.pending_mv_intents.contains_key(&card_id),
+            "schedule_mv_unchecked should have queued the mv intent",
+        );
+    }
+
+    #[tokio::test]
+    async fn confirm_destructive_n_cancels() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use reeve_protocol::Column;
+
+        let mut app = App::new();
+        let card_id = "test-card".to_string();
+        app.cards.push(card(&card_id, Column::Implementing, 0));
+        app.selected_card_id = Some(card_id.clone());
+
+        app.modal = Some(crate::tui::modal::ModalKind::ConfirmDestructiveMv {
+            card_id: card_id.clone(),
+            from: Column::Implementing,
+            to: Column::Backlog,
+        });
+
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        handle_modal_key(&mut app, key).await;
+
+        assert!(app.modal.is_none(), "modal should be dismissed");
+        assert!(
+            !app.pending_mv_intents.contains_key(&card_id),
+            "no mv should have been queued",
+        );
     }
 }

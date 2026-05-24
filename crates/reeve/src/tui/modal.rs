@@ -32,6 +32,12 @@ pub enum ModalKind {
     },
     /// Confirm deletion of a card.
     DeleteConfirm { card_id: String },
+    /// Confirm a destructive column move (one that triggers ensure_stopped).
+    ConfirmDestructiveMv {
+        card_id: String,
+        from: reeve_protocol::Column,
+        to: reeve_protocol::Column,
+    },
 }
 
 #[derive(Debug, Clone)]

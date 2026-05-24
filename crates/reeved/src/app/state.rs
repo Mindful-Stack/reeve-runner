@@ -22,6 +22,7 @@ pub struct DaemonState {
     pub household_repo: Arc<dyn reeve_household::HouseholdRepo>,
     pub household_lookup: Arc<dyn reeve_card::HouseholdLookup>,
     pub workspace_lifecycle: Arc<dyn reeve_card::WorkspaceLifecycle>,
+    pub progress: Arc<crate::app::progress::InMemoryProgress>,
     /// Per-card serialization for column-state-changing operations
     /// (mv, mv-self, delete). The outer Mutex guards the HashMap;
     /// the inner Arc<Mutex<()>> is per-card. Acquire the outer briefly
