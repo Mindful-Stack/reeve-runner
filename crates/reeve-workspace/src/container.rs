@@ -213,7 +213,9 @@ pub fn map_docker_state(s: &str) -> ContainerStatus {
 ///   devcontainer.json (declares image, runArgs, remoteUser, postCreate, etc).
 /// - `cards_socket_dir` is bind-mounted at `IN_CONTAINER_CARDS_DIR`, matching
 ///   the M2 contract so in-container `reeve mv-self` keeps working.
-/// - `claude_dir` mounts are read-only and skipped if absent.
+/// - `home_dir` is the host user's `$HOME`; we derive the read-only
+///   home-relative bind-mounts (`.claude`, `.claude.json`, `.tmux`,
+///   `.tmux.conf`, `.config/tmux`) from it. Each is skip-if-absent.
 /// - `api_key` is injected as `ANTHROPIC_API_KEY` when `Some`.
 ///
 /// Container is tagged with `--id-label reeve.card_id=<card-id>` so the
@@ -223,7 +225,7 @@ pub fn devcontainer_up_command(
     workspace: &std::path::Path,
     devcontainer_json: &std::path::Path,
     cards_socket_dir: &std::path::Path,
-    claude_dir: &std::path::Path,
+    home_dir: &std::path::Path,
     api_key: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -257,13 +259,19 @@ pub fn devcontainer_up_command(
     // reason. Keep it as an individual file mount; it goes stale on token
     // refresh of account binding (rare), which is acceptable for daily-driver
     // use since the binding rarely changes within a single session.
-    let dot_claude_json = claude_dir.parent().map(|p| p.join(".claude.json"));
-    let mut mounts: Vec<(std::path::PathBuf, &str)> =
-        vec![(claude_dir.to_path_buf(), "/home/vscode/.claude")];
-    if let Some(p) = dot_claude_json {
-        mounts.push((p, "/home/vscode/.claude.json"));
-    }
-    let ro_mounts = mounts;
+    // Home-relative read-only mounts. Mirrored to /home/vscode/<same path>
+    // and skip-if-absent so users without a given file/dir don't get errors.
+    // The .claude/ whole-dir mount avoids the atomic-rename inode trap for
+    // credential refresh (see ensure_running comment); .tmux/ likewise
+    // covers TPM plugins; .tmux.conf and .config/tmux/ cover legacy and
+    // XDG config locations respectively.
+    let ro_mounts: Vec<(std::path::PathBuf, &str)> = vec![
+        (home_dir.join(".claude"), "/home/vscode/.claude"),
+        (home_dir.join(".claude.json"), "/home/vscode/.claude.json"),
+        (home_dir.join(".tmux"), "/home/vscode/.tmux"),
+        (home_dir.join(".tmux.conf"), "/home/vscode/.tmux.conf"),
+        (home_dir.join(".config/tmux"), "/home/vscode/.config/tmux"),
+    ];
     for (host, container_target) in ro_mounts {
         if host.exists() {
             args.push("--mount".into());
@@ -282,7 +290,7 @@ pub fn devcontainer_up_command(
             ));
         } else {
             tracing::warn!(
-                "skipping claude mount; not present on host: {}",
+                "skipping home-relative mount; not present on host: {}",
                 host.display()
             );
         }
@@ -428,9 +436,9 @@ mod tests {
         let workspace = dir.path().join("card-1");
         let dc = dir.path().join("devcontainer.json");
         let cards_socket = dir.path().join("sockets");
-        let claude = dir.path().join("claude");
+        let home = dir.path();
 
-        let argv = devcontainer_up_command("card-1", &workspace, &dc, &cards_socket, &claude, None);
+        let argv = devcontainer_up_command("card-1", &workspace, &dc, &cards_socket, home, None);
 
         assert_eq!(argv[0], "up");
         assert!(argv.iter().any(|s| s == "--workspace-folder"));
@@ -444,21 +452,19 @@ mod tests {
     }
 
     #[test]
-    fn devcontainer_up_command_skips_missing_claude_mounts() {
+    fn devcontainer_up_command_skips_missing_home_mounts() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("c");
         let dc = dir.path().join("dc.json");
         let socket = dir.path().join("s");
-        let claude = dir.path().join("claude"); // does not exist
+        let home = dir.path(); // no .claude/.tmux/etc. under it
 
-        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
-        // No claude dir → no /home/vscode/.claude mount AND no .claude.json
-        // sibling either (its parent path was synthesized from a missing dir).
-        let claude_mounts = argv
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
+        let home_mounts = argv
             .iter()
-            .filter(|s| s.contains("/home/vscode/.claude"))
+            .filter(|s| s.contains("/home/vscode/"))
             .count();
-        assert_eq!(claude_mounts, 0);
+        assert_eq!(home_mounts, 0, "absent home paths must not be mounted");
     }
 
     #[test]
@@ -467,17 +473,15 @@ mod tests {
         let workspace = dir.path().join("c");
         let dc = dir.path().join("dc.json");
         let socket = dir.path().join("s");
-        let claude = dir.path().join("claude");
-        std::fs::create_dir_all(&claude).unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
 
-        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
-        // Whole-dir mount targeting /home/vscode/.claude
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
         assert!(
             argv.iter()
                 .any(|s| s.contains("target=/home/vscode/.claude") && !s.contains(".claude.json")),
             "expected /home/vscode/.claude dir mount in argv: {argv:?}",
         );
-        // Mount shape: type=bind,source=...,target=...
         for arg in &argv {
             if arg.contains("/home/vscode/.claude") {
                 assert!(arg.starts_with("type=bind,source="), "shape: {arg}");
@@ -490,19 +494,15 @@ mod tests {
     }
 
     #[test]
-    fn devcontainer_up_command_mounts_dot_claude_json_when_sibling_exists() {
+    fn devcontainer_up_command_mounts_dot_claude_json_when_present() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("c");
         let dc = dir.path().join("dc.json");
         let socket = dir.path().join("s");
-        let claude = dir.path().join("claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        // Sibling file at <claude_dir>/../.claude.json — matching the host
-        // shape where ~/.claude/ and ~/.claude.json live side-by-side.
-        let dot_json = dir.path().join(".claude.json");
-        std::fs::write(&dot_json, b"{}").unwrap();
+        let home = dir.path();
+        std::fs::write(home.join(".claude.json"), b"{}").unwrap();
 
-        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
         assert!(
             argv.iter()
                 .any(|s| s.contains("target=/home/vscode/.claude.json")),
@@ -511,17 +511,63 @@ mod tests {
     }
 
     #[test]
+    fn devcontainer_up_command_mounts_tmux_paths_when_present() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".tmux")).unwrap();
+        std::fs::write(home.join(".tmux.conf"), b"set -g prefix C-a\n").unwrap();
+        std::fs::create_dir_all(home.join(".config/tmux")).unwrap();
+
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
+        for target in [
+            "target=/home/vscode/.tmux",
+            "target=/home/vscode/.tmux.conf",
+            "target=/home/vscode/.config/tmux",
+        ] {
+            assert!(
+                argv.iter().any(|s| s.contains(target)),
+                "expected {target} mount in argv: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn devcontainer_up_command_skips_absent_tmux_paths() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("c");
+        let dc = dir.path().join("dc.json");
+        let socket = dir.path().join("s");
+        let home = dir.path();
+        // No tmux paths created.
+
+        let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
+        for target in [
+            "target=/home/vscode/.tmux",
+            "target=/home/vscode/.tmux.conf",
+            "target=/home/vscode/.config/tmux",
+        ] {
+            assert!(
+                !argv.iter().any(|s| s.contains(target)),
+                "absent tmux path {target} must not be mounted: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
     fn devcontainer_up_command_injects_api_key_only_when_some() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("c");
         let dc = dir.path().join("dc.json");
         let socket = dir.path().join("s");
-        let claude = dir.path().join("claude");
+        let home = dir.path();
 
-        let with = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, Some("sk-x"));
+        let with = devcontainer_up_command("c", &workspace, &dc, &socket, home, Some("sk-x"));
         assert!(with.iter().any(|s| s == "ANTHROPIC_API_KEY=sk-x"));
 
-        let without = devcontainer_up_command("c", &workspace, &dc, &socket, &claude, None);
+        let without = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
         assert!(!without.iter().any(|s| s.starts_with("ANTHROPIC_API_KEY=")));
     }
 

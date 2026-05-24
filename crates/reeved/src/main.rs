@@ -68,8 +68,10 @@ async fn main() -> Result<()> {
 
     let containers: reeve_workspace::ContainerOpsHandle = reeve_workspace::make_container_ops();
     let listeners = listener::ListenerRegistry::new(db.clone(), dispatcher_holder.clone());
-    let claude_dir = std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".claude"))
+    // Source of truth for home-relative bind-mounts (.claude, .tmux, etc).
+    // Resolved once; container.rs derives each path from it.
+    let home_dir = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
 
@@ -91,7 +93,7 @@ async fn main() -> Result<()> {
             containers.clone(),
             listeners_arc,
             progress_handle,
-            claude_dir,
+            home_dir,
             api_key,
         ));
 

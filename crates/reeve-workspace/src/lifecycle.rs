@@ -31,7 +31,7 @@ pub struct LiveWorkspaceLifecycle {
     containers: Arc<dyn ContainerOps>,
     listeners: ListenerHandle,
     progress: crate::ProgressHandle,
-    claude_dir: PathBuf,
+    home_dir: PathBuf,
     api_key: Option<String>,
 }
 
@@ -43,7 +43,7 @@ impl LiveWorkspaceLifecycle {
         containers: Arc<dyn ContainerOps>,
         listeners: ListenerHandle,
         progress: crate::ProgressHandle,
-        claude_dir: PathBuf,
+        home_dir: PathBuf,
         api_key: Option<String>,
     ) -> Self {
         Self {
@@ -53,7 +53,7 @@ impl LiveWorkspaceLifecycle {
             containers,
             listeners,
             progress,
-            claude_dir,
+            home_dir,
             api_key,
         }
     }
@@ -135,7 +135,7 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             &workspace_path,
             &devcontainer_path,
             &cards_socket_dir,
-            &self.claude_dir,
+            &self.home_dir,
             self.api_key.as_deref(),
         );
 
