@@ -93,15 +93,36 @@ pub async fn handle(app: &mut App, action: Action) {
             app.selected_card_id = cards.last().map(|c| c.id.clone());
         }
         Action::OpenDrillIn => {
-            if app.selected_card_id.is_some() {
-                app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+            // Enter advances inward one step. From KanbanFull, open the
+            // drill-in. From drill-in with kanban focus, hop into the
+            // session pane (if one exists). From session pane, Enter is
+            // forwarded raw to the PTY (handled by the drive loop, not
+            // reachable here).
+            use crate::tui::layout::LayoutMode;
+            match app.layout {
+                LayoutMode::KanbanFull => {
+                    if app.selected_card_id.is_some() {
+                        app.layout = LayoutMode::FocusedColumnPlusDetail;
+                    }
+                }
+                LayoutMode::FocusedColumnPlusDetail => {
+                    if let Some(id) = app.selected_card_id.clone() {
+                        if app.sessions.get(&id).is_some() {
+                            app.pane_focus = crate::tui::app::PaneFocus::SessionPane;
+                            app.pending_attention.remove(&id);
+                        } else {
+                            set_status_info(app, "no live session for this card".into());
+                        }
+                    }
+                }
             }
         }
         Action::CloseDrillIn => {
+            // Esc only closes the drill-in. Quit is `q` only — Esc in
+            // KanbanFull is a no-op so an unfocused press doesn't kill
+            // the session.
             if app.layout == crate::tui::layout::LayoutMode::FocusedColumnPlusDetail {
                 app.layout = crate::tui::layout::LayoutMode::KanbanFull;
-            } else {
-                app.quit = true; // Esc in KanbanFull = quit
             }
         }
         Action::OpenActionMenu => {
@@ -130,19 +151,6 @@ pub async fn handle(app: &mut App, action: Action) {
         Action::Edit => open_edit_modal(app),
         Action::New => open_new_modal(app).await,
         Action::Delete => open_delete_modal(app),
-        Action::FocusSessionPane => {
-            // Only meaningful in FocusedColumnPlusDetail with an Implementing card that has a live session.
-            if app.layout == crate::tui::layout::LayoutMode::FocusedColumnPlusDetail {
-                if let Some(id) = &app.selected_card_id {
-                    if app.sessions.get(id).is_some() {
-                        app.pane_focus = crate::tui::app::PaneFocus::SessionPane;
-                        app.pending_attention.remove(id);
-                    } else {
-                        set_status_info(app, "no live session for this card".into());
-                    }
-                }
-            }
-        }
         Action::FocusKanban => {
             app.pane_focus = crate::tui::app::PaneFocus::Kanban;
         }
@@ -1291,10 +1299,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn esc_quits_when_drill_in_closed() {
+    async fn esc_in_kanban_is_noop_no_quit() {
         let mut app = App::new();
         handle(&mut app, Action::CloseDrillIn).await;
-        assert!(app.quit);
+        assert!(!app.quit, "Esc in KanbanFull must not quit — `q` is the only quit");
+        assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
+    }
+
+    #[tokio::test]
+    async fn enter_in_drill_in_with_session_focuses_session_pane() {
+        let mut app = App::new();
+        app.layout = crate::tui::layout::LayoutMode::FocusedColumnPlusDetail;
+        app.cards.push(card("c1", Column::Implementing, 0));
+        app.selected_card_id = Some("c1".into());
+        // No session present → status set, focus unchanged.
+        handle(&mut app, Action::OpenDrillIn).await;
+        assert_eq!(app.pane_focus, crate::tui::app::PaneFocus::Kanban);
     }
 
     #[test]

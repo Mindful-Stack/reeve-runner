@@ -312,9 +312,9 @@ async fn drive(terminal: &mut Term) -> Result<()> {
                         crate::tui::actions::handle_modal_key(&mut app, key).await;
                     } else if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
                         // In session-pane mode only FocusKanban is intercepted
-                        // (Ctrl+G / Ctrl+]). Everything else — including
-                        // Shift+Tab, which claude uses for its mode cycle — is
-                        // forwarded raw to the PTY.
+                        // (Alt+Esc, Ctrl+G, Ctrl+]). Everything else —
+                        // including Shift+Tab which claude uses for its mode
+                        // cycle — is forwarded raw to the PTY.
                         if events::translate(key) == Some(events::Action::FocusKanban) {
                             crate::tui::actions::handle(&mut app, events::Action::FocusKanban)
                                 .await;

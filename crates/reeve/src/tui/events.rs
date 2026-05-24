@@ -27,7 +27,6 @@ pub enum Action {
     Edit,
     New,
     Delete,
-    FocusSessionPane,
     FocusKanban,
 }
 
@@ -38,6 +37,8 @@ pub enum KeyMatcher {
     Shift(KeyCode),
     /// Ctrl-modified key. Compared case-insensitively for char codes.
     Ctrl(KeyCode),
+    /// Alt-modified key. Compared case-insensitively for char codes.
+    Alt(KeyCode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,13 +66,13 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         key: KeyMatcher::Code(KeyCode::Esc),
         action: Action::CloseDrillIn,
-        description: "close drill-in / quit",
+        description: "close drill-in",
         section: HelpSection::Navigation,
     },
     Binding {
         key: KeyMatcher::Code(KeyCode::Enter),
         action: Action::OpenDrillIn,
-        description: "open drill-in",
+        description: "open drill-in / focus session",
         section: HelpSection::Navigation,
     },
     Binding {
@@ -212,28 +213,17 @@ pub const BINDINGS: &[Binding] = &[
         description: "delete card",
         section: HelpSection::Mutations,
     },
+    // Enter advances inward: in KanbanFull it opens the drill-in; in
+    // drill-in with kanban focus it focuses the session pane. The handler
+    // for Action::OpenDrillIn dispatches on layout/focus state.
+    //
+    // Alt+Esc exits the session pane back to kanban focus. Doesn't
+    // conflict with anything claude/tmux care about; Ctrl+G / Ctrl+]
+    // remain as alternates for terminals that mis-report Alt+Esc.
     Binding {
-        key: KeyMatcher::Code(KeyCode::Tab),
-        action: Action::FocusSessionPane,
-        description: "focus session pane",
-        section: HelpSection::Navigation,
-    },
-    // Multiple bindings for exit-session-pane — terminals report these
-    // differently depending on TERM, kitty protocol, locale. Shift+Tab
-    // remains the primary (it conflicts with claude's mode-cycle binding
-    // but is the most universally-reported escape). Ctrl+G / Ctrl+] are
-    // alternates for users whose terminal reports them reliably.
-    Binding {
-        key: KeyMatcher::Shift(KeyCode::BackTab),
+        key: KeyMatcher::Alt(KeyCode::Esc),
         action: Action::FocusKanban,
-        description: "exit session pane back to kanban",
-        section: HelpSection::Navigation,
-    },
-    // Some terminals report Shift+Tab as bare BackTab with no SHIFT modifier.
-    Binding {
-        key: KeyMatcher::Code(KeyCode::BackTab),
-        action: Action::FocusKanban,
-        description: "exit session pane (bare BackTab)",
+        description: "exit session pane",
         section: HelpSection::Navigation,
     },
     Binding {
@@ -265,11 +255,13 @@ fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
             event.code == KeyCode::Char(c)
                 && !event.modifiers.contains(KeyModifiers::SHIFT)
                 && !event.modifiers.contains(KeyModifiers::CONTROL)
+                && !event.modifiers.contains(KeyModifiers::ALT)
         }
         KeyMatcher::Code(code) => {
             event.code == code
                 && !event.modifiers.contains(KeyModifiers::SHIFT)
                 && !event.modifiers.contains(KeyModifiers::CONTROL)
+                && !event.modifiers.contains(KeyModifiers::ALT)
         }
         KeyMatcher::Shift(code) => {
             if !event.modifiers.contains(KeyModifiers::SHIFT) {
@@ -288,6 +280,17 @@ fn matches(matcher: KeyMatcher, event: KeyEvent) -> bool {
         }
         KeyMatcher::Ctrl(code) => {
             if !event.modifiers.contains(KeyModifiers::CONTROL) {
+                return false;
+            }
+            match (code, event.code) {
+                (KeyCode::Char(want), KeyCode::Char(got)) => {
+                    want.to_ascii_lowercase() == got.to_ascii_lowercase()
+                }
+                _ => code == event.code,
+            }
+        }
+        KeyMatcher::Alt(code) => {
+            if !event.modifiers.contains(KeyModifiers::ALT) {
                 return false;
             }
             match (code, event.code) {
@@ -401,5 +404,39 @@ mod tests {
     fn m_translates_to_open_move_picker() {
         let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
         assert_eq!(translate(key), Some(Action::OpenMovePicker));
+    }
+
+    #[test]
+    fn alt_esc_translates_to_focus_kanban() {
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT);
+        assert_eq!(translate(key), Some(Action::FocusKanban));
+    }
+
+    #[test]
+    fn plain_esc_does_not_match_alt_esc_binding() {
+        // Plain Esc → CloseDrillIn (not FocusKanban). Confirms the Alt-aware
+        // Code matcher rejects ALT-modified events.
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::CloseDrillIn));
+    }
+
+    #[test]
+    fn tab_is_no_longer_bound() {
+        let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(translate(key), None);
+    }
+
+    #[test]
+    fn shift_tab_back_tab_is_no_longer_bound() {
+        let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(translate(key), None);
+        let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(translate(key), None);
+    }
+
+    #[test]
+    fn enter_translates_to_open_drill_in() {
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(translate(key), Some(Action::OpenDrillIn));
     }
 }

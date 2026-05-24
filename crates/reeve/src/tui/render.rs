@@ -670,6 +670,10 @@ fn key_label(matcher: crate::tui::events::KeyMatcher) -> String {
             format!("Ctrl+{}", c.to_ascii_uppercase())
         }
         crate::tui::events::KeyMatcher::Ctrl(c) => format!("Ctrl+{c:?}"),
+        crate::tui::events::KeyMatcher::Alt(KeyCode::Char(c)) => {
+            format!("Alt+{}", c.to_ascii_uppercase())
+        }
+        crate::tui::events::KeyMatcher::Alt(c) => format!("Alt+{c:?}"),
     }
 }
 
