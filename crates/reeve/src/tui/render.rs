@@ -220,7 +220,13 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     // 2. Progress data available → loader. NOT gated on card.column or
     //    pending_mvs. A failed spawn whose optimistic column has reverted
     //    still surfaces the Failed checklist while the user is on the card.
-    if app.card_progress.contains_key(&card.id) {
+    //    Empty-stage entries don't count — those leave the user staring at
+    //    a generic "starting…" spinner for a card that isn't doing anything.
+    if app
+        .card_progress
+        .get(&card.id)
+        .is_some_and(|s| !s.is_empty())
+    {
         render_provisioning_loader(f, area, app, &card.id);
         return;
     }

@@ -882,7 +882,15 @@ pub async fn poll_card_progress(app: &mut App, poll_interval_ms: u64) {
             })
             .await
         {
-            app.card_progress.insert(card_id.clone(), r.stages);
+            // Empty stages mean the daemon has nothing for this card —
+            // either it was cleared (ensure_stopped) or the daemon
+            // restarted. Don't cache the emptiness, or the visibility
+            // gate will render a generic "starting…" loader forever.
+            if r.stages.is_empty() {
+                app.card_progress.remove(&card_id);
+            } else {
+                app.card_progress.insert(card_id.clone(), r.stages);
+            }
             app.card_progress_last_poll.insert(card_id, now);
         }
     }
@@ -891,7 +899,7 @@ pub async fn poll_card_progress(app: &mut App, poll_interval_ms: u64) {
     // session pane has taken over the visible display. Failed cards (no
     // session) keep their data so the user can still see what failed.
     app.card_progress
-        .retain(|id, _| app.sessions.get(id).is_none());
+        .retain(|id, stages| !stages.is_empty() && app.sessions.get(id).is_none());
     app.card_progress_last_poll
         .retain(|id, _| app.sessions.get(id).is_none());
 }
@@ -953,7 +961,9 @@ pub async fn process_op_event(app: &mut App, event: crate::tui::app::OpEvent) {
                 })
                 .await
             {
-                app.card_progress.insert(card_id.clone(), r.stages);
+                if !r.stages.is_empty() {
+                    app.card_progress.insert(card_id.clone(), r.stages);
+                }
             }
             decrement_pending(&mut app.pending_mvs, &card_id);
             if !app.pending_mvs.contains_key(&card_id) {
