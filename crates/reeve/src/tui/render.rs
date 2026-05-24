@@ -86,14 +86,14 @@ fn title_line(app: &App) -> Paragraph<'static> {
     // Session-pane focus overrides layout-based hints — keys are forwarded
     // to the PTY, so kanban bindings don't apply.
     let hint = if app.pane_focus == crate::tui::app::PaneFocus::SessionPane {
-        "Shift+Tab back to kanban  (other keys forwarded to session)"
+        "Alt+Esc back to kanban  (other keys forwarded to session)"
     } else {
         match app.layout {
             crate::tui::layout::LayoutMode::KanbanFull => {
                 "q quit  r refresh  Enter drill-in  h/j/k/l navigate"
             }
             crate::tui::layout::LayoutMode::FocusedColumnPlusDetail => {
-                "Esc close drill-in  j/k navigate  Tab focus session"
+                "Esc close drill-in  j/k navigate  Enter focus session"
             }
         }
     };

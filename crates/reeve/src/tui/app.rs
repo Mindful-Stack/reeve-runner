@@ -1,10 +1,14 @@
 use crate::tui::events;
 use crate::tui::render;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -182,11 +186,27 @@ fn setup_terminal() -> Result<Term> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
+    // Kitty keyboard protocol disambiguation. Without it, Alt+Esc reaches
+    // crossterm as two consecutive Esc events (legacy 0x1b 0x1b encoding)
+    // — there is no way to bind it because there is no ALT modifier on the
+    // events. Ghostty / kitty / wezterm / foot / alacritty 0.13+ support
+    // this; older terminals ignore the push and we fall back to legacy
+    // encoding (so Alt+Esc just won't fire, but nothing breaks).
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     let backend = CrosstermBackend::new(out);
     Ok(Terminal::new(backend)?)
 }
 
 fn restore_terminal(terminal: &mut Term) -> Result<()> {
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        // Best-effort; missing pop is recoverable (terminal resets on exit).
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
