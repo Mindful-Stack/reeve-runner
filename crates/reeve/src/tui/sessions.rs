@@ -174,6 +174,16 @@ impl Session {
     }
 }
 
+impl Drop for Session {
+    // Without this kill, `reeve attach` keeps holding the slave PTY end
+    // after Session drops. The reader thread's cloned master fd never sees
+    // EOF, the spawn_blocking task never returns, and tokio shutdown waits
+    // forever — making `q` exit the TUI but hang the process until Ctrl+C.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
 pub struct SessionManager {
     sessions: HashMap<String, Session>,
     default_rows: u16,
