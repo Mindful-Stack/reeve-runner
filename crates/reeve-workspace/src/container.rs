@@ -55,6 +55,17 @@ impl ContainerOps for DockerOps {
             .await
             .context("exec devcontainer up")?;
         if !output.status.success() {
+            // Surface both stdout and stderr on failure — devcontainer CLI
+            // sometimes writes the real error (Dockerfile build output,
+            // postCreate hook failures) to stdout. Logging both here so
+            // /tmp/reeved.log captures what the user otherwise only sees
+            // briefly in the TUI status bar before it times out.
+            tracing::error!(
+                "devcontainer up failed (exit {}); stdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
             anyhow::bail!(
                 "devcontainer up failed (exit {}): {}",
                 output.status,
