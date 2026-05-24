@@ -420,14 +420,27 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             to,
         } => {
             use reeve_protocol::Column::*;
-            let popup = centered_rect(60, 25, area);
+            // 7 content lines + 2 borders = 9 rows; +2 headroom = 11.
+            // Fixed height because percentage-of-area clipped the options
+            // hint on smaller terminals.
+            let popup = centered_rect_fixed_height(60, 11, area);
             let from_label = from.label();
             let to_label = to.label();
-            // Container only exists for cards that lived in
-            // Implementing/Testing/Review. Backlog/Planning → Done has
-            // nothing to tear down, just archives the card.
-            let (line1, line2, title) = match from {
-                Implementing | Testing | Review => (
+            // Three cases:
+            // - Implementing → Testing|Review: container survives (Testing
+            //   and Review reuse the same env) but we confirm to protect
+            //   active work from accidental Shift+L.
+            // - Implementing/Testing/Review → Backlog|Planning|Done: full
+            //   teardown — container and claude session both die.
+            // - Backlog/Planning → Done: nothing to tear down, just an
+            //   archive.
+            let (line1, line2, title) = match (*from, *to) {
+                (Implementing, Testing | Review) => (
+                    "  This ends the implementation phase. The container",
+                    "  stays running for testing / review.",
+                    " End implementation phase? ",
+                ),
+                (Implementing | Testing | Review, _) => (
                     "  This will tear down the container and end the",
                     "  claude session for this card.",
                     " Tear down workspace? ",
@@ -451,7 +464,7 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 Line::from(Span::styled(line2, Style::default().fg(Color::DarkGray))),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "  Continue?     [y]es     [n]o",
+                    "  Continue?    [y]es / Enter    [n]o / Esc",
                     Style::default().fg(Color::Yellow),
                 )),
             ];
@@ -467,6 +480,31 @@ pub fn render_modal(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             f.render_widget(body, popup);
         }
     }
+}
+
+/// Center a rect with a fixed pixel height (in rows) and a percentage
+/// width. For modals whose content is a known fixed line count — using
+/// percentage-of-area clips on small terminals.
+fn centered_rect_fixed_height(percent_x: u16, rows: u16, area: Rect) -> Rect {
+    let target_h = rows.min(area.height);
+    let top_h = area.height.saturating_sub(target_h) / 2;
+    let bottom_h = area.height.saturating_sub(top_h).saturating_sub(target_h);
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Length(target_h),
+            Constraint::Length(bottom_h),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

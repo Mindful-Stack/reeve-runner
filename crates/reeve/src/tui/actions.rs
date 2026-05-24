@@ -735,10 +735,20 @@ fn schedule_mv(app: &mut App, card_id: String, target: Column) {
     schedule_mv_unchecked(app, card_id, target);
 }
 
-/// Whether the (from, to) transition would invoke `ensure_stopped` on the
-/// daemon side. MUST mirror `reeve_card::transitions::on_column_change`'s
-/// ensure_stopped routing. Drift-guarded by the
-/// `is_destructive_matrix_matches_lifecycle_routing` test.
+/// Whether the (from, to) transition should prompt the user to confirm.
+///
+/// This is a superset of the daemon's ensure_stopped routing
+/// (`reeve_card::transitions::on_column_change`): every transition that
+/// would tear down the container also confirms, PLUS Implementing →
+/// Testing/Review. The latter pair keeps the container running by design
+/// (Testing/Review reuses the same env), but we still warn — users were
+/// accidentally bumping out of Implementing with a stray Shift+L and
+/// expected a safety net regardless of whether the daemon destroys
+/// anything.
+///
+/// Drift between this and the daemon's teardown matrix is intentional.
+/// `is_destructive_is_superset_of_lifecycle_routing` guards the invariant
+/// "confirm ⊇ daemon teardown".
 fn is_destructive(from: Column, to: Column) -> bool {
     use reeve_protocol::Column::*;
     matches!(
@@ -746,6 +756,7 @@ fn is_destructive(from: Column, to: Column) -> bool {
         (Implementing | Testing | Review, Backlog | Planning)
             | (Implementing | Testing | Review, Done)
             | (Backlog | Planning, Done)
+            | (Implementing, Testing | Review)
     )
 }
 
@@ -1300,10 +1311,22 @@ mod tests {
     }
 
     #[test]
-    fn is_destructive_matrix_matches_lifecycle_routing() {
-        // Cross-reference with reeve_card::transitions::on_column_change.
-        // For each (from, to) pair, is_destructive must return true iff the
-        // transition matrix would route to ensure_stopped.
+    fn is_destructive_implementing_to_testing_or_review() {
+        // Container stays running by design on these — the daemon doesn't
+        // tear down — but we still confirm because users were accidentally
+        // bumping out of active Implementing work.
+        use reeve_protocol::Column::*;
+        assert!(is_destructive(Implementing, Testing));
+        assert!(is_destructive(Implementing, Review));
+    }
+
+    #[test]
+    fn is_destructive_is_superset_of_lifecycle_routing() {
+        // Cross-reference with reeve_card::transitions::on_column_change:
+        // every transition that routes to ensure_stopped MUST also confirm.
+        // The converse no longer holds — Implementing → Testing/Review
+        // confirms without tearing down. Drift-guarded as a superset, not
+        // an equality.
         use reeve_protocol::Column;
         use reeve_protocol::Column::*;
         let all: [Column; 6] = [Backlog, Planning, Implementing, Testing, Review, Done];
@@ -1312,18 +1335,16 @@ mod tests {
                 if from == to {
                     continue;
                 }
-                // Hand-coded mirror of on_column_change's ensure_stopped arms:
                 let routes_to_ensure_stopped = matches!(
                     (from, to),
                     (_, Done) | (Implementing | Testing | Review, Backlog | Planning)
                 );
-                assert_eq!(
-                    is_destructive(from, to),
-                    routes_to_ensure_stopped,
-                    "drift: ({from:?} → {to:?}) is_destructive={} but routes_to_ensure_stopped={}",
-                    is_destructive(from, to),
-                    routes_to_ensure_stopped,
-                );
+                if routes_to_ensure_stopped {
+                    assert!(
+                        is_destructive(from, to),
+                        "({from:?} → {to:?}) routes to ensure_stopped but is_destructive=false — drift!",
+                    );
+                }
             }
         }
     }
