@@ -142,9 +142,7 @@ Two idempotency invariants worth knowing about:
 
 ## Manifest field deprecation policy
 
-The Manifest field renamed from `workspace` to `meta_repo` in 2026-05. The old name is accepted via `#[serde(rename = "meta_repo", alias = "workspace")]`; loading a manifest with the old name emits a `tracing::warn`. The witan-household template writes the new name unconditionally; existing `household.json` files in users' workspaces continue to parse. Alias support will be removed in a future release (no fixed date — when the warning rate is consistently zero in observed manifests).
-
-The pattern generalises: when renaming a wire/manifest field, keep the old name accepting via serde alias for at least one release, log a deprecation warning, and update template repos that produce new instances.
+The Manifest field renamed from `workspace` to `meta_repo` in 2026-05. The original alias-and-deprecation-warning phase ran from 2026-05 through 2026-05-25; the alias was then dropped across all three Witan tools (Reeve, Lorekeeper, witan-household). Manifests using the old `workspace` field name no longer parse — they must be migrated with `sed -i 's/"workspace":/"meta_repo":/' household.json`. The pattern generalises: rename-with-alias for one release, then drop. See the 2026-05-25 spec for the cross-tool rollout details.
 
 ## Handler ownership of time
 

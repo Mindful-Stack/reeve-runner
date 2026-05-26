@@ -250,7 +250,7 @@ mod tests {
             .map(|n| format!(r#"{{"name":"{n}"}}"#))
             .collect();
         let body = format!(
-            r#"{{"workspace":"{workspace}","repos":[{}]}}"#,
+            r#"{{"meta_repo":"{workspace}","repos":[{}]}}"#,
             repos_json.join(",")
         );
         std::fs::write(meta.join("household.json"), body).unwrap();

@@ -79,13 +79,13 @@ function checkManifest(manifestPath, issues) {
         issues.error.push(`household.json parse error: ${e.message}`);
         return;
     }
-    if (!manifest.workspace) {
-        issues.error.push('household.json: missing required "workspace" field');
+    if (!manifest.meta_repo) {
+        issues.error.push('household.json: missing required "meta_repo" field');
         return;
     }
-    const workspaceEntry = (manifest.repos || []).find(r => r.name === manifest.workspace);
+    const workspaceEntry = (manifest.repos || []).find(r => r.name === manifest.meta_repo);
     if (!workspaceEntry) {
-        issues.error.push(`household.json: workspace = "${manifest.workspace}" has no matching repos[] entry`);
+        issues.error.push(`household.json: meta_repo = "${manifest.meta_repo}" has no matching repos[] entry`);
     }
     if (manifest.knowledge_base) {
         const kbEntry = (manifest.repos || []).find(r => r.name === manifest.knowledge_base);
@@ -95,7 +95,7 @@ function checkManifest(manifestPath, issues) {
     }
     const workspaceDir = path.dirname(manifestPath);
     for (const entry of manifest.repos || []) {
-        if (entry.name === manifest.workspace) continue;
+        if (entry.name === manifest.meta_repo) continue;
         const dir = path.join(workspaceDir, entry.name);
         if (!fs.existsSync(dir)) {
             issues.warning.push(`Sibling "${entry.name}" declared in household.json but not present at ${dir}`);

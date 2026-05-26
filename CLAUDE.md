@@ -64,6 +64,17 @@ Run all of the above before opening a PR. See `lore/knowledge/general/testing.md
 
 Imperative + lowercase + conventional-commit prefix with milestone or task number: `feat(m6): ...`, `refactor(N.X): ...`, `fix(m3-followup): ...`, `chore: ...`. Heredoc body for non-trivial commits. `Co-Authored-By: Claude` trailer on agent-coauthored commits. Full spec at `lore/knowledge/general/commit-conventions.md`.
 
+## Manifest schema migration
+
+`Manifest.workspace` was renamed to `Manifest.meta_repo` in 2026-05. The
+serde alias and deprecation-warning phase ran through 2026-05-25; the
+alias was then removed across all three Witan tools (Reeve, Lorekeeper,
+witan-household). Manifests using the old `workspace` field name no
+longer parse — they must be migrated with
+`sed -i 's/"workspace":/"meta_repo":/' household.json`. See
+`lore/knowledge/general/architecture.md` and the 2026-05-25 spec for
+the cross-tool rollout history.
+
 ## Refactor history
 
 - `docs/superpowers/specs/2026-04-29-reeve-design.md` — parent design

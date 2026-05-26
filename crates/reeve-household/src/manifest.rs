@@ -16,9 +16,8 @@ const RESERVED_NAMES: &[&str] = &[".git", ".devcontainer"];
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Manifest {
     /// Name of the repos[] entry that IS the meta-repo.
-    /// Renamed from `workspace` (2026-05); old name accepted via alias for
-    /// one release, will be removed.
-    #[serde(rename = "meta_repo", alias = "workspace")]
+    /// Renamed from `workspace` in 2026-05; the old field name is no
+    /// longer accepted.
     pub meta_repo: String,
 
     #[serde(default)]
@@ -67,15 +66,6 @@ pub fn load_manifest(meta_repo_path: &Path) -> Result<Manifest> {
     let path = meta_repo_path.join(MANIFEST_FILENAME);
     let body = std::fs::read_to_string(&path)
         .with_context(|| format!("read manifest at {}", path.display()))?;
-
-    // Detect the deprecated `workspace` field name and warn.
-    if body.contains("\"workspace\"") && !body.contains("\"meta_repo\"") {
-        tracing::warn!(
-            "manifest at {} uses deprecated field `workspace`; rename to `meta_repo`. \
-             Alias support will be removed in a future release.",
-            path.display()
-        );
-    }
 
     let manifest: Manifest = serde_json::from_str(&body)
         .with_context(|| format!("parse manifest at {}", path.display()))?;
@@ -259,14 +249,4 @@ mod tests {
         assert!(format!("{err:#}").contains("parse manifest at"));
     }
 
-    #[test]
-    fn old_workspace_field_name_still_parses_as_alias() {
-        let dir = tempdir().unwrap();
-        let root = write_manifest(
-            dir.path(),
-            r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
-        );
-        let m = load_manifest(&root).unwrap();
-        assert_eq!(m.meta_repo, "ws");
-    }
 }

@@ -616,7 +616,7 @@ mod tests {
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
             meta.join("household.json"),
-            r#"{ "workspace": "ws", "repos": [{ "name": "ws" }] }"#,
+            r#"{ "meta_repo": "ws", "repos": [{ "name": "ws" }] }"#,
         )
         .unwrap();
         let state = fresh_state();
@@ -647,7 +647,7 @@ mod tests {
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
             meta.join("household.json"),
-            r#"{ "workspace": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
+            r#"{ "meta_repo": "ws", "knowledge_base": "missing", "repos": [{ "name": "ws" }] }"#,
         )
         .unwrap();
         let state = fresh_state();
@@ -692,7 +692,7 @@ mod tests {
             .unwrap();
         std::fs::write(
             template.join("household.json"),
-            r#"{ "workspace": "default", "repos": [{ "name": "default" }] }"#,
+            r#"{ "meta_repo": "default", "repos": [{ "name": "default" }] }"#,
         )
         .unwrap();
         std::process::Command::new("git")
@@ -753,7 +753,7 @@ mod tests {
             std::fs::create_dir_all(meta.join(".git")).unwrap();
             std::fs::write(
                 meta.join("household.json"),
-                format!(r#"{{ "workspace": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
+                format!(r#"{{ "meta_repo": "{n}", "repos": [{{ "name": "{n}" }}] }}"#),
             )
             .unwrap();
             dispatch(
@@ -818,7 +818,7 @@ mod tests {
         std::fs::write(
             meta.join("household.json"),
             r#"{
-              "workspace": "ws",
+              "meta_repo": "ws",
               "knowledge_base": "lore",
               "repos": [
                 { "name": "ws" },
@@ -874,7 +874,7 @@ mod tests {
         std::fs::create_dir_all(meta.join(".git")).unwrap();
         std::fs::write(
             meta.join("household.json"),
-            r#"{ "workspace": "ours", "repos": [{ "name": "ours" }] }"#,
+            r#"{ "meta_repo": "ours", "repos": [{ "name": "ours" }] }"#,
         )
         .unwrap();
         let state = fresh_state();
@@ -1003,7 +1003,7 @@ mod tests {
             .map(|n| format!(r#"{{"name":"{n}"}}"#))
             .collect();
         let body = format!(
-            r#"{{"workspace":"{workspace}","repos":[{}]}}"#,
+            r#"{{"meta_repo":"{workspace}","repos":[{}]}}"#,
             repos_json.join(",")
         );
         std::fs::write(meta_repo_path.join("household.json"), body).unwrap();

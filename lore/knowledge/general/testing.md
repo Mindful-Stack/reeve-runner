@@ -23,7 +23,7 @@ Reeve's tests live in four layers, each pinning a different kind of guarantee. K
 
 - `reeve-card/src/domain.rs::tests`: `Card::new` invariants, `Card::from_persisted` invariants, round-trip with `protocol::Card`.
 - `reeve-card/src/transitions.rs::tests`: every arm of the kanban transition matrix, asserted via a `MockFx` impl of `WorkspaceLifecycle` that records calls.
-- `reeve-household/src/manifest.rs::tests`: every validation arm + the `workspace`-alias back-compat test.
+- `reeve-household/src/manifest.rs::tests`: every validation arm.
 - `reeve-workspace/src/domain.rs::tests`: Workspace/Container entity invariants (currently minimal; expand as the entities grow methods).
 - `reeve-protocol/src/lib.rs::tests`: wire-string round-trip for `Column` + `ContainerStatus`, RPC envelope serde tests, path helpers.
 

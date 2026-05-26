@@ -15,7 +15,7 @@ function withTempWorkspace(callback) {
 test('doctor returns 0 for a clean workspace', () => {
     withTempWorkspace((tmp) => {
         fs.writeFileSync(path.join(tmp, 'household.json'), JSON.stringify({
-            workspace: 'ws',
+            meta_repo: 'ws',
             repos: [{ name: 'ws' }, { name: 'lore' }]
         }));
         const kbDir = path.join(tmp, 'lore', 'knowledge');
@@ -30,7 +30,7 @@ test('doctor returns 0 for a clean workspace', () => {
 test('doctor returns 1 when manifest workspace pointer is invalid', () => {
     withTempWorkspace((tmp) => {
         fs.writeFileSync(path.join(tmp, 'household.json'), JSON.stringify({
-            workspace: 'ghost',
+            meta_repo: 'ghost',
             repos: [{ name: 'ws' }]
         }));
         const kbDir = path.join(tmp, 'lore', 'knowledge');
@@ -43,7 +43,7 @@ test('doctor returns 1 when manifest workspace pointer is invalid', () => {
 test('doctor reports missing sibling presence', () => {
     withTempWorkspace((tmp) => {
         fs.writeFileSync(path.join(tmp, 'household.json'), JSON.stringify({
-            workspace: 'ws',
+            meta_repo: 'ws',
             repos: [{ name: 'ws' }, { name: 'missing-sibling' }]
         }));
         const kbDir = path.join(tmp, 'lore', 'knowledge');

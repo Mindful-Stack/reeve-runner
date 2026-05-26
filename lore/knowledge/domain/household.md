@@ -23,7 +23,7 @@ The Household context owns:
 
 - **Household** — root aggregate. Identity is `name` (string, the user-chosen handle: `myarchy`, `myproject`, etc.). Holds `meta_repo_path: PathBuf` (where the meta-repo lives on disk).
 - **Manifest** — parsed `household.json`. Fields:
-  - `meta_repo: String` — name of the `repos[]` entry that IS the meta-repo. (Renamed from `workspace` in 2026-05; serde alias accepts the old name for back-compat with a deprecation warning.)
+  - `meta_repo: String` — name of the `repos[]` entry that IS the meta-repo. (Renamed from `workspace` in 2026-05; the old field name is no longer accepted.)
   - `knowledge_base: Option<String>` — name of the `repos[]` entry that holds the KB (the `lore/` directory).
   - `repos: Vec<RepoEntry>` — every repo in the workspace, including the meta-repo itself.
 - **RepoEntry** — value object inside Manifest. Fields: `name` (manifest identifier + on-disk dir for siblings), `url` (informational; surfaced in `household show`), `tags` (free-form), `description`.
@@ -46,7 +46,7 @@ These are enforced in `reeve-household/src/manifest.rs::validate` (manifest leve
 
 - **Name is PK.** `households.name` is a TEXT PRIMARY KEY in SQLite. Duplicate registrations fail with a UNIQUE-constraint error mapped to `RpcError::CONFLICT`.
 - **Manifest must validate before insert.** `household add` and `household new` both call `load_manifest(&meta_repo_path)` *before* writing to the households table. A bad manifest fails the registration entirely; no half-state.
-- **Manifest field rename.** The Manifest struct field is named `meta_repo` (Rust + JSON). The deprecated name `workspace` is accepted via `#[serde(alias)]` for one release; loading a manifest that uses the old name emits a `tracing::warn`. New scaffolds always write `meta_repo`.
+- **Manifest field rename.** The Manifest struct field is named `meta_repo` (Rust + JSON). Renamed from `workspace` in 2026-05. The old field name is no longer accepted as of 2026-05-25 — manifests that still use it must be migrated (one-line `sed -i 's/"workspace":/"meta_repo":/' household.json`). New scaffolds always write `meta_repo`.
 - **`meta_repo` must match a `repos[]` entry.** Manifest validation rejects a manifest whose top-level `meta_repo: "foo"` has no `repos[]` entry named `foo`. Same rule for `knowledge_base`.
 - **`repos[]` is non-empty + names unique + no reserved names.** The meta-repo entry must exist (so `repos[]` is at least one entry). Names must be unique across the array. Reserved names: `.git`, `.devcontainer` (these are directory names that would collide with meta-repo internals).
 - **Path-source must exist + have `.git/`.** `household add <path>` validates that the path exists and contains `.git/`; otherwise NOT_FOUND or INVALID_ARGUMENT respectively.
@@ -66,7 +66,7 @@ These are enforced in `reeve-household/src/manifest.rs::validate` (manifest leve
 ## Components inside `reeve-household`
 
 - `domain.rs` — `Household` entity (struct with `name`, `meta_repo_path` — both `pub` for now, no invariants beyond construction-time validation) + the `iter_card_repos(household, manifest, workspace_path)` helper used by [[domain/workspace]]'s push and fetch.
-- `manifest.rs` — `Manifest`, `RepoEntry`, `load_manifest`, `validate`, the deprecation warning. Tests pin every validation arm and the `workspace`-alias back-compat.
+- `manifest.rs` — `Manifest`, `RepoEntry`, `load_manifest`, `validate`. Tests pin every validation arm.
 - `repo.rs` — `HouseholdRepo` trait + `pub(crate) SqliteHouseholdRepo` adapter + `make_household_components` factory.
 - `scaffold.rs` — `HouseholdScaffold` trait + `pub(crate) RealHouseholdScaffold` adapter + `make_scaffold` factory.
 - `handler.rs` — the 5 RPC handlers + helpers + the `NameParam` deserialize struct.
