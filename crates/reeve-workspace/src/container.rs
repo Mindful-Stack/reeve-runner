@@ -471,10 +471,7 @@ mod tests {
         let home = dir.path(); // no .claude/.tmux/etc. under it
 
         let argv = devcontainer_up_command("c", &workspace, &dc, &socket, home, None);
-        let home_mounts = argv
-            .iter()
-            .filter(|s| s.contains("/home/vscode/"))
-            .count();
+        let home_mounts = argv.iter().filter(|s| s.contains("/home/vscode/")).count();
         assert_eq!(home_mounts, 0, "absent home paths must not be mounted");
     }
 

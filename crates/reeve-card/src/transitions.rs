@@ -161,7 +161,10 @@ mod tests {
 
     #[test]
     fn card_paths_uses_provided_values() {
-        let p = CardPaths::from_optional(Some("docs/superpowers/specs"), Some("docs/superpowers/plans"));
+        let p = CardPaths::from_optional(
+            Some("docs/superpowers/specs"),
+            Some("docs/superpowers/plans"),
+        );
         assert_eq!(p.spec_path, "docs/superpowers/specs");
         assert_eq!(p.plan_path, "docs/superpowers/plans");
     }

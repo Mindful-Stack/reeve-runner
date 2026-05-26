@@ -1314,7 +1314,10 @@ mod tests {
     async fn esc_in_kanban_is_noop_no_quit() {
         let mut app = App::new();
         handle(&mut app, Action::CloseDrillIn).await;
-        assert!(!app.quit, "Esc in KanbanFull must not quit — `q` is the only quit");
+        assert!(
+            !app.quit,
+            "Esc in KanbanFull must not quit — `q` is the only quit"
+        );
         assert_eq!(app.layout, crate::tui::layout::LayoutMode::KanbanFull);
     }
 

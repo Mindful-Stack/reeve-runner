@@ -33,9 +33,7 @@ where
     }
 }
 
-pub async fn rpc_ls(
-    household: Option<&str>,
-) -> Result<std::result::Result<LsResult, RpcError>> {
+pub async fn rpc_ls(household: Option<&str>) -> Result<std::result::Result<LsResult, RpcError>> {
     let params = LsParams {
         household: household.map(|s| s.to_string()),
     };
