@@ -191,6 +191,24 @@ pub async fn handle_status_self(
     .map_err(internal)
 }
 
+pub async fn handle_session_init_self(
+    cards: &dyn CardRepo,
+    households: &dyn HouseholdLookup,
+    card_id: String,
+) -> std::result::Result<Value, RpcError> {
+    let card = cards
+        .get(&card_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(&card_id))?;
+    let paths = households
+        .card_paths(card.household())
+        .await
+        .map_err(internal)?;
+    let prompt = crate::session_init::render(&card, &paths);
+    serde_json::to_value(reeve_protocol::SessionInitSelfResult { prompt }).map_err(internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +415,42 @@ mod tests {
         };
         let err = handle_edit(&*repo, req).await.unwrap_err();
         assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn session_init_self_renders_prompt_from_card_and_default_paths() {
+        let repo = fresh_repo();
+        let card = Card::new("witan".into(), "Add OAuth login".into(), false).unwrap();
+        let card_id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+
+        let value = handle_session_init_self(
+            &*repo,
+            &AlwaysExistsHouseholds,
+            card_id.clone(),
+        )
+        .await
+        .unwrap();
+        let result: reeve_protocol::SessionInitSelfResult =
+            serde_json::from_value(value).unwrap();
+        assert!(result.prompt.contains(&format!("reeve card {card_id}")));
+        assert!(result.prompt.contains("in the witan household"));
+        assert!(result.prompt.contains("Brief: Add OAuth login"));
+        assert!(result.prompt.contains(&format!("docs/agent/specs/{card_id}-design.md")));
+        assert!(result.prompt.contains(&format!("docs/agent/plans/{card_id}.md")));
+    }
+
+    #[tokio::test]
+    async fn session_init_self_returns_not_found_for_unknown_card() {
+        let repo = fresh_repo();
+        let err = handle_session_init_self(
+            &*repo,
+            &AlwaysExistsHouseholds,
+            "no-such-card".into(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, RpcError::NOT_FOUND);
     }
 
     #[tokio::test]
