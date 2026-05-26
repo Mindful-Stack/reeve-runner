@@ -1641,9 +1641,21 @@ mod tests {
     async fn sequential_mv_with_lock_does_not_deadlock() {
         let (lifecycle, _log) = SlowLifecycle::new(0);
         let state = fresh_state_with_lifecycle(lifecycle);
+
+        // Register household "h" so Inactive→Active mv passes the existence gate.
+        state
+            .household_repo
+            .insert(reeve_household::HouseholdRow {
+                name: "h".to_string(),
+                meta_repo_path: std::path::PathBuf::from("/tmp/test-meta"),
+                added_at: 0,
+            })
+            .await
+            .unwrap();
+
         let card_id = create_card(&state, "seq-test").await;
 
-        // Backlog → Review (no lifecycle calls, but exercises lock acquire/release)
+        // Backlog → Review (Inactive→Active spawns; exercises lock acquire/release)
         let v1 = dispatch(
             RpcRequest {
                 id: 2,
@@ -1803,6 +1815,18 @@ mod tests {
     async fn concurrent_mv_for_different_cards_are_independent() {
         let (lifecycle, _) = SlowLifecycle::new(0);
         let state = fresh_state_with_lifecycle(lifecycle);
+
+        // Register household "h" so Inactive→Active mv passes the existence gate.
+        state
+            .household_repo
+            .insert(reeve_household::HouseholdRow {
+                name: "h".to_string(),
+                meta_repo_path: std::path::PathBuf::from("/tmp/test-meta"),
+                added_at: 0,
+            })
+            .await
+            .unwrap();
+
         let card_a = create_card(&state, "card-a").await;
         let card_b = create_card(&state, "card-b").await;
 

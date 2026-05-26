@@ -83,7 +83,7 @@ pub async fn on_column_change(
     }
 }
 
-fn is_active(c: Column) -> bool {
+pub(crate) fn is_active(c: Column) -> bool {
     matches!(
         c,
         Column::Planning | Column::Implementing | Column::Testing | Column::Review,

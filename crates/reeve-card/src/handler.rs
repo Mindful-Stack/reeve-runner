@@ -70,7 +70,11 @@ pub async fn handle_mv(
         .ok_or_else(|| not_found(&params.id))?;
     let old_column = existing.column();
 
-    if params.column == Column::Implementing
+    // Friendly error before lifecycle if the transition is Inactive→Active
+    // and the household isn't registered. Without this, the user sees an
+    // opaque container-provisioning failure instead of a clear message.
+    if crate::transitions::is_active(params.column)
+        && !crate::transitions::is_active(old_column)
         && !households
             .exists(existing.household())
             .await
@@ -126,7 +130,11 @@ pub async fn handle_mv_self(
         .ok_or_else(|| not_found(&card_id))?;
     let old_column = existing.column();
 
-    if params.column == Column::Implementing
+    // Friendly error before lifecycle if the transition is Inactive→Active
+    // and the household isn't registered. Without this, the user sees an
+    // opaque container-provisioning failure instead of a clear message.
+    if crate::transitions::is_active(params.column)
+        && !crate::transitions::is_active(old_column)
         && !households
             .exists(existing.household())
             .await
@@ -389,6 +397,44 @@ mod tests {
         };
         let err = handle_edit(&*repo, req).await.unwrap_err();
         assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn mv_to_planning_with_missing_household_returns_friendly_error() {
+        // Verify the Task-4 follow-up: the household-existence gate fires for
+        // Inactive→Active transitions to ANY active column, not just Implementing.
+        struct MissingHouseholds;
+        #[async_trait::async_trait]
+        impl crate::HouseholdLookup for MissingHouseholds {
+            async fn exists(&self, _name: &str) -> anyhow::Result<bool> {
+                Ok(false)
+            }
+            async fn card_paths(&self, _name: &str) -> anyhow::Result<crate::CardPaths> {
+                Ok(crate::CardPaths::from_optional(None, None))
+            }
+        }
+
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let card = Card::new("ghost".into(), "test".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+
+        let req = MvParams {
+            id: id.clone(),
+            column: Column::Planning,
+        };
+        let err = handle_mv(&*repo, &MissingHouseholds, &lifecycle, req)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("'ghost' not configured"),
+            "expected friendly household error, got: {}",
+            err.message,
+        );
+        // Card must still be in Backlog — the column was never committed.
+        let after = repo.get(&id).await.unwrap().unwrap();
+        assert_eq!(after.column(), Column::Backlog);
     }
 }
 
