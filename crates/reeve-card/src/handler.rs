@@ -424,32 +424,31 @@ mod tests {
         let card_id = card.id().to_string();
         repo.insert(&card).await.unwrap();
 
-        let value = handle_session_init_self(
-            &*repo,
-            &AlwaysExistsHouseholds,
-            card_id.clone(),
-        )
-        .await
-        .unwrap();
-        let result: reeve_protocol::SessionInitSelfResult =
-            serde_json::from_value(value).unwrap();
+        let value = handle_session_init_self(&*repo, &AlwaysExistsHouseholds, card_id.clone())
+            .await
+            .unwrap();
+        let result: reeve_protocol::SessionInitSelfResult = serde_json::from_value(value).unwrap();
         assert!(result.prompt.contains(&format!("reeve card {card_id}")));
         assert!(result.prompt.contains("in the witan household"));
         assert!(result.prompt.contains("Brief: Add OAuth login"));
-        assert!(result.prompt.contains(&format!("docs/agent/specs/{card_id}-design.md")));
-        assert!(result.prompt.contains(&format!("docs/agent/plans/{card_id}.md")));
+        assert!(
+            result
+                .prompt
+                .contains(&format!("docs/agent/specs/{card_id}-design.md"))
+        );
+        assert!(
+            result
+                .prompt
+                .contains(&format!("docs/agent/plans/{card_id}.md"))
+        );
     }
 
     #[tokio::test]
     async fn session_init_self_returns_not_found_for_unknown_card() {
         let repo = fresh_repo();
-        let err = handle_session_init_self(
-            &*repo,
-            &AlwaysExistsHouseholds,
-            "no-such-card".into(),
-        )
-        .await
-        .unwrap_err();
+        let err = handle_session_init_self(&*repo, &AlwaysExistsHouseholds, "no-such-card".into())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, RpcError::NOT_FOUND);
     }
 
