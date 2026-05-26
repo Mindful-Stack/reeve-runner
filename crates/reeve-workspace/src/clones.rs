@@ -279,6 +279,8 @@ mod tests {
                     description: None,
                 })
                 .collect(),
+            spec_path: None,
+            plan_path: None,
         }
     }
 
@@ -650,6 +652,8 @@ mod tests {
                     description: None,
                 },
             ],
+            spec_path: None,
+            plan_path: None,
         };
         let progress = RecordingProgress::default();
 
@@ -807,6 +811,8 @@ mod integration_tests {
                     description: None,
                 },
             ],
+            spec_path: None,
+            plan_path: None,
         };
         let workspace = dir.path().join("workspace");
 
