@@ -13,7 +13,7 @@ fi
 # List non-workspace repo names from manifest.
 SIBLINGS=$(node -e "
     const m = require('$MANIFEST');
-    m.repos.filter(r => r.name !== m.workspace).forEach(r => console.log(r.name));
+    m.repos.filter(r => r.name !== m.meta_repo).forEach(r => console.log(r.name));
 ")
 
 for name in $SIBLINGS; do

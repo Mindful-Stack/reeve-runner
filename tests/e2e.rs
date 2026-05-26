@@ -304,7 +304,7 @@ fn build_test_template(dst: &std::path::Path) {
     std::fs::write(
         dst.join("household.json"),
         r#"{
-          "workspace": "template",
+          "meta_repo": "template",
           "knowledge_base": "lore",
           "repos": [
             { "name": "template" },
@@ -457,7 +457,7 @@ fn m3_5_household_new_then_implementing() {
     write_manifest(
         &dest.join("household.json"),
         r#"{
-          "workspace": "test-household",
+          "meta_repo": "test-household",
           "knowledge_base": "lore",
           "repos": [
             { "name": "test-household" },
@@ -596,7 +596,7 @@ fn m3_5_missing_sibling_blocks_implementing() {
     write_manifest(
         &dest.join("household.json"),
         r#"{
-          "workspace": "incomplete",
+          "meta_repo": "incomplete",
           "knowledge_base": "lore",
           "repos": [
             { "name": "incomplete" },
@@ -711,9 +711,9 @@ fn m3_5_lore_subdir_lands_in_workspace() {
     );
 
     // The template's household.json already declares "lore" as a sibling.
-    // After `household new`, the handler rewrites the manifest so workspace
+    // After `household new`, the handler rewrites the manifest so meta_repo
     // becomes "with-kb" and the matching repos[] entry is renamed accordingly:
-    //   { "workspace": "with-kb", "knowledge_base": "lore",
+    //   { "meta_repo": "with-kb", "knowledge_base": "lore",
     //     "repos": [{"name": "with-kb"}, {"name": "lore"}] }
     // We just need the lore repo to exist on disk so clone_all_for_card can
     // clone it. Do NOT commit lore/ into the meta-repo — sibling repos are
@@ -861,7 +861,7 @@ fn m4_fetch_and_push_round_trip() {
     write_manifest(
         &dest.join("household.json"),
         r#"{
-      "workspace": "m4-household",
+      "meta_repo": "m4-household",
       "knowledge_base": "lore",
       "repos": [
         { "name": "m4-household" },
