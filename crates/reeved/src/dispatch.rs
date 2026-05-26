@@ -97,6 +97,12 @@ pub async fn dispatch(
             let container_status = fetch_container_status(&state, &card_id).await?;
             reeve_card::handle_status_self(&*cards, container_status, card_id).await
         }
+        "session-init-self" => {
+            let card_id = require_card(&caller)?;
+            let cards = make_card_repo(state.db.clone());
+            let households = state.household_lookup.clone();
+            reeve_card::handle_session_init_self(&*cards, &*households, card_id).await
+        }
 
         // --- household aggregate ---
         "household.add" => {
@@ -1806,6 +1812,64 @@ mod tests {
         assert_eq!(result.stages.len(), 1);
         assert_eq!(result.stages[0].kind, ProgressKind::DevcontainerUp);
         assert_eq!(result.stages[0].status, ProgressStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn session_init_self_on_host_socket_returns_forbidden() {
+        let state = fresh_state();
+        let req = RpcRequest {
+            id: 1,
+            method: "session-init-self".into(),
+            params: serde_json::json!({}),
+        };
+        let err = dispatch(req, state, CallerContext::host())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, RpcError::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn session_init_self_on_card_socket_returns_prompt() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("witan");
+        std::fs::create_dir_all(&meta).unwrap();
+        write_test_manifest(&meta, "witan", &["witan"]);
+
+        let state = fresh_state();
+        insert_test_household(&state, "witan", &meta).await;
+
+        let new_value = dispatch(
+            RpcRequest {
+                id: 1,
+                method: "new".into(),
+                params: serde_json::json!({
+                    "household": "witan",
+                    "brief": "Add OAuth",
+                    "needs_heavy": false,
+                }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let card_id = serde_json::from_value::<NewResult>(new_value)
+            .unwrap()
+            .card
+            .id;
+
+        let req = RpcRequest {
+            id: 2,
+            method: "session-init-self".into(),
+            params: serde_json::json!({}),
+        };
+        let value = dispatch(req, state, CallerContext::card(&card_id))
+            .await
+            .unwrap();
+        let result: reeve_protocol::SessionInitSelfResult = serde_json::from_value(value).unwrap();
+        assert!(result.prompt.contains(&card_id));
+        assert!(result.prompt.contains("in the witan household"));
     }
 
     /// Concurrent mv for DIFFERENT cards must NOT serialize — both lifecycle
