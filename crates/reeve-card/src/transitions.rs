@@ -14,11 +14,44 @@ pub trait WorkspaceLifecycle: Send + Sync {
     async fn ensure_stopped(&self, card_id: &str) -> Result<()>;
 }
 
-/// Port the Card aggregate uses to check household existence before
-/// a transition that needs one. Implemented in `reeve-household`.
+/// Resolved per-card output paths for the planning agent. Returned by
+/// `HouseholdLookup::card_paths`. Plugin-agnostic defaults are applied
+/// here so consumers (the session-init handler) don't need to know
+/// the defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardPaths {
+    /// Relative to the meta-repo clone — where spec markdown lives.
+    /// Default `docs/agent/specs`.
+    pub spec_path: String,
+    /// Relative to the meta-repo clone — where plan markdown lives.
+    /// Default `docs/agent/plans`.
+    pub plan_path: String,
+}
+
+impl CardPaths {
+    pub const DEFAULT_SPEC_PATH: &'static str = "docs/agent/specs";
+    pub const DEFAULT_PLAN_PATH: &'static str = "docs/agent/plans";
+
+    /// Apply defaults to optional manifest fields.
+    pub fn from_optional(spec: Option<&str>, plan: Option<&str>) -> Self {
+        Self {
+            spec_path: spec.unwrap_or(Self::DEFAULT_SPEC_PATH).to_string(),
+            plan_path: plan.unwrap_or(Self::DEFAULT_PLAN_PATH).to_string(),
+        }
+    }
+}
+
+/// Port the Card aggregate uses to check household existence and read
+/// the card-output paths a household declares. Implemented in
+/// `reeve-household`.
 #[async_trait]
 pub trait HouseholdLookup: Send + Sync {
     async fn exists(&self, name: &str) -> Result<bool>;
+    /// Resolve the household's `spec_path`/`plan_path` from its manifest,
+    /// applying `CardPaths` defaults where the manifest leaves them unset.
+    /// Returns Err if the household is not registered or its manifest
+    /// cannot be loaded.
+    async fn card_paths(&self, name: &str) -> Result<CardPaths>;
 }
 
 /// The kanban transition matrix. Decides which `WorkspaceLifecycle`
@@ -117,5 +150,26 @@ mod tests {
         let fx = run_one(Column::Backlog, Column::Planning).await;
         assert!(fx.running.lock().await.is_empty());
         assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[test]
+    fn card_paths_defaults_when_both_absent() {
+        let p = CardPaths::from_optional(None, None);
+        assert_eq!(p.spec_path, "docs/agent/specs");
+        assert_eq!(p.plan_path, "docs/agent/plans");
+    }
+
+    #[test]
+    fn card_paths_uses_provided_values() {
+        let p = CardPaths::from_optional(Some("docs/superpowers/specs"), Some("docs/superpowers/plans"));
+        assert_eq!(p.spec_path, "docs/superpowers/specs");
+        assert_eq!(p.plan_path, "docs/superpowers/plans");
+    }
+
+    #[test]
+    fn card_paths_mixed_provided_and_default() {
+        let p = CardPaths::from_optional(Some("custom/specs"), None);
+        assert_eq!(p.spec_path, "custom/specs");
+        assert_eq!(p.plan_path, "docs/agent/plans");
     }
 }

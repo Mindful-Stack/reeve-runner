@@ -11,4 +11,4 @@ pub use handler::{
     handle_status_self,
 };
 pub use repo::{CardRepo, init_schema, make_card_repo};
-pub use transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
+pub use transitions::{CardPaths, HouseholdLookup, WorkspaceLifecycle, on_column_change};

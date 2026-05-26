@@ -238,6 +238,9 @@ mod tests {
         async fn exists(&self, _name: &str) -> anyhow::Result<bool> {
             Ok(true)
         }
+        async fn card_paths(&self, _name: &str) -> anyhow::Result<crate::CardPaths> {
+            Ok(crate::CardPaths::from_optional(None, None))
+        }
     }
 
     #[tokio::test]
