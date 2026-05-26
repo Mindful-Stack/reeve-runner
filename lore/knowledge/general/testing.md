@@ -96,7 +96,7 @@ fn protocol_to_domain_to_protocol_round_trips() {
 
 If a field is added to either type, this test (plus `cargo check`) catches missing field handling on either side. Don't delete this test; if you add a Card field, update both types and the round-trip should still pass.
 
-Similar round-trip tests exist for `Manifest` (with the alias case `old_workspace_field_name_still_parses_as_alias`).
+Similar round-trip tests exist for `Manifest` validation in `reeve-household`.
 
 ## Running tests
 
