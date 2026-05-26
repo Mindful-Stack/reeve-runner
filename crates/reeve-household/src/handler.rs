@@ -217,6 +217,8 @@ pub async fn handle_household_ls(repo: &dyn HouseholdRepo) -> std::result::Resul
         let m = manifest::load_manifest(&row.meta_repo_path).unwrap_or_else(|_| Manifest {
             meta_repo: row.name.clone(),
             knowledge_base: None,
+            spec_path: None,
+            plan_path: None,
             repos: vec![],
         });
         out.push(summary_from(&row, &m));

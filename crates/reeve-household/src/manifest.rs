@@ -23,6 +23,18 @@ pub struct Manifest {
     #[serde(default)]
     pub knowledge_base: Option<String>,
 
+    /// Plugin-agnostic path (relative to the meta-repo) where the planning
+    /// agent should write spec documents. Defaults to `docs/agent/specs` when
+    /// absent; superpowers households override to `docs/superpowers/specs`.
+    #[serde(default)]
+    pub spec_path: Option<String>,
+
+    /// Plugin-agnostic path (relative to the meta-repo) where the planning
+    /// agent should write implementation plans. Defaults to `docs/agent/plans`
+    /// when absent.
+    #[serde(default)]
+    pub plan_path: Option<String>,
+
     pub repos: Vec<RepoEntry>,
 }
 
@@ -249,4 +261,32 @@ mod tests {
         assert!(format!("{err:#}").contains("parse manifest at"));
     }
 
+    #[test]
+    fn parses_manifest_with_explicit_spec_and_plan_paths() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{
+              "meta_repo": "ws",
+              "spec_path": "docs/superpowers/specs",
+              "plan_path": "docs/superpowers/plans",
+              "repos": [{ "name": "ws" }]
+            }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert_eq!(m.spec_path.as_deref(), Some("docs/superpowers/specs"));
+        assert_eq!(m.plan_path.as_deref(), Some("docs/superpowers/plans"));
+    }
+
+    #[test]
+    fn parses_manifest_without_spec_or_plan_paths_yields_none() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{ "meta_repo": "ws", "repos": [{ "name": "ws" }] }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert!(m.spec_path.is_none());
+        assert!(m.plan_path.is_none());
+    }
 }
