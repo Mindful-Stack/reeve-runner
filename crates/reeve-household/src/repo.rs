@@ -121,6 +121,21 @@ impl reeve_card::HouseholdLookup for SqliteHouseholdRepo {
     async fn exists(&self, name: &str) -> Result<bool> {
         Ok(self.get(name).await?.is_some())
     }
+
+    async fn card_paths(&self, name: &str) -> Result<reeve_card::CardPaths> {
+        let row = self.get(name).await?.ok_or_else(|| {
+            anyhow::anyhow!("household '{}' missing — cannot resolve card paths", name)
+        })?;
+        let household = crate::Household {
+            name: row.name,
+            meta_repo_path: row.meta_repo_path,
+        };
+        let manifest = crate::load_household_manifest(&household)?;
+        Ok(reeve_card::CardPaths::from_optional(
+            manifest.spec_path.as_deref(),
+            manifest.plan_path.as_deref(),
+        ))
+    }
 }
 
 /// Factory returning both trait views from one underlying connection.
@@ -198,5 +213,83 @@ mod tests {
         .unwrap();
         assert!(lookup.exists("a").await.unwrap());
         assert!(!lookup.exists("nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn card_paths_reads_manifest_fields() {
+        use reeve_card::CardPaths;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(
+            meta.join("household.json"),
+            r#"{
+              "meta_repo": "ws",
+              "spec_path": "docs/foo/specs",
+              "plan_path": "docs/foo/plans",
+              "repos": [{ "name": "ws" }]
+            }"#,
+        )
+        .unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (repo, lookup) = make_household_components(Arc::new(Mutex::new(conn)));
+        repo.insert(HouseholdRow {
+            name: "h".into(),
+            meta_repo_path: meta.clone(),
+            added_at: 0,
+        })
+        .await
+        .unwrap();
+
+        let paths = lookup.card_paths("h").await.unwrap();
+        assert_eq!(
+            paths,
+            CardPaths {
+                spec_path: "docs/foo/specs".into(),
+                plan_path: "docs/foo/plans".into(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn card_paths_returns_defaults_when_manifest_omits_them() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join("ws");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(
+            meta.join("household.json"),
+            r#"{ "meta_repo": "ws", "repos": [{ "name": "ws" }] }"#,
+        )
+        .unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (repo, lookup) = make_household_components(Arc::new(Mutex::new(conn)));
+        repo.insert(HouseholdRow {
+            name: "h".into(),
+            meta_repo_path: meta.clone(),
+            added_at: 0,
+        })
+        .await
+        .unwrap();
+
+        let paths = lookup.card_paths("h").await.unwrap();
+        assert_eq!(paths.spec_path, "docs/agent/specs");
+        assert_eq!(paths.plan_path, "docs/agent/plans");
+    }
+
+    #[tokio::test]
+    async fn card_paths_errors_when_household_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (_repo, lookup) = make_household_components(Arc::new(Mutex::new(conn)));
+        let err = lookup.card_paths("missing").await.unwrap_err();
+        assert!(format!("{err:#}").contains("missing"));
     }
 }
