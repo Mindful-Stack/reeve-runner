@@ -56,6 +56,13 @@ pub trait HouseholdLookup: Send + Sync {
 
 /// The kanban transition matrix. Decides which `WorkspaceLifecycle`
 /// method (if any) to invoke when a card's column changes.
+///
+/// Active columns hold a container; Inactive columns do not:
+///   Active   = { Planning, Implementing, Testing, Review }
+///   Inactive = { Backlog, Done }
+///
+/// Inactive → Active provisions; Active → Inactive tears down; both
+/// Active → Active and Inactive → Inactive are no-ops.
 pub async fn on_column_change(
     old: Column,
     new: Column,
@@ -65,16 +72,22 @@ pub async fn on_column_change(
     if old == new {
         return Ok(());
     }
-    match (old, new) {
-        (_, Column::Implementing) => workspace.ensure_running(card).await,
-        (_, Column::Testing | Column::Review) => Ok(()),
-        (_, Column::Done) => workspace.ensure_stopped(card.id()).await,
-        (
-            Column::Implementing | Column::Testing | Column::Review,
-            Column::Backlog | Column::Planning,
-        ) => workspace.ensure_stopped(card.id()).await,
-        (_, Column::Backlog | Column::Planning) => Ok(()),
+    let old_active = is_active(old);
+    let new_active = is_active(new);
+    match (old_active, new_active) {
+        (false, true) => workspace.ensure_running(card).await,
+        (true, false) => workspace.ensure_stopped(card.id()).await,
+        // Active→Active: container persists; conversation persists.
+        // Inactive→Inactive: nothing to start, nothing to stop.
+        _ => Ok(()),
     }
+}
+
+fn is_active(c: Column) -> bool {
+    matches!(
+        c,
+        Column::Planning | Column::Implementing | Column::Testing | Column::Review,
+    )
 }
 
 #[cfg(test)]
@@ -146,10 +159,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlog_to_planning_is_noop() {
+    async fn backlog_to_planning_spawns() {
         let fx = run_one(Column::Backlog, Column::Planning).await;
+        assert_eq!(*fx.running.lock().await, vec!["c1".to_string()]);
+        assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn planning_to_implementing_is_noop() {
+        // Active → Active: container persists, no respawn.
+        let fx = run_one(Column::Planning, Column::Implementing).await;
         assert!(fx.running.lock().await.is_empty());
         assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn implementing_to_planning_is_noop() {
+        // Backwards Active → Active also persists the container.
+        let fx = run_one(Column::Implementing, Column::Planning).await;
+        assert!(fx.running.lock().await.is_empty());
+        assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_to_done_tears_down() {
+        let fx = run_one(Column::Review, Column::Done).await;
+        assert_eq!(*fx.stopped.lock().await, vec!["c1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn planning_to_backlog_tears_down() {
+        let fx = run_one(Column::Planning, Column::Backlog).await;
+        assert_eq!(*fx.stopped.lock().await, vec!["c1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn backlog_to_done_is_noop() {
+        // Inactive → Inactive: nothing to start, nothing to stop.
+        let fx = run_one(Column::Backlog, Column::Done).await;
+        assert!(fx.running.lock().await.is_empty());
+        assert!(fx.stopped.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn done_to_planning_spawns() {
+        // Inactive → Active reprovisions a fresh workspace.
+        let fx = run_one(Column::Done, Column::Planning).await;
+        assert_eq!(*fx.running.lock().await, vec!["c1".to_string()]);
     }
 
     #[test]

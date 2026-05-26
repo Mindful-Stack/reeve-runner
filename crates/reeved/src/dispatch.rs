@@ -413,7 +413,7 @@ mod tests {
                 method: "mv".into(),
                 params: serde_json::json!({
                     "id": card.id,
-                    "column": "review",
+                    "column": "done",
                 }),
             },
             state,
@@ -422,7 +422,7 @@ mod tests {
         .await
         .unwrap();
         let updated = serde_json::from_value::<MvResult>(mv_value).unwrap().card;
-        assert_eq!(updated.column, Column::Review);
+        assert_eq!(updated.column, Column::Done);
     }
 
     #[tokio::test]
@@ -500,7 +500,7 @@ mod tests {
             RpcRequest {
                 id: 2,
                 method: "mv-self".into(),
-                params: serde_json::json!({"column": "review"}),
+                params: serde_json::json!({"column": "done"}),
             },
             state,
             CallerContext::card(&card.id),
@@ -508,7 +508,7 @@ mod tests {
         .await
         .unwrap();
         let result: MvSelfResult = serde_json::from_value(mv_value).unwrap();
-        assert_eq!(result.card.column, Column::Review);
+        assert_eq!(result.card.column, Column::Done);
         assert_eq!(result.card.id, card.id);
     }
 
