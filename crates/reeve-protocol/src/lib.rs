@@ -218,6 +218,19 @@ pub struct StatusSelfResult {
     pub container_status: Option<ContainerStatus>,
 }
 
+/// Parameters for the `session-init-self` method. Identity comes from
+/// the per-card socket; no fields needed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInitSelfParams {}
+
+/// Result for the `session-init-self` method. The rendered prompt
+/// text that the SessionStart hook injects into the agent's
+/// initial context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInitSelfResult {
+    pub prompt: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HouseholdSource {
@@ -815,5 +828,19 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         let back: CardProgressResult = serde_json::from_str(&s).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn session_init_self_round_trip() {
+        let p = SessionInitSelfParams {};
+        let json = serde_json::to_string(&p).unwrap();
+        let _back: SessionInitSelfParams = serde_json::from_str(&json).unwrap();
+
+        let r = SessionInitSelfResult {
+            prompt: "hello from reeve".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: SessionInitSelfResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.prompt, "hello from reeve");
     }
 }
