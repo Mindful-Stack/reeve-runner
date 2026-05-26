@@ -116,10 +116,21 @@ pub struct App {
     /// of the horizontal area. Adjusted via Ctrl+Left / Ctrl+Right.
     /// Clamped 20..=65; the session pane gets `100 - sidebar_width_pct`.
     pub sidebar_width_pct: u16,
+    /// Scope the periodic `ls` poll to one household. Set from the top-level
+    /// `--household NAME` CLI flag at startup; `None` = list every card.
+    pub active_household: Option<String>,
 }
 
 impl App {
+    /// Convenience constructor used by the tests below. The production
+    /// entry point (`drive`) always goes through `with_household` so the
+    /// active-household scope reaches `refresh`.
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_household(None)
+    }
+
+    pub fn with_household(active_household: Option<String>) -> Self {
         let (op_tx, op_rx) = mpsc::unbounded_channel();
         Self {
             cards: Vec::new(),
@@ -145,6 +156,7 @@ impl App {
             card_progress: std::collections::HashMap::new(),
             card_progress_last_poll: std::collections::HashMap::new(),
             sidebar_width_pct: 35,
+            active_household,
         }
     }
 
@@ -180,9 +192,9 @@ impl App {
     }
 }
 
-pub async fn run_loop() -> Result<()> {
+pub async fn run_loop(active_household: Option<String>) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = drive(&mut terminal).await;
+    let result = drive(&mut terminal, active_household).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -218,8 +230,8 @@ fn restore_terminal(terminal: &mut Term) -> Result<()> {
     Ok(())
 }
 
-async fn drive(terminal: &mut Term) -> Result<()> {
-    let mut app = App::new();
+async fn drive(terminal: &mut Term, active_household: Option<String>) -> Result<()> {
+    let mut app = App::with_household(active_household);
     crate::tui::actions::refresh(&mut app).await;
 
     while !app.quit {

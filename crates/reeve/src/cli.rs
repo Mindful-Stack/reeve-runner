@@ -33,8 +33,11 @@ pub enum Command {
     /// The card must be in Implementing. Uses tmux for detach/reattach.
     /// Ctrl-B D detaches; claude keeps running.
     Attach { id: String },
-    /// List cards.
-    Ls,
+    /// List cards. With `--household NAME`, scope the listing to one household.
+    Ls {
+        #[arg(long)]
+        household: Option<String>,
+    },
     /// Create a new card in the Backlog column.
     New {
         #[arg(long)]
@@ -116,7 +119,7 @@ fn parse_column(s: &str) -> Result<Column, String> {
 pub async fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Attach { id } => attach(id).await,
-        Command::Ls => ls().await,
+        Command::Ls { household } => ls(household).await,
         Command::New {
             household,
             brief,
@@ -177,9 +180,13 @@ async fn attach(id: String) -> Result<()> {
     }
 }
 
-async fn ls() -> Result<()> {
+async fn ls(household: Option<String>) -> Result<()> {
     let socket = paths::detect_socket();
-    let result = client::call(&socket, "ls", serde_json::json!({}))
+    let params = match household {
+        Some(h) => serde_json::json!({ "household": h }),
+        None => serde_json::json!({}),
+    };
+    let result = client::call(&socket, "ls", params)
         .await
         .context("calling ls")?;
     match result {

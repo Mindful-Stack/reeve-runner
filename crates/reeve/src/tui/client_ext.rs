@@ -13,8 +13,8 @@
 use anyhow::Result;
 use reeve_protocol::{
     AttachParams, AttachResult, Card, CardProgressParams, CardProgressResult, DeleteParams,
-    EditParams, EditResult, HouseholdSummary, LsResult, MvParams, MvResult, NewParams, NewResult,
-    RpcError, paths,
+    EditParams, EditResult, HouseholdSummary, LsParams, LsResult, MvParams, MvResult, NewParams,
+    NewResult, RpcError, paths,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -33,8 +33,13 @@ where
     }
 }
 
-pub async fn rpc_ls() -> Result<std::result::Result<LsResult, RpcError>> {
-    call("ls", serde_json::json!({})).await
+pub async fn rpc_ls(
+    household: Option<&str>,
+) -> Result<std::result::Result<LsResult, RpcError>> {
+    let params = LsParams {
+        household: household.map(|s| s.to_string()),
+    };
+    call("ls", params).await
 }
 
 pub async fn rpc_new(params: NewParams) -> Result<std::result::Result<NewResult, RpcError>> {

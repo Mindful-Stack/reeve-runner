@@ -5,7 +5,7 @@ use crate::app::state::DaemonState;
 use crate::transport::server::CallerContext;
 use reeve_card::make_card_repo;
 use reeve_protocol::{
-    DeleteParams, EditParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest,
+    DeleteParams, EditParams, LsParams, MvParams, MvSelfParams, NewParams, RpcError, RpcRequest,
 };
 use serde_json::Value;
 
@@ -51,7 +51,11 @@ pub async fn dispatch(
         // --- card aggregate ---
         "ls" => {
             let cards = make_card_repo(state.db.clone());
-            reeve_card::handle_ls(&*cards).await
+            // Empty params (`{}`) round-trip to `LsParams { household: None }`
+            // via serde's #[serde(default)] — preserves backwards compat for
+            // pre-filter clients that still send `{}`.
+            let params = parse_params::<LsParams>(req.params)?;
+            reeve_card::handle_ls(&*cards, params).await
         }
         "new" => {
             let cards = make_card_repo(state.db.clone());
@@ -606,6 +610,57 @@ mod tests {
         .unwrap();
         let ls: LsResult = serde_json::from_value(ls_value).unwrap();
         assert_eq!(ls.cards[0].column, Column::Backlog);
+    }
+
+    #[tokio::test]
+    async fn ls_with_household_filter_returns_only_matching_cards() {
+        let state = fresh_state();
+
+        for (h, b) in [("h1", "a"), ("h1", "b"), ("h2", "c")] {
+            dispatch(
+                RpcRequest {
+                    id: 1,
+                    method: "new".into(),
+                    params: serde_json::json!({
+                        "household": h, "brief": b, "needs_heavy": false,
+                    }),
+                },
+                state.clone(),
+                CallerContext::host(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let value = dispatch(
+            RpcRequest {
+                id: 99,
+                method: "ls".into(),
+                params: serde_json::json!({ "household": "h1" }),
+            },
+            state.clone(),
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let result: LsResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.cards.len(), 2);
+        assert!(result.cards.iter().all(|c| c.household == "h1"));
+
+        // Unset = every card (back-compat path).
+        let value = dispatch(
+            RpcRequest {
+                id: 100,
+                method: "ls".into(),
+                params: serde_json::json!({}),
+            },
+            state,
+            CallerContext::host(),
+        )
+        .await
+        .unwrap();
+        let result: LsResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.cards.len(), 3);
     }
 
     #[tokio::test]

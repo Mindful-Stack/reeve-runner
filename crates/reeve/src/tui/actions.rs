@@ -865,7 +865,7 @@ pub fn confirmed_implementing(app: &App) -> Vec<String> {
 /// app.daemon_unreachable based on the RPC outcome — so the full-screen
 /// daemon-down banner appears/disappears automatically.
 pub async fn refresh(app: &mut App) {
-    match crate::tui::client_ext::rpc_ls().await {
+    match crate::tui::client_ext::rpc_ls(app.active_household.as_deref()).await {
         Ok(Ok(result)) => {
             merge_cards(app, result.cards);
             app.daemon_unreachable = false;

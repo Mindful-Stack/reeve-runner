@@ -10,7 +10,9 @@ use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait CardRepo: Send + Sync {
-    async fn list(&self) -> Result<Vec<Card>>;
+    /// List cards ordered by `created_at`. `household = Some(name)` scopes
+    /// the result to a single household; `None` returns every card.
+    async fn list(&self, household: Option<&str>) -> Result<Vec<Card>>;
     async fn get(&self, id: &str) -> Result<Option<Card>>;
     async fn insert(&self, card: &Card) -> Result<()>;
     async fn update_column(&self, id: &str, col: Column, now: i64) -> Result<Option<Card>>;
@@ -31,16 +33,29 @@ impl SqliteCardRepo {
 
 #[async_trait]
 impl CardRepo for SqliteCardRepo {
-    async fn list(&self) -> Result<Vec<Card>> {
+    async fn list(&self, household: Option<&str>) -> Result<Vec<Card>> {
         let conn = self.conn.clone();
+        let household = household.map(|s| s.to_string());
         tokio::task::spawn_blocking(move || -> Result<Vec<Card>> {
             let conn = conn.blocking_lock();
-            let mut stmt = conn.prepare(
-                "SELECT id, household, brief, column_, created_at, updated_at, needs_heavy, parent_id
-                 FROM cards ORDER BY created_at ASC",
-            )?;
-            let rows = stmt.query_map([], row_to_card)?;
-            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            match household {
+                Some(name) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, household, brief, column_, created_at, updated_at, needs_heavy, parent_id
+                         FROM cards WHERE household = ?1 ORDER BY created_at ASC",
+                    )?;
+                    let rows = stmt.query_map(params![name], row_to_card)?;
+                    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                }
+                None => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, household, brief, column_, created_at, updated_at, needs_heavy, parent_id
+                         FROM cards ORDER BY created_at ASC",
+                    )?;
+                    let rows = stmt.query_map([], row_to_card)?;
+                    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                }
+            }
         })
         .await?
     }
@@ -246,9 +261,48 @@ mod tests {
     async fn insert_then_list() {
         let repo = fresh_repo();
         repo.insert(&sample("a")).await.unwrap();
-        let cards = repo.list().await.unwrap();
+        let cards = repo.list(None).await.unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].id(), "a");
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_household() {
+        let repo = fresh_repo();
+        let in_h1 = Card::from_persisted(
+            "h1-card".into(),
+            "h1".into(),
+            "h1 task".into(),
+            Column::Backlog,
+            1000,
+            1000,
+            false,
+            None,
+        )
+        .unwrap();
+        let in_h2 = Card::from_persisted(
+            "h2-card".into(),
+            "h2".into(),
+            "h2 task".into(),
+            Column::Backlog,
+            1100,
+            1100,
+            false,
+            None,
+        )
+        .unwrap();
+        repo.insert(&in_h1).await.unwrap();
+        repo.insert(&in_h2).await.unwrap();
+
+        let all = repo.list(None).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let only_h1 = repo.list(Some("h1")).await.unwrap();
+        assert_eq!(only_h1.len(), 1);
+        assert_eq!(only_h1[0].id(), "h1-card");
+
+        let unknown = repo.list(Some("ghost")).await.unwrap();
+        assert!(unknown.is_empty());
     }
 
     #[tokio::test]

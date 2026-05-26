@@ -4,8 +4,8 @@ use crate::domain::Card;
 use crate::repo::CardRepo;
 use crate::transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
 use reeve_protocol::{
-    Column, EditParams, EditResult, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
-    NewParams, NewResult, RpcError, StatusSelfResult,
+    Column, EditParams, EditResult, LsParams, LsResult, MvParams, MvResult, MvSelfParams,
+    MvSelfResult, NewParams, NewResult, RpcError, StatusSelfResult,
 };
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,8 +31,14 @@ fn not_found(id: &str) -> RpcError {
     }
 }
 
-pub async fn handle_ls(cards: &dyn CardRepo) -> std::result::Result<Value, RpcError> {
-    let entities = cards.list().await.map_err(internal)?;
+pub async fn handle_ls(
+    cards: &dyn CardRepo,
+    params: LsParams,
+) -> std::result::Result<Value, RpcError> {
+    let entities = cards
+        .list(params.household.as_deref())
+        .await
+        .map_err(internal)?;
     let dtos: Vec<reeve_protocol::Card> = entities.into_iter().map(Into::into).collect();
     serde_json::to_value(LsResult { cards: dtos }).map_err(internal)
 }
@@ -339,6 +345,33 @@ mod tests {
         // committed because lifecycle ran first and failed.
         let after = repo.get(&id).await.unwrap().unwrap();
         assert_eq!(after.column(), Column::Backlog);
+    }
+
+    #[tokio::test]
+    async fn handle_ls_filters_by_household() {
+        let repo = fresh_repo();
+        let a = Card::new("h1".into(), "a".into(), false).unwrap();
+        let b = Card::new("h2".into(), "b".into(), false).unwrap();
+        repo.insert(&a).await.unwrap();
+        repo.insert(&b).await.unwrap();
+
+        let value = handle_ls(
+            &*repo,
+            LsParams {
+                household: Some("h1".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let result: LsResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.cards.len(), 1);
+        assert_eq!(result.cards[0].household, "h1");
+
+        let value = handle_ls(&*repo, LsParams { household: None })
+            .await
+            .unwrap();
+        let result: LsResult = serde_json::from_value(value).unwrap();
+        assert_eq!(result.cards.len(), 2);
     }
 
     #[tokio::test]

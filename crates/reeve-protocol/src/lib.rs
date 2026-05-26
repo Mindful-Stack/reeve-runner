@@ -120,8 +120,15 @@ impl RpcError {
 }
 
 /// Parameters for the `ls` method.
+///
+/// `household` filters cards to a single household when set. Unset = return
+/// every card across every household (the original behaviour). The default
+/// (`{}` on the wire) preserves backwards compatibility with older clients.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LsParams {}
+pub struct LsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub household: Option<String>,
+}
 
 /// Result for the `ls` method.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
