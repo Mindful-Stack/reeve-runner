@@ -6,7 +6,7 @@ use clap::Subcommand;
 use reeve_protocol::{
     AttachResult, BranchPushStatus, Card, Column, HouseholdAddParams, HouseholdDetail,
     HouseholdNewParams, HouseholdSource, HouseholdSummary, LsResult, MvResult, MvSelfResult,
-    NewResult, PushResult, RepoOnDisk, StatusSelfResult, paths,
+    NewResult, PushResult, RepoOnDisk, SessionInitSelfResult, StatusSelfResult, paths,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -62,6 +62,9 @@ pub enum Command {
     Push { id: String },
     /// (in-container only) Print the calling card and its container status.
     StatusSelf,
+    /// (in-container only) Print the SessionStart prompt for the calling
+    /// card. Consumed by claude's SessionStart hook to seed the agent.
+    SessionInitSelf,
     /// Household management subcommands.
     #[command(subcommand)]
     Household(HouseholdCommand),
@@ -129,6 +132,7 @@ pub async fn run(cmd: Command) -> Result<()> {
         Command::MvSelf { column } => mv_self(column).await,
         Command::Push { id } => push(id).await,
         Command::StatusSelf => status_self().await,
+        Command::SessionInitSelf => session_init_self().await,
         Command::Household(cmd) => household_run(cmd).await,
         Command::Daemon(_) => unreachable!("Daemon commands are handled in main"),
     }
@@ -269,6 +273,21 @@ async fn status_self() -> Result<()> {
                 Some(s) => println!("container: {}", s.as_wire_str()),
                 None => println!("container: (none)"),
             }
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("daemon error: {e}"),
+    }
+}
+
+async fn session_init_self() -> Result<()> {
+    let socket = paths::detect_socket();
+    let result = client::call(&socket, "session-init-self", serde_json::json!({}))
+        .await
+        .context("calling session-init-self")?;
+    match result {
+        Ok(value) => {
+            let r: SessionInitSelfResult = serde_json::from_value(value)?;
+            print!("{}", r.prompt);
             Ok(())
         }
         Err(e) => anyhow::bail!("daemon error: {e}"),
