@@ -848,13 +848,14 @@ pub(crate) fn fire_pending_mv(app: &mut App, card_id: String, target: Column) {
 /// - If a card has a pending edit, keep the local card (preserves the
 ///   optimistic brief).
 /// - Otherwise, use the server's version.
-/// Cards the server confirms in Implementing AND for which no mv RPC is
+/// Cards the server confirms in an active column AND for which no mv RPC is
 /// in flight. Drives the session pane's spawn loop — without this filter,
 /// optimistically-flipped cards would attach before the daemon committed.
-pub fn confirmed_implementing(app: &App) -> Vec<String> {
+/// Active columns are Planning, Implementing, Testing, and Review.
+pub fn confirmed_active(app: &App) -> Vec<String> {
     app.cards
         .iter()
-        .filter(|c| c.column == reeve_protocol::Column::Implementing)
+        .filter(|c| c.column.is_active())
         .filter(|c| !app.pending_mvs.contains_key(&c.id))
         .map(|c| c.id.clone())
         .collect()
@@ -871,8 +872,8 @@ pub async fn refresh(app: &mut App) {
             app.daemon_unreachable = false;
             app.last_refresh = std::time::Instant::now();
             ensure_selection_valid(app);
-            let implementing = confirmed_implementing(app);
-            app.sessions.reconcile(&implementing);
+            let active = confirmed_active(app);
+            app.sessions.reconcile(&active);
         }
         Ok(Err(_)) | Err(_) => {
             app.daemon_unreachable = true;

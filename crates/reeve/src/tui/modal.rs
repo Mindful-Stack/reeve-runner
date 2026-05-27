@@ -61,7 +61,7 @@ pub enum ActionMenuKind {
 }
 
 pub fn build_action_menu(card_column: Option<Column>) -> Vec<ActionMenuItem> {
-    let in_implementing = card_column == Some(Column::Implementing);
+    let in_active = card_column.map(|c| c.is_active()).unwrap_or(false);
     let has_card = card_column.is_some();
     let at_first = card_column == Some(Column::Backlog);
     let at_last = card_column == Some(Column::Done);
@@ -119,9 +119,9 @@ pub fn build_action_menu(card_column: Option<Column>) -> Vec<ActionMenuItem> {
             key_hint: "a",
             description: "attach (open session)",
             action_kind: ActionMenuKind::Attach,
-            enabled: in_implementing,
-            disabled_reason: if !in_implementing {
-                Some("card not in Implementing")
+            enabled: in_active,
+            disabled_reason: if !in_active {
+                Some("card not in an active column (Planning/Implementing/Testing/Review)")
             } else {
                 None
             },
@@ -162,6 +162,36 @@ mod tests {
     }
 
     #[test]
+    fn planning_card_enables_attach() {
+        let items = build_action_menu(Some(Column::Planning));
+        let attach = items
+            .iter()
+            .find(|i| matches!(i.action_kind, ActionMenuKind::Attach))
+            .unwrap();
+        assert!(attach.enabled);
+    }
+
+    #[test]
+    fn testing_card_enables_attach() {
+        let items = build_action_menu(Some(Column::Testing));
+        let attach = items
+            .iter()
+            .find(|i| matches!(i.action_kind, ActionMenuKind::Attach))
+            .unwrap();
+        assert!(attach.enabled);
+    }
+
+    #[test]
+    fn review_card_enables_attach() {
+        let items = build_action_menu(Some(Column::Review));
+        let attach = items
+            .iter()
+            .find(|i| matches!(i.action_kind, ActionMenuKind::Attach))
+            .unwrap();
+        assert!(attach.enabled);
+    }
+
+    #[test]
     fn backlog_card_disables_attach() {
         let items = build_action_menu(Some(Column::Backlog));
         let attach = items
@@ -169,7 +199,20 @@ mod tests {
             .find(|i| matches!(i.action_kind, ActionMenuKind::Attach))
             .unwrap();
         assert!(!attach.enabled);
-        assert_eq!(attach.disabled_reason, Some("card not in Implementing"));
+        assert_eq!(
+            attach.disabled_reason,
+            Some("card not in an active column (Planning/Implementing/Testing/Review)")
+        );
+    }
+
+    #[test]
+    fn done_card_disables_attach() {
+        let items = build_action_menu(Some(Column::Done));
+        let attach = items
+            .iter()
+            .find(|i| matches!(i.action_kind, ActionMenuKind::Attach))
+            .unwrap();
+        assert!(!attach.enabled);
     }
 
     #[test]

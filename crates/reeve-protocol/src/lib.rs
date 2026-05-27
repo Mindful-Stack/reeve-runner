@@ -64,6 +64,20 @@ impl Column {
             _ => None,
         }
     }
+
+    /// Returns `true` for columns where a container is running (Planning,
+    /// Implementing, Testing, Review). Returns `false` for Backlog and Done.
+    ///
+    /// Used to gate the `attach` RPC, the TUI session pane, and the delete
+    /// teardown path — any code that must act differently when a container
+    /// is present should key off this predicate rather than
+    /// `== Implementing` alone.
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Column::Planning | Column::Implementing | Column::Testing | Column::Review,
+        )
+    }
 }
 
 /// A card in the kanban — one feature's worth of work.

@@ -48,9 +48,16 @@ mod tests {
 
     fn card(id: &str, household: &str, brief: &str) -> Card {
         Card::from_persisted(
-            id.into(), household.into(), brief.into(),
-            Column::Planning, 0, 0, false, None,
-        ).unwrap()
+            id.into(),
+            household.into(),
+            brief.into(),
+            Column::Planning,
+            0,
+            0,
+            false,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]

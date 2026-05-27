@@ -4,7 +4,7 @@ use crate::container::ContainerOps;
 use crate::git::GitOps;
 use reeve_card::CardRepo;
 use reeve_protocol::{
-    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, Column, PushParams, PushResult,
+    AttachParams, AttachResult, BranchPushResult, BranchPushStatus, PushParams, PushResult,
     RpcError,
 };
 use serde_json::Value;
@@ -31,12 +31,12 @@ pub async fn handle_attach(
             message: format!("card '{}' not found", params.id),
         })?;
 
-    // 2. Column check.
-    if card.column() != Column::Implementing {
+    // 2. Column check — container is present in any active column.
+    if !card.column().is_active() {
         return Err(RpcError {
             code: RpcError::INVALID_ARGUMENT,
             message: format!(
-                "card is in {}; attach only works in Implementing",
+                "card is in {}; attach only works in active columns (Planning, Implementing, Testing, Review)",
                 card.column().label()
             ),
         });
@@ -147,4 +147,193 @@ pub async fn handle_push(
         }
     }
     serde_json::to_value(PushResult { branches }).map_err(internal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use reeve_card::{Card, CardRepo};
+    use reeve_protocol::{CardReference, Column};
+    use std::sync::Mutex;
+
+    /// Minimal in-memory CardRepo holding at most one card.
+    struct OneCardRepo {
+        card: Mutex<Option<reeve_card::Card>>,
+    }
+    impl OneCardRepo {
+        fn new(card: reeve_card::Card) -> Self {
+            Self {
+                card: Mutex::new(Some(card)),
+            }
+        }
+    }
+    #[async_trait]
+    impl CardRepo for OneCardRepo {
+        async fn get(&self, _id: &str) -> Result<Option<Card>> {
+            Ok(self.card.lock().unwrap().clone())
+        }
+        async fn list(&self, _household: Option<&str>) -> Result<Vec<Card>> {
+            Ok(self.card.lock().unwrap().iter().cloned().collect())
+        }
+        async fn insert(&self, _card: &Card) -> Result<()> {
+            Ok(())
+        }
+        async fn update_column(&self, _id: &str, _col: Column, _now: i64) -> Result<Option<Card>> {
+            Ok(None)
+        }
+        async fn update_brief(&self, _id: &str, _brief: &str, _now: i64) -> Result<Option<Card>> {
+            Ok(None)
+        }
+        async fn delete(&self, _id: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn for_household(&self, _name: &str) -> Result<Vec<CardReference>> {
+            Ok(vec![])
+        }
+    }
+
+    /// ContainerOps that always returns a fixed container name.
+    struct FoundContainer {
+        name: String,
+    }
+    #[async_trait]
+    impl ContainerOps for FoundContainer {
+        async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        async fn teardown(&self, _container_name: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn inspect_status(&self, _container_name: &str) -> Result<Option<String>> {
+            Ok(Some("running".into()))
+        }
+        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
+            Ok(Some(self.name.clone()))
+        }
+        async fn exec_in_tmux(
+            &self,
+            _container_name: &str,
+            _session_name: &str,
+            _command: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// ContainerOps whose discover_container_name returns None (no container running).
+    struct NoContainer;
+    #[async_trait]
+    impl ContainerOps for NoContainer {
+        async fn spawn(&self, _argv: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+        async fn teardown(&self, _container_name: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn inspect_status(&self, _container_name: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn discover_container_name(&self, _card_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn exec_in_tmux(
+            &self,
+            _container_name: &str,
+            _session_name: &str,
+            _command: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn planning_card() -> Card {
+        // Create in Backlog first (only constructor), then we expose via repo
+        // with column set via from_persisted.
+        Card::from_persisted(
+            "plan-id-1".into(),
+            "household".into(),
+            "some work".into(),
+            Column::Planning,
+            0,
+            0,
+            false,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn backlog_card() -> Card {
+        Card::from_persisted(
+            "backlog-id-1".into(),
+            "household".into(),
+            "not started".into(),
+            Column::Backlog,
+            0,
+            0,
+            false,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn attach_accepts_planning_column() {
+        let card = planning_card();
+        let repo = OneCardRepo::new(card.clone());
+        let containers = FoundContainer {
+            name: "my-container".into(),
+        };
+        let params = AttachParams {
+            id: card.id().to_string(),
+        };
+        let result = handle_attach(&repo, &containers, params).await;
+        assert!(
+            result.is_ok(),
+            "Planning card should be accepted by attach, got: {:?}",
+            result
+        );
+        let val: AttachResult = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(val.container_name, "my-container");
+    }
+
+    #[tokio::test]
+    async fn attach_rejects_backlog_column() {
+        let card = backlog_card();
+        let repo = OneCardRepo::new(card.clone());
+        let containers = NoContainer;
+        let params = AttachParams {
+            id: card.id().to_string(),
+        };
+        let err = handle_attach(&repo, &containers, params).await.unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+        assert!(
+            err.message.contains("active columns"),
+            "error message should mention 'active columns', got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_rejects_done_column() {
+        let card = Card::from_persisted(
+            "done-id-1".into(),
+            "household".into(),
+            "finished".into(),
+            Column::Done,
+            0,
+            0,
+            false,
+            None,
+        )
+        .unwrap();
+        let repo = OneCardRepo::new(card.clone());
+        let containers = NoContainer;
+        let params = AttachParams {
+            id: card.id().to_string(),
+        };
+        let err = handle_attach(&repo, &containers, params).await.unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_ARGUMENT);
+    }
 }

@@ -189,9 +189,9 @@ fn render_detail_pane(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         return;
     };
 
-    // 1. Live session takes priority — column-gated (only show when card
-    //    is in Implementing AND we have a session).
-    if card.column == Column::Implementing {
+    // 1. Live session takes priority — column-gated (show when card is in
+    //    any active column AND we have a session).
+    if card.column.is_active() {
         if let Some(session) = app.sessions.get(&card.id) {
             // Fit the PTY + parser to the pane's inner area (minus border).
             // Cheap no-op when the size hasn't changed; on actual resizes it

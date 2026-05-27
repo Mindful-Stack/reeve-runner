@@ -30,7 +30,8 @@ fn reeved_path() -> Result<PathBuf> {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Drop into the running claude session inside a card's container.
-    /// The card must be in Implementing. Uses tmux for detach/reattach.
+    /// The card must be in an active column (Planning, Implementing, Testing,
+    /// or Review). Uses tmux for detach/reattach.
     /// Ctrl-B D detaches; claude keeps running.
     Attach { id: String },
     /// List cards. With `--household NAME`, scope the listing to one household.
