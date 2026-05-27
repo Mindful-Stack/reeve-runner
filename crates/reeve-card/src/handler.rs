@@ -4,8 +4,8 @@ use crate::domain::Card;
 use crate::repo::CardRepo;
 use crate::transitions::{HouseholdLookup, WorkspaceLifecycle, on_column_change};
 use reeve_protocol::{
-    Column, EditParams, EditResult, LsParams, LsResult, MvParams, MvResult, MvSelfParams,
-    MvSelfResult, NewParams, NewResult, RpcError, StatusSelfResult,
+    EditParams, EditResult, LsParams, LsResult, MvParams, MvResult, MvSelfParams, MvSelfResult,
+    NewParams, NewResult, RpcError, StatusSelfResult,
 };
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -213,6 +213,7 @@ pub async fn handle_session_init_self(
 mod tests {
     use super::*;
     use crate::repo::{init_schema, make_card_repo};
+    use reeve_protocol::Column;
     use rusqlite::Connection;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -302,6 +303,40 @@ mod tests {
 
         // ensure_stopped must NOT have been called.
         assert!(lifecycle.stopped.lock().unwrap().is_empty());
+        assert!(repo.get(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_planning_card_tears_down_container() {
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let card = Card::new("h".into(), "doomed".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        repo.update_column(&id, Column::Planning, 0).await.unwrap();
+
+        let req = reeve_protocol::DeleteParams { id: id.clone() };
+        handle_delete(&*repo, &lifecycle, req).await.unwrap();
+
+        let stopped = lifecycle.stopped.lock().unwrap();
+        assert_eq!(stopped.as_slice(), &[id.clone()]);
+        assert!(repo.get(&id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_testing_card_tears_down_container() {
+        let repo = fresh_repo();
+        let lifecycle = RecordingLifecycle::new();
+        let card = Card::new("h".into(), "doomed-testing".into(), false).unwrap();
+        let id = card.id().to_string();
+        repo.insert(&card).await.unwrap();
+        repo.update_column(&id, Column::Testing, 0).await.unwrap();
+
+        let req = reeve_protocol::DeleteParams { id: id.clone() };
+        handle_delete(&*repo, &lifecycle, req).await.unwrap();
+
+        let stopped = lifecycle.stopped.lock().unwrap();
+        assert_eq!(stopped.as_slice(), &[id.clone()]);
         assert!(repo.get(&id).await.unwrap().is_none());
     }
 
@@ -502,7 +537,7 @@ pub async fn handle_delete(
         .map_err(internal)?
         .ok_or_else(|| not_found(&params.id))?;
 
-    if existing.column() == Column::Implementing {
+    if existing.column().is_active() {
         workspace
             .ensure_stopped(existing.id())
             .await
