@@ -21,7 +21,7 @@ A Card has no behaviour of its own beyond moving through columns — provisionin
 - **Card** — root aggregate. Identity is a UUID generated at creation. Holds `household` (a name reference to [[domain/household]]), `brief` (1–200 chars, the human-readable summary), `column`, `needs_heavy` (whether the card requires the heavy lease in Testing), `parent_id` (set when this card is a branch of another), `created_at`, `updated_at`.
 - **Column** — pure value enum: `Backlog`, `Planning`, `Implementing`, `Testing`, `Review`, `Done`. Wire-form via `as_wire_str()`/`from_wire_str()`; the same lowercase form is the SQLite `column_` field, the CLI argument parser's vocabulary, and the JSON envelope. Single source of truth.
 - **`WorkspaceLifecycle`** (port, defined here) — what Card needs from Workspace: `ensure_running(&Card)` and `ensure_stopped(&str)`. Implemented in [[domain/workspace]].
-- **`HouseholdLookup`** (port, defined here) — what Card needs from Household: `exists(&str) -> bool`. Implemented in [[domain/household]].
+- **`HouseholdLookup`** (port, defined here) — what Card needs from Household: `exists(&str) -> bool` and `card_paths(&str) -> CardPaths`. Implemented in [[domain/household]].
 
 ## Ubiquitous language
 
@@ -40,7 +40,7 @@ These are enforced in the domain layer (`reeve-card/src/domain.rs::Card`) and pi
 - **Lifecycle runs before column commit.** When a card moves to a new column, the cross-aggregate side effects (`WorkspaceLifecycle::ensure_running` / `ensure_stopped`) run *first*. If they succeed, the column is committed. If they fail, the card stays in its current column with the error propagated to the caller. This means: no half-state where Card is "Implementing" but the workspace failed to provision. Fixed in `fe52675` after observing the inverse cause subtle bugs.
 - **Per-card serialization of mv/delete.** All RPCs that mutate column state (mv, mv-self, delete) acquire `state.lock_card(&card_id).await` *before* reading the card and *hold it until* both DB write and lifecycle side effects complete. Concurrent mv calls on the same card are thus serialised; cross-card concurrency is unconstrained. Introduced in `53dcb5d`.
 - **Handler owns the clock.** Repository methods that update timestamps take `now: i64` as an argument; they do *not* call `SystemTime::now()` themselves. The handler computes `now_secs()` once at the start of the operation and passes it through. Makes tests deterministic and surfaces the "what time is it" decision at the boundary. Introduced via `update_brief`/`update_column` in `2a4169d`.
-- **Household existence checked at `mv → Implementing`** (and at `mv-self → Implementing`). The handler calls `HouseholdLookup::exists(&household)` *before* mutating; missing household returns `INVALID_ARGUMENT` and the card stays put. This is the only pre-mutation precondition; other transitions (e.g. → Done) need no household lookup.
+- **Household existence checked at any `mv`/`mv-self` from an Inactive column to an Active column.** The handler calls `HouseholdLookup::exists(&household)` *before* mutating; missing household returns `INTERNAL` and the card stays put. This is the only pre-mutation precondition; transitions between active columns or between inactive columns need no household lookup.
 
 ## Column-transition policy
 
@@ -79,7 +79,7 @@ Tests in `reeve-card/src/transitions.rs::tests` pin each arm with a `MockFx` imp
 | `status-self` | `handle_status_self` | From the per-card socket: return the calling card + its container status. Read-only. |
 | `session-init-self` | `handle_session_init_self` | From the per-card socket: render the SessionStart prompt for the calling card (card identity + brief + household's spec/plan paths). Read-only; consumed by claude's SessionStart hook to inject planning instructions. |
 | `edit` | `handle_edit` | Rename the card's brief. Invariants re-checked. |
-| `delete` | `handle_delete` | Delete a card. If currently Implementing, tears down the workspace first via `WorkspaceLifecycle::ensure_stopped`. Other columns delete directly — for cards in Testing/Review, the user is responsible for `mv → Done` first if they want a guaranteed teardown (the transition matrix's `* → Done` ensures stopped). |
+| `delete` | `handle_delete` | Delete a card. If currently in an Active column (Planning, Implementing, Testing, or Review), tears down the workspace first via `WorkspaceLifecycle::ensure_stopped`. Inactive columns (Backlog, Done) delete directly. |
 
 The dispatch table at `crates/reeved/src/dispatch.rs` routes each method through the appropriate `reeve_card::handle_*` function. Handlers receive port references (`&dyn CardRepo`, `&dyn WorkspaceLifecycle`, `&dyn HouseholdLookup`) — no `DaemonState` kitchen sink.
 
@@ -97,7 +97,7 @@ The dispatch table at `crates/reeved/src/dispatch.rs` routes each method through
 2. **Moving to Implementing.** Host calls `mv id=X column=Implementing` → handler acquires `state.lock_card(X)` → reads existing card → `HouseholdLookup::exists(card.household)?` → if false, return `INVALID_ARGUMENT` → otherwise call `on_column_change(old=current, new=Implementing, card, workspace_lifecycle)` → policy calls `workspace.ensure_running(card)` → on success, `CardRepo::update_column` commits the column → wire DTO returned. On any failure, card stays in old column.
 3. **Self-move from inside a container.** Per-card socket → caller_context.card_id = X → handler calls `mv_self(X, new_column)` → same as `mv` except the card_id comes from the socket identity, not from params. The agent cannot move another card.
 4. **Renaming a card.** `edit id=X brief="new text"` → handler validates new brief → `CardRepo::update_brief(id, brief, now)` → wire DTO returned. No cross-aggregate effects.
-5. **Deleting a card.** `delete id=X` → handler reads card → if column == Implementing: `workspace_lifecycle.ensure_stopped(X)` first → then `CardRepo::delete(X)` → empty result. Other columns skip the teardown step.
+5. **Deleting a card.** `delete id=X` → handler reads card → if column is Active: `workspace_lifecycle.ensure_stopped(X)` first → then `CardRepo::delete(X)` → empty result. Inactive columns skip the teardown step.
 
 ## See also
 
