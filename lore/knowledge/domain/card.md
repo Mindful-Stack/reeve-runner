@@ -57,15 +57,18 @@ pub async fn on_column_change(
 | Transition | Effect |
 |---|---|
 | same column | no-op |
-| `* → Implementing` | `ensure_running(card)` |
-| `* → Testing` or `* → Review` | no-op (container stays warm) |
-| `* → Done` | `ensure_stopped(card_id)` |
-| `Implementing/Testing/Review → Backlog/Planning` | defensive `ensure_stopped(card_id)` |
-| `Backlog/Planning → Backlog/Planning` and `Done → Backlog/Planning` | no-op (no container ever existed, or already torn down) |
+| Inactive → Active | `ensure_running(card)` |
+| Active → Active | no-op (container + agent persist; conversation continues) |
+| Active → Inactive | `ensure_stopped(card_id)` |
+| Inactive → Inactive | no-op |
+
+Where Active = {Planning, Implementing, Testing, Review} and Inactive = {Backlog, Done}. The container exists for any Active column; transitioning between active columns is purely a metadata update.
+
+**Agent-driven transitions.** The agent inside the card's container calls `reeve mv-self <column>` at natural phase boundaries (brainstorming + planning → `planning`; executing → `implementing`; tests → `testing`; ready for review → `review`). User-issued `mv` remains available as a corrective override. Both go through the same per-card lock and the same transition matrix; the only difference is the caller-context origin.
 
 Tests in `reeve-card/src/transitions.rs::tests` pin each arm with a `MockFx` impl of `WorkspaceLifecycle`.
 
-## RPC surface (7 methods)
+## RPC surface (8 methods)
 
 | Method | Handler | Description |
 |---|---|---|
@@ -74,6 +77,7 @@ Tests in `reeve-card/src/transitions.rs::tests` pin each arm with a `MockFx` imp
 | `mv` | `handle_mv` | Move a card to a new column (host-socket call). Acquires per-card lock; runs lifecycle; commits column. |
 | `mv-self` | `handle_mv_self` | Same as `mv` but from the per-card socket — the agent moves *itself*. Caller context supplies the card id; the agent cannot move a different card. |
 | `status-self` | `handle_status_self` | From the per-card socket: return the calling card + its container status. Read-only. |
+| `session-init-self` | `handle_session_init_self` | From the per-card socket: render the SessionStart prompt for the calling card (card identity + brief + household's spec/plan paths). Read-only; consumed by claude's SessionStart hook to inject planning instructions. |
 | `edit` | `handle_edit` | Rename the card's brief. Invariants re-checked. |
 | `delete` | `handle_delete` | Delete a card. If currently Implementing, tears down the workspace first via `WorkspaceLifecycle::ensure_stopped`. Other columns delete directly — for cards in Testing/Review, the user is responsible for `mv → Done` first if they want a guaranteed teardown (the transition matrix's `* → Done` ensures stopped). |
 
