@@ -66,6 +66,34 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Write the SessionStart hook stanza to `<workspace>/.claude/settings.local.json`.
+///
+/// Idempotent — repeated calls produce byte-identical output. Overwrites any
+/// existing file at the same path; this is intentional, the file is gitignored
+/// by claude convention and the workspace is Reeve-controlled.
+fn write_settings_local_json(workspace_path: &std::path::Path) -> Result<()> {
+    let dir = workspace_path.join(".claude");
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    // Pretty-print so the file is readable if a user inspects it; the order
+    // is fixed so byte-identical re-writes are guaranteed.
+    let body = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "reeve session-init-self" }
+        ]
+      }
+    ]
+  }
+}
+"#;
+    let path = dir.join("settings.local.json");
+    std::fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
 #[async_trait]
 impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
     async fn ensure_running(&self, card: &Card) -> Result<()> {
@@ -119,6 +147,12 @@ impl WorkspaceLifecycle for LiveWorkspaceLifecycle {
             card_id,
         )
         .await?;
+
+        // Write the SessionStart hook config into the workspace clone. claude
+        // reads .claude/settings.local.json automatically; the hook calls
+        // `reeve session-init-self` from inside the container.
+        write_settings_local_json(&workspace_path)
+            .with_context(|| format!("write settings.local.json for {card_id}"))?;
 
         let devcontainer_path = workspace_path
             .join(".devcontainer")
@@ -239,5 +273,47 @@ async fn discover_with_deadline(ops: &dyn ContainerOps, card_id: &str) -> Result
         if backoff < std::time::Duration::from_millis(400) {
             backoff *= 2;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn write_settings_local_json_creates_expected_hook_stanza() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        super::write_settings_local_json(workspace).unwrap();
+
+        let written =
+            std::fs::read_to_string(workspace.join(".claude").join("settings.local.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let cmd = parsed
+            .pointer("/hooks/SessionStart/0/hooks/0/command")
+            .and_then(|v| v.as_str())
+            .expect("hook command missing");
+        assert_eq!(cmd, "reeve session-init-self");
+        let matcher = parsed
+            .pointer("/hooks/SessionStart/0/matcher")
+            .and_then(|v| v.as_str())
+            .expect("matcher missing");
+        assert_eq!(matcher, "*");
+    }
+
+    #[test]
+    fn write_settings_local_json_is_idempotent() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        super::write_settings_local_json(workspace).unwrap();
+        let first = std::fs::read(workspace.join(".claude").join("settings.local.json")).unwrap();
+        super::write_settings_local_json(workspace).unwrap();
+        let second = std::fs::read(workspace.join(".claude").join("settings.local.json")).unwrap();
+        assert_eq!(
+            first, second,
+            "re-running provision must produce byte-identical output"
+        );
     }
 }
