@@ -50,6 +50,7 @@ mod tests {
         Manifest {
             meta_repo: workspace.to_string(),
             knowledge_base: None,
+            shared_knowledge_bases: vec![],
             spec_path: None,
             plan_path: None,
             repos: repos
