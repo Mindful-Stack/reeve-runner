@@ -270,6 +270,7 @@ mod tests {
         Manifest {
             meta_repo: workspace_name.into(),
             knowledge_base: kb.map(str::to_string),
+            shared_knowledge_bases: vec![],
             repos: repos
                 .iter()
                 .map(|n| RepoEntry {
@@ -632,6 +633,7 @@ mod tests {
         let manifest = Manifest {
             meta_repo: "meta".into(),
             knowledge_base: None,
+            shared_knowledge_bases: vec![],
             repos: vec![
                 RepoEntry {
                     name: "meta".into(),
@@ -797,6 +799,7 @@ mod integration_tests {
         let manifest = Manifest {
             meta_repo: "meta".into(),
             knowledge_base: None,
+            shared_knowledge_bases: vec![],
             repos: vec![
                 RepoEntry {
                     name: "meta".into(),

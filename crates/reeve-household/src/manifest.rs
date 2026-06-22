@@ -23,6 +23,15 @@ pub struct Manifest {
     #[serde(default)]
     pub knowledge_base: Option<String>,
 
+    /// Additional, lower-priority knowledge bases layered underneath
+    /// `knowledge_base` (e.g. an org-wide standards repo). Read by Lorekeeper
+    /// in array order (lowest priority first); `knowledge_base` stays the
+    /// highest-priority KB and the only write target. Reeve validates the
+    /// pointers but otherwise ignores the field — clone behaviour is driven
+    /// by `repos[]`, where each shared KB must also appear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_knowledge_bases: Vec<String>,
+
     /// Plugin-agnostic path (relative to the meta-repo) where the planning
     /// agent should write spec documents. Defaults to `docs/agent/specs` when
     /// absent; superpowers households override to `docs/superpowers/specs`.
@@ -121,6 +130,15 @@ fn validate(m: &Manifest) -> Result<()> {
             );
         }
     }
+    // shared_knowledge_bases entries each point at a repos[].name.
+    for kb in &m.shared_knowledge_bases {
+        if !m.repos.iter().any(|r| &r.name == kb) {
+            bail!(
+                "manifest: shared_knowledge_bases entry '{}' does not match any repos[].name",
+                kb
+            );
+        }
+    }
     Ok(())
 }
 
@@ -195,6 +213,50 @@ mod tests {
         );
         let err = load_manifest(&root).unwrap_err();
         assert!(format!("{err:#}").contains("meta_repo = 'ghost' does not match"));
+    }
+
+    #[test]
+    fn parses_shared_knowledge_bases() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{
+              "meta_repo": "ws",
+              "knowledge_base": "lore",
+              "shared_knowledge_bases": ["org-lore"],
+              "repos": [
+                { "name": "ws" },
+                { "name": "lore" },
+                { "name": "org-lore", "url": "git@github.com:org/org-lore.git" }
+              ]
+            }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert_eq!(m.shared_knowledge_bases, vec!["org-lore".to_string()]);
+    }
+
+    #[test]
+    fn absent_shared_knowledge_bases_yields_empty_and_is_not_serialized() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{ "meta_repo": "ws", "repos": [{ "name": "ws" }] }"#,
+        );
+        let m = load_manifest(&root).unwrap();
+        assert!(m.shared_knowledge_bases.is_empty());
+        let body = serde_json::to_string(&m).unwrap();
+        assert!(!body.contains("shared_knowledge_bases"));
+    }
+
+    #[test]
+    fn requires_shared_knowledge_bases_to_match_repos_entries() {
+        let dir = tempdir().unwrap();
+        let root = write_manifest(
+            dir.path(),
+            r#"{ "meta_repo": "ws", "shared_knowledge_bases": ["ghost"], "repos": [{ "name": "ws" }] }"#,
+        );
+        let err = load_manifest(&root).unwrap_err();
+        assert!(format!("{err:#}").contains("shared_knowledge_bases entry 'ghost' does not match"));
     }
 
     #[test]
