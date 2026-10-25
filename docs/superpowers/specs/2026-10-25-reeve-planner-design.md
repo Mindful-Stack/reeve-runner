@@ -1,10 +1,10 @@
 # Reeve planner design
 
-**Status:** Design (2026-10-25)
+**Status:** Design (2026-10-25, revised the same day after six reviews)
 
 ## Summary
 
-Reeve becomes an agent-first planning tool that replaces Jira and Jira Product Discovery for the Grantigo team, built as the open-source successor to the current Reeve in the Witan family. It models work as initiative → epic → story, makes decision-taking a first-class phase by mirroring decision records from the repositories, computes readiness from facts instead of a hand-set label, and exposes a CLI that Lorekeeper's skills drive so that planning is work an agent does, not work an agent skips. Agent execution loops are a later milestone; the planner ships first, with the contract that loops will need pinned at the interface level only.
+Reeve becomes an agent-first planning tool that replaces Jira and Jira Product Discovery for the Grantigo team, built as the open-source successor to the current Reeve in the Witan family. It models work as initiative → epic → story, makes decision-taking a first-class phase by mirroring decision records from the repositories and tracking the decisions an item still requires, computes readiness from facts instead of a hand-set label, and exposes a CLI that Lorekeeper's skills drive so that planning is work an agent does, not work an agent skips. Agent execution loops are a later milestone; the planner ships first, with the contract that loops will need pinned at the interface level only.
 
 The planner lives in a fresh `reeve` repository. The existing repository is renamed `reeve-runner`, keeps running unchanged as the local execution tool, and becomes one pluggable executor later. The two are coupled only by the planner's HTTP API and CLI.
 
@@ -20,163 +20,184 @@ Research across agent-first trackers, orchestration loops, decision processes an
 
 ## Goals
 
-- Replace Jira and Jira Product Discovery entirely for the team: strategic planning view, delivery board, hierarchy, migration of existing data.
-- Make decisions a first-class phase: every initiative and epic lists the decisions it requires, with a decider and a deadline, and readiness follows from their status.
-- Make planning something agents do: Lorekeeper skills create epics, stories and proposed decisions through the CLI, and read packaged context from it.
+- Replace Jira and Jira Product Discovery for the team: strategic planning view, delivery board, hierarchy, comments, PR linking, and migration of existing data.
+- Make decisions a first-class phase: every initiative and epic lists the decisions it requires, with a decider and a due date, and readiness follows from their status.
+- Make planning something agents do: Lorekeeper skills create epics, stories and required decisions through the CLI, and read packaged context from it. The milestone-one acceptance test for this goal is that triage proposes placements for untriaged stories and the epic-refinement skill drafts stories with criteria.
 - Compute readiness so that a ready story is pickable by anyone, human or agent, which is the structural fix for the bus factor.
 - Design the planning model so that execution loops are additive later.
 
 ## Non-goals for this design
 
 - Building the execution loop, the scheduler or the oversight views. Milestone two.
-- Goals and metrics as entities. Later, if ever, following Mothra's sprint-as-outcome idea.
-- A wiki or document store. RFCs and docs live in git under the decision in this document; the planner renders decision mirrors and initiative briefs only.
-- Sprints, comments on items, a timeline view, dashboards, a refinement view. All deliberately absent from milestone one and additive.
+- Goals and metrics as entities. Later, if ever.
+- A wiki or document store. Decision records and behaviour docs stay in git; broad product reasoning lives in the initiative brief; the planner renders decision mirrors and briefs only.
+- Notifications by email or chat. A later epic of its own.
+- Sprints, a timeline view, dashboards and reports, saved filters, Jira Product Discovery scoring and voting, attachments beyond a link, a refinement view. All deliberately absent from milestone one and additive.
 - A hosted multi-organisation service.
 
 ## Milestones
 
-**Milestone one: migrate off Jira.** Planning server, SvelteKit client, CLI and TUI, Jira import, decision sync, and the Lorekeeper integration with initiative, epic and story modes. Humans are the only actors. Today's Reeve keeps running on the maintainer's machine with a thin bridge: a card can be created from a story key and moving the card updates the story's delivery state through the CLI.
+**Milestone one: migrate off Jira.** Planning server, SvelteKit client, CLI and TUI, Jira import, decision sync, comments on stories and decisions, PR linking through a GitHub webhook, manual backlog rank, and the Lorekeeper integration with the initiative-planning and epic-refinement skills. Humans and automation acting for a human are the only actors; no agent principals yet. Build order within the milestone: planning server and API, strategic planning view and delivery board, import, decision sync and the decisions view, Lorekeeper skills, TUI last.
 
-**Milestone two: loops.** Agent principals, the executor contract, sessions and activities, oversight views, PR tracking and budgets, possibly as human-triggered delegation first and autonomous pickup second. The executor behind the contract is chosen then: the Reeve runner, Claude Code background agents, or a hosted sandbox.
+Today's Reeve keeps running on the maintainer's machine with a thin bridge: a card is created from a story key, and moving the card calls `reeve story start` or `reeve story mv` through the planner CLI with an automation token, failing visibly when the story is not ready rather than overriding.
+
+**Milestone two: loops.** Agent principals, the executor contract, sessions and activities, oversight views, budgets, possibly as human-triggered delegation first and autonomous pickup second. The executor behind the contract is chosen then: the Reeve runner, Claude Code background agents, or a hosted sandbox.
 
 This document fully specifies milestone one and specifies milestone two at the interface level only.
 
-## Repositories and naming
+## Repositories, binaries and naming
 
-- `reeve` (new): the planner. Server, web client, CLI and TUI, OpenAPI document. Seeds carried over from the current repo: the card crate as the start of the planning crate, the protocol crate's type discipline, the architecture rules, the lore knowledge base, and the CLI and TUI crate's event, action and render structure.
-- `reeve-runner` (the current repository, renamed): frozen in maintenance mode with the bridge above, gutted into a real executor at milestone two or retired.
-- Both are members of one Witan household so that cross-repo changes use the stack convention. The existing `reeve-household` directory is the home, once its manifest is migrated to the current schema.
-- The runner never links a planner crate. Coupling is the public HTTP API and the CLI only.
+- `reeve` (new): the planner. Server, web client, CLI and TUI, OpenAPI document. Seeds carried over from the current repo: the card crate as the start of the planning crate, the protocol crate's type discipline, the architecture rules, the lore knowledge base, and the CLI and TUI crate's event, action and render structure. Binaries: `reeve-server` and `reeve` (CLI and TUI).
+- `reeve-runner` (the current repository, renamed): frozen in maintenance mode with the bridge above, gutted into a real executor at milestone two or retired. Its CLI binary is renamed from `reeve` to `reeve-runner` so the two tools can coexist on one machine; its daemon stays `reeved`.
+- Lorekeeper detects the planner by running `reeve --version`, which prints `reeve-planner <semver>`; a binary that prints anything else is not the planner.
+- Both repositories are members of one Witan household. The existing `reeve-household` directory becomes that household once its manifest is migrated to the current schema; its knowledge base holds the shared ADR home.
+- The runner never links a planner crate. Coupling is the public HTTP API and the CLI only, and every CLI read has an HTTP endpoint.
 
 ## Domain model
 
-Crates follow bounded contexts. Within a context, foreign keys are fine; across contexts, references are by id or key only.
+Crates follow bounded contexts. Within a context, foreign keys are fine; across contexts, references are by id or key only. Two small shared-kernel crates sit beside the contexts: activity (the append-only log every context writes through a port) and discussion (comments on any entity by type and key).
 
 ### Planning context
 
-**Initiative.** Key, title, household, brief with sections vision, capabilities (must, nice, out of scope) and known knowns as Markdown, horizon bucket (Now, Next, Upcoming, Later, Won't do), target month, owner, refinement phase (draft or discovery) with a discovery-complete timestamp, labels. Progress is computed from epics on read.
+**Initiative.** Key, title, household, brief with sections vision, capabilities (must, nice, out of scope) and known knowns as Markdown, horizon bucket (Now, Next, Upcoming, Later, Won't do), target month, owner, refinement state, labels. Progress is computed on read as done stories over all stories beneath it.
 
-**Epic.** Key, title, initiative (nullable for migration, flagged in the readiness view), brief with goal, scope and out of scope, refinement phase and discovery-complete timestamp, labels. Decided and refined are derived.
+**Epic.** Key, title, initiative (nullable for migration and flagged on the decisions view and the epic page), brief with goal, scope and out of scope, refinement state, labels, rank within its initiative.
 
-**Story.** Key, title, kind (story, bug, chore), optional epic, description, acceptance criteria as an ordered list of text items with a done flag, optional estimate, owner (user), optional delegate (user in milestone one; agent principal from milestone two), labels, typed dependency edges (blocks, relates) to other stories, linked PRs (url, repo, status), delivery state, external references (for example the Jira key), row version. Readiness is never stored.
+**Story.** Key, title, kind (story, bug, chore), optional epic, description, acceptance criteria as an ordered list of text items each with a done flag, optional estimate, owner (a user), optional delegate (a principal: a user in milestone one, an agent principal from milestone two), labels, rank within todo, typed dependency edges (blocks, relates) to other stories in the same household, linked PRs, delivery state, resolution when done (completed, won't do, duplicate), triaged-at timestamp, external references (for example the Jira key), edited-in-Reeve timestamp, row version. Readiness is never stored.
 
-**Readiness computation** for a story returns ready or a list of reasons from: epic decided if there is an epic; every decision linked to the story accepted; at least one acceptance criterion; no open story that blocks it. For an epic, decided means discovery complete and every linked decision accepted; refined means decided plus at least one story and criteria on every story. For an initiative, decided means the same as for an epic.
+**Refinement state** on initiatives and epics: draft, discovery, or discovery complete with the timestamp and the person who declared it. Reopening discovery is an explicit, logged edge back to discovery.
+
+**Required decision.** A planner-owned stub attached to an initiative, epic or story: title, decider (a user), due date, status (open, bound), and a bound decision mirror once a record exists. Discovery creates stubs; a junior can create one to ask for a decision. A stub is what readiness checks until a record binds to it.
+
+**Readiness computation.** For a story: its epic is decided if it has one; a story of kind story with no epic is not ready, reason untriaged, while bugs and chores may stand alone; every required decision attached to the story is bound to an accepted record; at least one acceptance criterion; no open blocking story, where open means delivery not done. For an epic, decided means discovery complete, its initiative decided if it has one, and every attached required decision bound to an accepted record; refined means decided plus at least one story and criteria on every story. For an initiative, decided means discovery complete and every attached required decision bound to an accepted record. A bound record's status maps as: accepted satisfies; superseded resolves through its successor and satisfies if the successor is accepted; proposed, rejected, deprecated, missing and unknown each give a distinct reason. Attaching a new stub to a decided item makes it undecided without changing its stored refinement state. The computation returns the reasons when it fails.
+
+**Dependency rules.** Blocks edges are rejected at write time when they would form a cycle; the check runs in a transaction holding the household row. Edges may cross epics and initiatives within a household and may not cross households.
+
+**Keys.** The household's key prefix and sequence are owned by the planning context so that creating an item is a single-context transaction.
 
 ### Decision context
 
-**Decision.** Record id (for example `kb/ADR-0022` or `portal/ADR-0007`), kind (architecture, process, tooling, product), status (proposed, accepted, rejected, deprecated, superseded, missing), home (repo and path), title, description, decider, decide-by date, body as Markdown, source commit, last synced at. Links to initiatives, epics and stories with the role required-by. Status and body are written only by sync.
+**Decision mirror.** Canonical identity is household plus ADR home plus record id, so `kb/ADR-0022` in two households are two mirrors. Fields: record id, home (repo and path), kind (architecture, process, tooling, product), status (proposed, accepted, rejected, deprecated, superseded, plus the planner-only values missing and unknown), title, description, decider, decision due date, body as Markdown, source commit or PR branch, last synced at, supersedes and superseded-by ids. Status, body and metadata are written only by sync. Links from a mirror to items exist only through required-decision stubs in the planning context; the record file carries no item keys.
+
+### Discussion kernel
+
+**Comment.** On a story or a decision mirror: author (a principal), body as Markdown, timestamp, optional external source id for imported comments. Plain and unthreaded. Comments never change state; a comment on a decision is discussion, and the record is still written and ratified through Lorekeeper.
 
 ### Identity context
 
-**User.** Verified email as identity, display name, linked provider identities (GitHub, Google), role (admin, member, viewer), personal tokens.
-
-**Agent principal** (milestone two). Name, token, the executor that owns it.
+**Principal.** Id and kind (user or agent). **User.** Verified email as identity, display name, linked provider identities (GitHub, Google), role (none, admin, member, viewer), status (pending approval, active, disabled). **Token.** Owner principal, kind (interactive or automation), household scope or all, expiry, revoked-at. **Agent principal** (milestone two): name, owning executor, token. **Allowlist.** Email domains and explicit addresses permitted to sign in.
 
 ### Household context
 
-**Household.** Name, key prefix, key sequence, manifest reference (repos, ADR homes, knowledge base). Mirrors the household manifest; the server does not clone repositories.
+**Household.** Name, manifest reference (repos, ADR homes, knowledge base), allowed to be registered more than once per instance. Mirrors the household manifest; the server does not clone repositories.
 
 ### Session (milestone two)
 
-One per story and executor attempt: state (pending, active, awaiting input, complete, error, stale), executor, started and last-activity timestamps, reported cost and duration, typed activities (thought, action, elicitation, response, error) with timestamps and text.
+One per story and executor attempt: state (pending, active, awaiting input, complete, error, stale), executor, epoch (monotonic per story, issued at claim), lease expiry refreshed by heartbeat, stop requested flag, started and last-activity timestamps, reported cost and duration, typed activities (thought, action, elicitation, response, error) with timestamps and text. A human reply to an elicitation is posted as a response activity by a user. Sessions live in the planning context as a sub-aggregate of the story, so claim is a single-context transaction.
 
-### Activity log
+### Activity kernel
 
-One append-only table: actor (user, agent, sync, import), entity (type and key), action, payload, timestamp. Feeds the activity feed, the audit view, and the server-sent event stream.
+One append-only table: actor principal, via (interactive or automation), entity (type and key), action, payload, timestamp. Feeds the activity feed, the admin page's audit list, and the event stream. Every context writes to it through a port; no context reads another's rows from it.
 
 ## Lifecycles and gates
 
-**Refinement** on initiatives and epics. Stored: phase draft or discovery, plus the discovery-complete timestamp set by the owner. Derived: decided, refined. Discovery is where humans and agents research and produce proposed decisions, each with a decider and a decide-by date. Overdue proposed decisions surface on the planning view and the decisions view.
+**Refinement** on initiatives and epics: draft → discovery → discovery complete, with a logged reopen edge from complete back to discovery. Decided and refined are derived as defined above. Discovery is where humans and agents research and produce required-decision stubs, each with a decider and a due date; a record binds to a stub later. Overdue stubs surface on the strategic planning view and the decisions view.
 
-**Delivery** on stories: todo, in progress, in review, testing, done. Send-back edges from in review and testing to in progress. Actors: humans, the agent working the story through its session (milestone two), loops (milestone two). The single gate is todo → in progress, which requires ready. A human may override with a reason, written to the activity log. An agent has no override and may not be delegated a story that is not ready. The override count per period is a first-class query so the gate can be tightened on evidence.
+**Delivery** on stories: todo, in progress, in review, testing, done. Edges: start (todo → in progress), release (in progress → todo), send back (in review → in progress, testing → in progress), advance (in progress → in review → testing → done), reopen (done → todo). Done carries a resolution. Actors: users, automation acting for a user, and from milestone two agent principals and loops. The single gate is start, which requires ready. A user may override with a reason chosen from a short pick-list plus free text, written to the activity log; the lead owns the weekly override count. An automation token cannot override. An agent principal has no override and may not be delegated a story that is not ready. The override count per period is a first-class query so the gate can be tightened on evidence.
 
-**Session** (milestone two): pending, active, awaiting input, complete, error, stale. Stale is computed from silence beyond a configurable threshold. Moving the story out of in progress terminates any live session.
+**Stop request** on stories, independent of delivery: set by any user or by the system when delivery leaves in progress, observed by executors (milestone two).
 
-**Decision lifecycle** is the ADR one: proposed with decider and decide-by, then accepted or rejected, later deprecated or superseded; missing when the file disappears. Written only by sync.
+**Session** (milestone two): pending, active, awaiting input, complete, error, stale. Stale means the lease expired without heartbeat; a stale session is not live and frees the claim. Complete atomically advances delivery to in review. A live session carries the current epoch; writes with an older epoch are refused.
 
-**Intake.** Any new story without an epic is untriaged (a nullable triaged-at timestamp). Triage applies the placement tree: broken behaviour becomes a bug under the owning epic or none; a product change finds the covering epic, else the covering initiative and a new epic, else a new initiative in Later; internal work becomes a chore. In milestone one a triage skill proposes and a human confirms.
+**Decision lifecycle** is the ADR one, owned by the files: proposed with decider and due date, then accepted or rejected, later deprecated or superseded. The planner adds missing (the file vanished from a scanned home) and unknown (the home's repo was not checked out during the scan). Written only by sync.
+
+**Intake.** A story is untriaged while its triaged-at timestamp is null. Triage applies the placement tree: broken behaviour becomes a bug under the owning epic or none; a product change finds the covering epic, else the covering initiative and a new epic, else a new initiative in Later; internal work becomes a chore. Triage is a sequence of idempotent CLI commands (create initiative, create epic, triage story) so a human can confirm each. In milestone one the triage skill proposes and a human confirms.
+
+**PR linking.** A GitHub webhook receives pull-request events; the branch name carries the story key (`<key>-<attempt>`, attempt 1 for humans). A PR is linked to the story with status draft, open, merged or closed. Open advances todo or in progress to in review; merged advances in review to testing. Closed without merge records the PR and changes nothing. A linked PR is never deleted.
 
 ## Topology
 
-**Server.** One Rust binary on axum and sqlx. Crates: `reeve-protocol` (API types; the OpenAPI document is generated from them), `reeve-planning`, `reeve-decision`, `reeve-identity`, `reeve-household`, `reeve-server` (composition root, serves the API and the static client), `reeve` (CLI and TUI). Live updates are one server-sent events stream of activity-log entries with resume by last event id.
+**Server.** One Rust binary on axum and sqlx. Crates: `reeve-protocol` (API types; the OpenAPI document is generated from them), `reeve-planning` (initiatives, epics, stories, required decisions, sessions from milestone two), `reeve-decision`, `reeve-identity`, `reeve-household`, `reeve-activity` and `reeve-discussion` (shared kernels), `reeve-server` (composition root, serves the API and the static client, receives the GitHub webhook), `reeve` (CLI and TUI). Live updates are one server-sent events stream of activity entries, filtered to the principal's scope, with resume by last event id; a per-session poll endpoint is the authoritative stop channel for executors in milestone two.
 
 **Client.** SvelteKit built with the static adapter, served by the server binary. Types generated from the OpenAPI document; a drift fails the build on either side.
 
-**Hosting.** One server container plus one PostgreSQL container on the existing UpCloud Docker-host pattern in Stockholm, nginx and TLS in front, backups and deploys through the existing scripts and digest pipeline.
+**Hosting.** One server container plus one PostgreSQL container on the existing UpCloud Docker-host pattern in Stockholm, behind the team's existing nginx reverse proxy with TLS, backups and deploys through the existing scripts and digest pipeline. A documented restore procedure, rehearsed once before cut-over, with a second named person able to run it.
 
 **Tenancy.** Self-hosted, single-tenant. No organisation column. Household is the only grouping; one instance can hold several households.
 
-**Identity.** OpenID Connect with GitHub and Google as configured providers; a user is a verified email; roles admin, member, viewer derived from manifest-declared GitHub teams when a GitHub identity is linked, otherwise set by an admin on the admin page. No password store. The CLI uses a personal token issued and revocable from the web client. Authorization by role only in milestone one.
+**Identity.** Google through OpenID Connect and GitHub through an OAuth adapter that fetches verified emails from GitHub's email endpoint; both resolve to a user keyed by verified email. Sign-in is refused unless the email matches the allowlist, and a new user has role none and status pending approval until an admin approves. Roles admin, member, viewer are derived from manifest-declared GitHub teams when a GitHub identity is linked, otherwise set by an admin; roles are re-checked on every token use against the stored role and refreshed from GitHub daily. Tokens are interactive or automation; automation tokens cannot override, administer or mint tokens, and their writes are logged as the owner via automation. Tokens are revoked when their owner's role drops or status changes. A viewer sees every household in the instance; per-item access control is out of scope.
 
-**Keys.** One sequence per household with a short prefix, for example `GRA-412` for any level; the kind is shown beside the key. Imported Jira keys are external references that the API and CLI resolve. Artifact paths and branch names use the key.
+**Keys.** One sequence per household with a short prefix, for example `GRA-412` for any level; the kind is shown beside the key. Imported Jira keys are external references that the API and CLI resolve. Artifact paths use the key; branch names use `<key>-<attempt>`.
 
-**CLI.** `reeve` with subcommand groups `initiative`, `epic`, `story`, `decision`, `household`, `auth`, `import`, and `tui`. Every command supports `--json`. Mutations are idempotent. Exit codes map to the typed error codes. In milestone one an agent runs under the user's token, so every write is attributed to a person.
+**CLI.** `reeve` with subcommand groups `initiative`, `epic`, `story`, `decision`, `comment`, `household`, `auth`, `import`, and `tui`. Every command, including `story context`, supports `--json`. Mutations are idempotent. Exit codes map to the typed response codes. `reeve --version` prints `reeve-planner <semver>`.
 
 ## Lorekeeper integration and CLI contract
 
-**Direction and detection.** Lorekeeper calls Reeve, never the reverse. The household manifest gains an optional `reeve` section with the instance URL. Skills check for the section and for `reeve` on the path; absent either, they behave as today. This is a cross-tool change with witan-household's schema and Lorekeeper's lint.
+**Direction and detection.** Lorekeeper calls Reeve, never the reverse. The household manifest gains an optional `reeve` section with the instance URL, validated by Lorekeeper's doctor and migrate scripts and added to the witan-household template. Skills check for the section and for a `reeve` on the path whose `--version` reports the planner; absent either, they behave as today.
 
-**Three planning modes.** The brainstorming skill gains a level:
+**Skills.** The brainstorming skill is not given modes; its hard gate and spec checklist stay as they are, and it gains one first step that reads `reeve story context` when the planner is present. Two new skills reuse its exploration and architect-dispatch steps:
 
-- Initiative mode: `reeve initiative show <key> --json`, discovery with the architect agent's survey plus research, output is updated known knowns and open questions (`reeve initiative edit`), proposed decisions drafted through recording-decisions with `required_by: [<key>]`, and proposed epics (`reeve epic create --initiative <key> --json`). No spec.
-- Epic mode: epic-level discovery the same way, then refinement: stories with acceptance criteria (`reeve story create --epic <key> --criteria ...`). No spec.
-- Story mode: today's spec → writing-plans → implementation, invoked against a ready story, artifacts named by the story key.
+- `planning-initiative`: `reeve initiative show <key> --json`, discovery with the architect agent's survey plus research, output is updated known knowns and open questions (`reeve initiative edit <key> --json`), required-decision stubs (`reeve decision require --on <key> --title ... --decider <email> --due <date> --json`), proposed epics (`reeve epic create --initiative <key> --json`), and for each stub a drafted record through recording-decisions. No spec.
+- `refining-epic`: epic-level discovery the same way, then refinement: stories with acceptance criteria (`reeve story create --epic <key> --title ... --criterion "..." --criterion "..." --json`). No spec.
 
-**Decision sync.** `reeve decision sync` runs from a household checkout, walks every ADR home the manifest declares (local dirs per repo and the shared dir in the knowledge base), parses front matter and body, and upserts mirrors stamped with the source commit. Three new front-matter fields: `kind`, `decide_by`, `required_by`. The `rfc` field is retired. Sync runs as a CI step on merge to main in each repo and by hand. Sync marks a record missing when its file disappears; it never deletes.
+Lorekeeper's record triage is changed so that kind process, tooling and product decisions are drafted as records rather than declined as "no code behind it".
 
-**Context packaging.** `reeve story context <key>` emits one Markdown bundle: the initiative's vision, the epic brief, every linked decision with status, kind and path, the criteria, and the dependencies. Lore prime consumes it at story start.
+**Decision sync.** `reeve decision sync` runs centrally from a household checkout, on a schedule and by hand, never from a single repository's CI. It shells out to Lorekeeper's homes resolver (`adr-lint homes`) rather than reimplementing the walk, and the resolver is extended so the meta-repo's own ADR home is included. For each home it parses front matter and body, tolerating legacy records without front matter by deriving the id from repo name and number, and upserts mirrors stamped with the source commit. It also scans open PR branches that add or change records, mirroring them as proposed with the branch commit, because Lorekeeper merges a proposal's PR only once accepted. A record is marked missing only after a complete successful scan of a present home; a home whose repository is not checked out yields unknown. A scan carries a snapshot timestamp and a later-finishing older scan cannot overwrite a newer one. Sync binds a mirror to a stub by record id when the stub names it, reads supersedes and superseded-by so a pair flips in one scan, and reports stubs that name unknown ids. Two front-matter fields are added to Lorekeeper's template and lint: `kind` and `decision_due`. The `rfc` field is kept as a tolerated deprecated key. No item keys are written into records.
 
-**Readiness as a query.** `reeve story ready <key> --json` returns the boolean and reasons. `reeve story start <key>` moves a ready story to in progress, prints reasons on refusal, and accepts `--override "<reason>"` for humans only. `reeve story ls --ready --json` lists pickable work.
+**Context packaging.** `reeve story context <key>` emits one bundle, as Markdown or with `--json`: the initiative's vision, the epic brief, every required decision with status, kind and path, the criteria, the dependencies, and the comments.
 
-**Triage.** A triage skill runs the placement tree against `reeve story ls --untriaged --json` and proposes; a human confirms with `reeve story triage <key> --epic <key>` or in the web client.
+**Readiness as a query.** `reeve story ready <key> --json` returns the boolean and reasons. `reeve story start <key>` moves a ready story to in progress, prints reasons on refusal, and accepts `--override <code> --reason "<text>"` for interactive tokens only. `reeve story ls --ready --json` lists pickable work.
 
-**Contract rules.** `--json` everywhere; idempotent mutations; typed exit codes; no capability in a future MCP that the CLI lacks.
+**Triage.** The triage skill runs the placement tree against `reeve story ls --untriaged --json` and proposes; a human confirms with `reeve story triage <key> --epic <key>` or `--no-epic`, or in the web client.
+
+**Ratification.** The planner never accepts, rejects or edits a record. Discussion on a decision mirror is a comment thread; a human hands a summary to an interactive Lorekeeper session, which drafts or ratifies through its own flow, and sync picks up the result. There is no accept action in the planner.
+
+**Contract rules.** `--json` on every command; idempotent mutations; typed exit codes; every CLI read has an HTTP endpoint; no capability in a future MCP that the CLI lacks.
 
 ## Surfaces
 
-**Web.** In priority order: the strategic planning view (initiatives in five horizon buckets with target month, refinement badge, overdue-decision count and computed progress; drag between buckets); the decisions view (every mirrored record with kind, status, decider, deadline and required-by items, overdue first, body rendered read-only with a link to the file and the commit stamp); the delivery board (stories by delivery state with filters for household, epic, owner, kind, labels, and a ready indicator); initiative and epic pages (brief with section editing, decisions, children, activity); the story drawer, addressable by URL from any view (fields, criteria checklist, decisions, dependencies, PRs, activity, override prompt); the triage inbox; the admin page (users and roles, households, tokens).
+**Web.** In priority order: the strategic planning view (initiatives in five horizon buckets with target month, refinement badge, overdue required-decision count and computed progress; drag between buckets and reorder within one); the delivery board (stories by delivery state with filters for household, epic, owner, kind, labels, and a ready indicator; drag to rank within todo); the decisions view (every mirror with kind, status, decider, due date and the items that require it, overdue stubs first, body rendered read-only with a link to the file and the commit stamp, comments beneath); initiative and epic pages (brief with section editing, required decisions, children, activity); the story drawer, addressable by URL from any view (fields, criteria checklist, required decisions, dependencies, PRs, comments, activity, override prompt); the triage inbox; the admin page (users, approvals and roles, allowlist, households, tokens, audit list).
 
-**TUI.** A thin board client: delivery board, story drawer with readiness reasons, start and move, triage confirmation, live over the event stream. Embedded sessions return with the runner in milestone two.
-
-**Deliberately absent in milestone one.** Timeline, refinement view, goals, dashboards, comments on items, sprints.
+**TUI.** A thin board client, built last in milestone one: delivery board, story drawer with readiness reasons, start and move, triage confirmation, live over the event stream. Embedded sessions return with the runner in milestone two.
 
 ## Jira migration
 
-`reeve import jira --site <url> --token-from-env JIRA_TOKEN --household <name>` reads both projects through the Jira Cloud API. Imports are keyed by Jira key and re-runnable, allowing a parallel-run period before Jira is set read-only.
+`reeve import jira --site <url> --token-from-env JIRA_TOKEN --household <name>` reads both projects through the Jira Cloud API. Imports are keyed by Jira key and re-runnable.
 
 - Product Discovery ideas → initiatives. Roadmap bucket → horizon; target date → target month; description split by its template headings into vision, capabilities, known knowns, open questions; "ADRs required" text kept inside open questions; delivery links → initiative-to-epic relation.
 - Delivery epics → epics, parented from delivery links, orphaned and flagged otherwise.
-- Stories, bugs, tasks → stories with kind story, bug, chore. Status mapped column for column. Assignee → owner by email. Labels preserved. Jira key → external reference. Rich text → Markdown. Comments → activity entries with original author and date.
+- Stories, bugs, tasks → stories with kind story, bug, chore. Status mapped column for column; Jira resolutions Won't Do and Duplicate → done with that resolution. Assignee → owner by email. Labels preserved. Jira key → external reference. Rich text → Markdown. Comments → comments with original author and date, keyed by Jira comment id so re-runs do not duplicate.
+- Field ownership on re-run: Jira owns title, description, delivery state, owner, labels, horizon, target month and brief sections until cut-over; Reeve owns everything else. An item edited in Reeve since the last import (edited-in-Reeve timestamp newer than its last import) is skipped on re-run and listed in the import report rather than overwritten.
+- Grandfathering: stories in progress, in review or testing at import, and every epic and initiative with such stories, are marked discovery complete by the importer with a legacy label and excluded from override counts.
+- Cut-over is a day, not a period: a rehearsal import on a copy shown to the team beforehand, then on the day Jira is set read-only, one final delta import runs, and Jira stays readable for reference. Rollback within the first two weeks is re-enabling Jira writes and abandoning the instance.
 - Not imported: Confluence, sprints, attachments beyond a link.
 
-After import every initiative and epic is in draft and no decision is linked, so almost nothing is ready. That is the true baseline; the override with reason keeps work moving while discovery catches up.
+After import, initiatives and epics without in-flight work are in draft and nothing is bound, so most of the backlog is not ready. That is the true baseline; the override with reason keeps work moving while discovery catches up.
 
 ## Loops interface (milestone two, interface level only)
 
-- Agent principal: identity with a token, distinct from a user; may be a story's delegate; the owner stays human.
-- Claim: `POST /stories/{key}/claim` by an executor succeeds only if the story is ready, in todo, delegated to that agent or an agent pool, and has no live session; atomically creates a pending session and moves delivery to in progress under the row version.
-- Session and activities: executor posts state transitions and typed activities; server marks stale after a silence threshold; moving the story out of in progress is the stop signal, observed by the executor over the event stream.
-- PRs: executor registers PRs with status; GitHub webhooks may update status later.
-- Pluggable executor: anything with an agent token implementing claim, session and activities.
-- Scheduling, concurrency caps and budgets live in the executor; the session carries reported cost and duration for oversight.
-- Milestone-one obligations that make this additive: the delegate field, the activity log, row versions, and no stored readiness.
+- Agent principal: a principal of kind agent with a token owned by an executor; may be a story's delegate; the owner stays a user. An agent pool is a named delegate that any agent principal in the pool may claim for.
+- Claim: `POST /stories/{key}/claim` by an executor succeeds only if the story is ready, delegated to that agent or its pool, in todo or in progress with no live session, and atomically creates a pending session with a new epoch and lease and moves delivery to in progress under the row version.
+- Session and activities: the executor heartbeats the lease and posts state transitions and typed activities carrying the epoch; writes with a superseded epoch are refused with conflict; complete atomically advances delivery to in review; a user may post a response activity to answer an elicitation.
+- Stop: the planner sets stop requested when delivery leaves in progress or a user asks; the executor reads it from the per-session poll endpoint, which is authoritative, and from the filtered event stream as an optimisation.
+- PRs: the executor registers PRs on the story; the GitHub webhook updates their status.
+- Brakes in the planner, runtime-neutral: a per-principal cap on live sessions, the lease deadline, and token revocation. Fine-grained budgets and scheduling live in the executor, which reports cost and duration on the session.
+- Milestone-one obligations that make this additive: principals with kinds, the delegate as a principal, the activity log, row versions, the stop-request flag, branch names with attempts, and no stored readiness.
 
 ## Error handling
 
-- One error envelope with typed codes: not found, not ready (with reasons), conflict (with current version), forbidden, validation, unauthenticated. The CLI maps codes to exit statuses.
-- A readiness refusal is a normal response, not an error.
+- One response envelope with typed codes: ok, not found, not ready (a refusal carrying reasons), conflict (carrying the current version or epoch), forbidden, validation, unauthenticated, pending approval. The CLI maps codes to exit statuses; not ready is a refusal, not a failure, and exits with its own status.
 - Writes carry a row version; a stale write returns conflict.
-- Sync and import collect per-item failures, finish what they can, and report at the end. Sync never deletes; it marks missing.
+- Sync and import collect per-item failures, finish what they can, and report at the end. Sync never deletes; it marks missing or unknown.
 - The event stream resumes from the last event id on reconnect.
 
 ## Testing
 
-1. Domain tests, pure and fast: readiness computation, the three state machines, placement rules, front-matter parsing against copies of real ADRs from the Grantigo knowledge base.
+1. Domain tests, pure and fast: readiness computation including every decision status, cycle rejection, the state machines and their edges, placement rules, import field ownership, front-matter and legacy parsing against copies of real records from the Grantigo knowledge base and the file-data-extraction-service.
 2. Repository tests against a real PostgreSQL started per test run, one set per context.
-3. API tests through the axum router with a test database; an OpenAPI snapshot so a wire change is a deliberate diff; generated client types checked in CI.
-4. CLI end-to-end against a running server with a recorded Jira export as the import fixture and a fixture household with ADR files as the sync fixture.
-5. Web: a Playwright smoke across the planning view, the decisions view and the board.
+3. API tests through the axum router with a test database, including the GitHub webhook and token-kind enforcement; an OpenAPI snapshot so a wire change is a deliberate diff; generated client types checked in CI.
+4. CLI end-to-end against a running server with a recorded Jira export as the import fixture and a fixture household with ADR files, including an open PR branch, as the sync fixture.
+5. Web: a Playwright smoke across the strategic planning view, the decisions view and the board.
 
 ## Inherited choices and their verdicts
 
@@ -189,32 +210,32 @@ After import every initiative and epic is in draft and no decision is linked, so
 | Per-card socket as agent identity | Keep in the runner |
 | Column transition runs the workspace lifecycle synchronously | Change; server never provisions, executors report sessions (kb/ADR-0008) |
 | Single column enum mirroring the agent's phase | Change; three state machines (kb/ADR-0004) |
-| Per-card lock across side effects | Change; row version |
+| Per-card lock across side effects | Change; row version and session epoch |
 | One story, one workspace, one devcontainer | Keep in the runner |
-| Reference clones, mirrored refs, no credentials in the container, host-side gh bridge | Keep (kb/ADR-0008 R5) |
-| Push and PR creation human-only | Change; executor-mediated, policy-gated |
+| Reference clones, mirrored refs, no credentials in the container, host-side GitHub bridge | Keep (kb/ADR-0008 R5) |
+| Push and PR creation human-only | Change; executor-bridge-mediated under the planner's brakes |
 | Household manifest as the project unit | Keep |
 | Hard Lorekeeper dependency, Lorekeeper unaware of Reeve | Invert (kb/ADR-0006) |
 | Plugin-agnostic session prompt; artifacts named by UUID | Keep the first; artifacts by key (kb/ADR-0007) |
-| Brief of 1–200 characters as the whole description | Drop |
+| Brief of 1–200 characters as the whole description | Drop; brief remains the name of an initiative's or epic's document |
 | `needs_heavy`, `parent_id` branch lineage | Drop |
 | No event log, TUI polls | Change; activity log and server-sent events |
 | Ratatui TUI with embedded sessions | Keep as an HTTP client |
-| Vocabulary card, column, brief | Change; initiative, epic, story, decision, state (kb/ADR-0002) |
+| Vocabulary card, column | Change; initiative, epic, story, decision, state (kb/ADR-0002) |
+| CLI binary named `reeve` | Moves to the planner; the runner's CLI becomes `reeve-runner` |
 
 ## Open questions deferred past this design
 
 - Executor choice for milestone two: Reeve runner, Claude Code background agents, or a hosted sandbox.
 - Whether the strict gate (whole epic refined before any story starts) replaces the loose one; decided on override counts after a quarter.
-- Whether a refinement view, comments on items, or sprints return; each is additive.
+- Notifications as their own epic; whether a refinement view or sprints return; reports.
 - Whether an MCP server wrapping the CLI is wanted.
-- Whether the `reeve-household` directory or a fresh household becomes the shared ADR home for the kb records below; the household manifest there predates the schema and needs migration first.
 
 ## Decisions
 
 **Binding records followed:** none. Neither repository has an ADR home today; creating `docs/adr/` in the planner and `adrs/` in the household knowledge base is the first task of milestone one.
 
-**Proposed records.** All thirteen are high tier, so each gets its own ADR-only PR and implementation waits until it is accepted. Numbers are per home and provisional until the homes exist. Full drafted text follows so a later session can apply each record without this conversation.
+**Proposed records.** All thirteen are high tier, so each gets its own ADR-only PR and implementation waits until it is accepted. Numbers are per home and provisional until the homes exist. The drafts omit the `kind` and `decision_due` fields that kb/ADR-0005 mandates because Lorekeeper's lint does not accept them yet; the Lorekeeper change lands first and the fields are added when the records are applied. Full drafted text follows so a later session can apply each record without this conversation.
 
 ### kb/ADR-0001
 
@@ -247,7 +268,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0001: The planner and any executor live in separate repositories
+# ADR-0001: The planner and any executor live in separate repositories, coupled only by the planner's HTTP API and CLI
 
 ## Status
 Proposed 2026-10-25.
@@ -319,7 +340,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0002: Work is modelled as initiative, epic and story
+# ADR-0002: Work is modelled as initiative, epic and story, where a story is one pull request and an epic holds decisions and the breakdown
 
 ## Status
 Proposed 2026-10-25.
@@ -339,7 +360,7 @@ The team plans in Jira Product Discovery ideas (initiatives) and delivers in a S
 - **Three levels, story is the spec and the PR, epic holds decisions and breakdown** — simplest rule set and no change of grain for Reeve or Lorekeeper.
 
 ## Decision
-Daniel Thyselius models work as initiative, epic and story, with a story being what ships as one pull request and an epic owning the decisions and the story breakdown, because that forces product planning to the epic while leaving implementation design just-in-time, and it is the only option that changes neither Reeve's nor Lorekeeper's unit of work.
+Daniel Thyselius models work as initiative, epic and story, with a story being what ships as one pull request per affected repository and an epic owning the decisions and the story breakdown, because that forces product planning to the epic while leaving implementation design just-in-time, and it is the only option that changes neither Reeve's nor Lorekeeper's unit of work.
 
 - **R1** A story MUST be deliverable as one pull request per affected repository; a story that cannot be is split, not nested.
 - **R2** Stories MUST carry a kind of story, bug or chore; the planner MUST NOT introduce a fourth hierarchy level.
@@ -364,7 +385,7 @@ Daniel Thyselius models work as initiative, epic and story, with a story being w
 
 ### kb/ADR-0003
 
-**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates only the start of work with a human-only override
+**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates only the start of work with an interactive-only override
 
 **Tier:** high
 
@@ -373,8 +394,8 @@ Daniel Thyselius models work as initiative, epic and story, with a story being w
 ```markdown
 ---
 id: kb/ADR-0003
-title: "ADR-0003: Readiness is computed from facts, never stored, and gates only the start of work with a human-only override"
-description: "A story's readiness is computed on read from its epic's decisions, its own decisions, its acceptance criteria and its blockers, never stored, and it gates the todo-to-in-progress transition with a reasoned human override and no agent override, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
+title: "ADR-0003: Readiness is computed from facts, never stored, and gates only the start of work with an interactive-only override"
+description: "A story's readiness is computed on read from its epic's and initiative's required decisions, its own required decisions, its acceptance criteria and its open blockers, never stored, and it gates the todo-to-in-progress transition with a reasoned override for interactive users only, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
 tags: [adr, reeve, readiness, gate, domain]
 status: proposed
 date: 2026-10-25
@@ -393,36 +414,38 @@ implements: []
 rfc:
 ---
 
-# ADR-0003: Readiness is computed, never stored, and gates the start of work
+# ADR-0003: Readiness is computed from facts, never stored, and gates only the start of work with an interactive-only override
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-The team's initiative template has a section for decisions required before building, and it stays empty, because nothing checks it. Published practice computes readiness from facts: Beads' ready query is "open with no open blockers", Mothra's refinement state machine required subtasks and no blockers, Shape Up's "solved" and Kubernetes' "implementable" encode decided-ness as a state. Nobody found phrases the gate as "every linked decision accepted", which is the gap this record fills. Definition-of-ready practices fail when they harden into a barrier the team routes around, and the team has stated that under-planning is its disease, so a gate that is bypassed silently teaches nothing.
+The team's initiative template has a section for decisions required before building, and it stays empty, because nothing checks it. Published practice computes readiness from facts: Beads' ready query is "open with no open blockers", Mothra's refinement state machine required subtasks and no blockers, Shape Up's "solved" and Kubernetes' "implementable" encode decided-ness as a state. Nobody found phrases the gate as "every required decision accepted", which is the gap this record fills. Definition-of-ready practices fail when they harden into a barrier the team routes around, and the team has stated that under-planning is its disease, so a gate that is bypassed silently teaches nothing. Automation acting under a person's token must not be able to bypass the gate, or the bypass count measures nothing. A decision that is superseded or rejected must not make work unready forever.
 
 ## Facts relied on
 - F1 Readiness in Beads is a query, not a field — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §4.
 - F2 Reeve's `needs_heavy` flag became orphaned metadata because its enforcement point was never built — source: `docs/superpowers/specs/2026-05-27-review-and-pr-flow-design.md` §Future work.
 - F3 Atlassian measured agent-authored-for tickets as agent-ready 83% of the time versus 6% for traditional ones — source: research digest §6.
+- F4 Accepted records can be superseded, and the successor is named in `superseded_by` — source: `/home/daniel/Source/grantigo/knowledge-base/knowledge/adrs/0022-portal-reads.md` front matter.
 
 ## Considered options
 - **Stored readiness label set by humans** — zero computation and familiar from Jira labels.
 - **Computed readiness, strict gate: the whole epic refined before any story starts** — maximises upfront planning.
-- **Computed readiness, loose gate on this story's facts, human override with reason, no agent override** — enforces the gate where it is cheap and measures bypasses.
+- **Computed readiness, loose gate on this story's facts, interactive override with reason, no automation or agent override** — enforces the gate where it is cheap and measures bypasses.
 
 ## Decision
-Daniel Thyselius computes a story's readiness on every read as: its epic is decided if it has one, its own linked decisions are accepted, it has acceptance criteria, and no blocking dependency is open; the computation returns reasons on failure, gates the todo-to-in-progress transition, allows a human override only with a recorded reason, and allows no override for an agent, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
+Daniel Thyselius computes a story's readiness on every read as: its epic is decided if it has one, a story of kind story has an epic, every required decision attached to the story is bound to a satisfying record, it has acceptance criteria, and no blocking story is open; the computation returns reasons on failure, gates the todo-to-in-progress transition, allows an override only from an interactive token with a recorded reason, and allows none for automation or agent principals, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
 
 - **R1** The planner MUST NOT persist a readiness value; every readiness answer MUST be derived from current facts and MUST include the failing reasons.
-- **R2** A human MAY start a non-ready story only by supplying a reason, which MUST be written to the activity log.
-- **R3** An agent principal MUST NOT claim or start a non-ready story under any circumstance.
-- **R4** Epic decided MUST mean discovery declared complete by its owner and every linked decision accepted; epic refined MUST additionally require at least one story and criteria on every story.
+- **R2** An interactive user MAY start a non-ready story only by supplying a reason code and text, which MUST be written to the activity log; automation tokens and agent principals MUST NOT override.
+- **R3** Epic decided MUST mean discovery declared complete, its initiative decided if it has one, and every attached required decision bound to a satisfying record; epic refined MUST additionally require at least one story and criteria on every story; initiative decided MUST mean discovery complete and every attached required decision bound to a satisfying record.
+- **R4** A bound record satisfies when accepted, or when superseded by a record that satisfies; proposed, rejected, deprecated, missing and unknown MUST each yield a distinct reason; an unbound required decision MUST yield a reason.
+- **R5** A story of kind story without an epic MUST be not ready with reason untriaged; bugs and chores MAY be ready without an epic. Open MUST mean delivery not done.
 
 ## Consequences
-- Immediately after Jira import nearly nothing is ready, which is true, and overrides will be frequent at first.
-- Readiness queries touch decisions, dependencies and criteria on each read; indexes on those links are mandatory.
-- Tightening to the strict gate later is a one-line rule change plus a policy decision backed by override counts.
+- Immediately after Jira import most of the backlog is not ready, which is true, and overrides will be frequent at first; the importer grandfathers in-flight work so day one is not a wall of overrides.
+- Readiness queries touch required decisions, mirrors, dependencies and criteria on each read; indexes on those links and a batched decisions-by-item port are mandatory.
+- Tightening to the strict gate later is a rule change plus a policy decision backed by override counts, which the lead owns.
 
 ## Assumptions and invalidation triggers
 - *Assumes decision status in the planner is current.* Trigger: sync lag routinely exceeds a day ⇒ add a staleness reason to the computation.
@@ -437,7 +460,7 @@ Daniel Thyselius computes a story's readiness on every read as: its epic is deci
 
 ### kb/ADR-0004
 
-**Title:** ADR-0004: Refinement, delivery and session are three separate state machines, and pull requests are linked records rather than a state
+**Title:** ADR-0004: Refinement, delivery and session are three separate state machines, stop is a separate flag, and pull requests are linked records rather than a state
 
 **Tier:** high
 
@@ -446,8 +469,8 @@ Daniel Thyselius computes a story's readiness on every read as: its epic is deci
 ```markdown
 ---
 id: kb/ADR-0004
-title: "ADR-0004: Refinement, delivery and session are three separate state machines, and pull requests are linked records rather than a state"
-description: "Reeve keeps refinement (stored phase plus derived decided and refined), delivery (todo, in progress, in review, testing, done) and session (pending, active, awaiting input, complete, error, stale) as separate state machines with PRs as linked records, because one column enum was only honest when the agent was the sole actor."
+title: "ADR-0004: Refinement, delivery and session are three separate state machines, stop is a separate flag, and pull requests are linked records rather than a state"
+description: "Reeve keeps refinement (draft, discovery, discovery complete), delivery (todo, in progress, in review, testing, done with a resolution) and session (pending, active, awaiting input, complete, error, stale) as separate state machines, with a stop-request flag apart from delivery and PRs as linked records, because one column enum was only honest when the agent was the sole actor."
 tags: [adr, reeve, state-machine, domain, protocol]
 status: proposed
 date: 2026-10-25
@@ -466,13 +489,13 @@ implements: []
 rfc:
 ---
 
-# ADR-0004: Three separate state machines, PRs as linked records
+# ADR-0004: Refinement, delivery and session are three separate state machines, stop is a separate flag, and pull requests are linked records rather than a state
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-Reeve's single column enum, shared by wire, database and CLI, was a deliberate simplification: the column was a projection of the one agent's self-reported phase, and a PR column made shipping an explicit act. The successor has humans, agents and a computed readiness acting on the same story, plus a planning side with its own discovery and decision lifecycle. Mothra's lesson was that keeping refinement and delivery as separate machines kept the board from lying. Linear's agent sessions carry their own states and typed activities independent of the issue's workflow state.
+Reeve's single column enum, shared by wire, database and CLI, was a deliberate simplification: the column was a projection of the one agent's self-reported phase, and a PR column made shipping an explicit act. The successor has humans, automation, agents and a computed readiness acting on the same story, plus a planning side with its own discovery lifecycle. Mothra's lesson was that keeping refinement and delivery as separate machines kept the board from lying. Linear's agent sessions carry their own states and typed activities independent of the issue's workflow state. Review of the first draft found that if leaving in progress killed the session, an agent's own success path would kill its session before it registered its PR, and that an executor crash left a story in progress with no edge out. Jira's Won't Do and Duplicate resolutions must survive import without counting as completed.
 
 ## Facts relied on
 - F1 Reeve's columns are "a projection of the agent's self-reported state" — source: `lore/knowledge/domain/card.md`.
@@ -483,24 +506,25 @@ Reeve's single column enum, shared by wire, database and CLI, was a deliberate s
 ## Considered options
 - **One enum covering planning, delivery and agent phase** — simplest wire type, as Reeve has today.
 - **Delivery states plus a PR column, session folded into delivery** — keeps shipping explicit on the board.
-- **Three machines, PRs as linked records with their own status** — each actor writes only its own machine.
+- **Three machines, a separate stop flag, PRs as linked records with their own status** — each actor writes only its own machine.
 
 ## Decision
-Daniel Thyselius separates refinement, delivery and session into three state machines and represents pull requests as linked records on a story, because humans, agents and computation each need a machine they alone write, and a PR has a lifecycle of its own that a column cannot carry.
+Daniel Thyselius separates refinement, delivery and session into three state machines, keeps the stop request as a flag independent of delivery, and represents pull requests as linked records on a story, because humans, agents and computation each need a machine they alone write, and a PR has a lifecycle of its own that a column cannot carry.
 
-- **R1** Refinement MUST store only the phase (draft or discovery) and the discovery-complete timestamp; decided and refined MUST be derived.
-- **R2** Delivery MUST be todo, in progress, in review, testing, done, with send-back edges from in review and testing to in progress; no other delivery state MAY be added without superseding this record.
-- **R3** Session state MUST be written only by executors through the executor contract; the planning context MUST NOT read session internals to compute delivery.
-- **R4** Moving a story out of in progress MUST terminate any live session for it.
-- **R5** A PR MUST be a linked record with its own status; "shipped" MUST NOT be a delivery state.
+- **R1** Refinement MUST be draft, discovery, or discovery complete with timestamp and person, with one logged reopen edge from complete to discovery; decided and refined MUST be derived.
+- **R2** Delivery MUST be todo, in progress, in review, testing, done, with edges start, release (in progress to todo), send back (in review or testing to in progress), advance, and reopen (done to todo); done MUST carry a resolution of completed, won't do or duplicate; no other delivery state MAY be added without superseding this record.
+- **R3** Session state and activities MUST be written only by executors through the executor contract, except a user's response activity answering an elicitation; the planning context MUST NOT derive delivery from session internals.
+- **R4** Delivery leaving in progress MUST set the story's stop-request flag; the planner MUST NOT write session state on behalf of an executor. A session's complete transition MUST atomically advance delivery to in review.
+- **R5** A PR MUST be a linked record with status draft, open, merged or closed; "shipped" MUST NOT be a delivery state; a linked PR MUST NOT be deleted.
 
 ## Consequences
 - Three machines mean three sets of transition tests and a UI that composes them, which is more surface than one enum.
-- The explicit "ship it" act moves from a board column into the executor contract, where loops need it anyway.
+- The explicit "ship it" act moves from a board column into the executor contract and the GitHub webhook, where loops need it anyway.
 - The TUI's existing column rendering is rewritten around delivery states only.
+- Sessions live inside the planning context as a sub-aggregate of the story so that a claim is one transaction; R3 constrains who writes them, not where they are stored.
 
 ## Assumptions and invalidation triggers
-- *Assumes five delivery states cover the team's flow.* Trigger: the team needs a sixth state for a quarter ⇒ supersede R2.
+- *Assumes five delivery states and three resolutions cover the team's flow.* Trigger: the team needs a sixth state or a fourth resolution for a quarter ⇒ supersede R2.
 - *Assumes session semantics match Linear's for executors in general.* Trigger: an executor cannot map its lifecycle onto the six states ⇒ amend the session machine via kb/ADR-0008.
 
 ## Later observations
@@ -512,7 +536,7 @@ Daniel Thyselius separates refinement, delivery and session into three state mac
 
 ### kb/ADR-0005
 
-**Title:** ADR-0005: Decision records stay in repositories and the knowledge base; the planner mirrors them from front matter and retires the RFC artifact
+**Title:** ADR-0005: Decision records stay in repositories and the knowledge base; the planner mirrors them by a central sync, tracks required decisions as its own stubs, and retires the RFC artifact
 
 **Tier:** high
 
@@ -521,8 +545,8 @@ Daniel Thyselius separates refinement, delivery and session into three state mac
 ```markdown
 ---
 id: kb/ADR-0005
-title: "ADR-0005: Decision records stay in repositories and the knowledge base; the planner mirrors them from front matter and retires the RFC artifact"
-description: "The planner never owns a decision: it mirrors records from each ADR home by syncing front matter plus body, writes status only from sync, adds kind, decide_by and required_by fields, and retires the RFC artifact in favour of the initiative brief and a generalised decision record, because one source of truth must be the versioned file."
+title: "ADR-0005: Decision records stay in repositories and the knowledge base; the planner mirrors them by a central sync, tracks required decisions as its own stubs, and retires the RFC artifact"
+description: "The planner never owns a decision: a central sync mirrors records from every ADR home including open proposal branches, writes status only from sync, keeps item-to-decision links as planner-owned required-decision stubs rather than keys in records, adds kind and decision_due fields, and retires the RFC artifact in favour of the initiative brief and a generalised decision record, because the versioned file must stay the single truth and accepted records are locked."
 tags: [adr, reeve, decisions, sync, lorekeeper, rfc]
 status: proposed
 date: 2026-10-25
@@ -532,7 +556,7 @@ confidence: high
 reversibility: one-way
 blast_radius: shared
 sensitivity: []
-scope: ["reeve:crates/reeve-decision/**", "reeve:crates/reeve/src/commands/decision*", "lorekeeper:skills/recording-decisions/**", "lorekeeper:references/adr-template.md", "lorekeeper:scripts/adr-lint.js"]
+scope: ["reeve:crates/reeve-decision/**", "reeve:crates/reeve-planning/**", "reeve:crates/reeve/src/commands/decision*", "lorekeeper:skills/recording-decisions/**", "lorekeeper:references/adr-template.md", "lorekeeper:scripts/adr-lint.js", "lorekeeper:scripts/adr/**"]
 supersedes: []
 superseded_by:
 depends_on: []
@@ -541,40 +565,45 @@ implements: []
 rfc:
 ---
 
-# ADR-0005: Decision records stay in the repositories; the planner mirrors them
+# ADR-0005: Decision records stay in repositories and the knowledge base; the planner mirrors them by a central sync, tracks required decisions as its own stubs, and retires the RFC artifact
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-The team keeps architecture decision records beside the code they govern and shared ones in the knowledge base, with front matter carrying id, status, decided_by, reversibility, scope and relations, and an unused `rfc` field. RFCs were written separately, often with security, UX or product people, and covered both broad product questions and non-architectural hard-to-reverse choices such as tooling. Practitioners keep records in the repo and pitches or decision logs in a wiki layer, with the tracker holding links. No surveyed tool links a ticket to a record natively; teams paste URLs. Non-technical team members need to read decisions without opening GitHub.
+The team keeps architecture decision records beside the code they govern and shared ones in the knowledge base, with front matter carrying id, status, decided_by, reversibility, scope and relations, and an `rfc` field that every record carries empty. Lorekeeper locks an accepted record to five permitted edits, and a proposal's PR merges only once the record is accepted, so proposed records exist only on open branches. Some older repositories hold legacy records without front matter. Lorekeeper's homes resolver skips the meta-repo's own ADR directory. RFCs were written separately, often with security, UX or product people, and covered both broad product questions and non-architectural hard-to-reverse choices such as tooling. Practitioners keep records in the repo and pitches or decision logs in a wiki layer, with the tracker holding links. Non-technical team members need to read and discuss decisions without opening GitHub. One server may hold several households whose record ids overlap.
 
 ## Facts relied on
-- F1 Shared ADRs use front matter with id, status, decided_by, reversibility, blast_radius, scope, supersedes, related and `rfc` — source: `/home/daniel/Source/grantigo/knowledge-base/knowledge/adrs/0022-portal-reads.md`.
-- F2 Each household repo may declare its own ADR directory and the KB a shared one — source: `/home/daniel/Source/grantigo/household.json` (`adr.localDir`, `adr.sharedDir`, `repos[].adrDir`).
-- F3 Rust's RFC merge procedure writes the tracking issue into the RFC header as the canonical cross-link — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §6.
+- F1 Shared ADRs use front matter with id, status, decided_by, reversibility, blast_radius, scope, supersedes, related and an empty `rfc` — source: `/home/daniel/Source/grantigo/knowledge-base/knowledge/adrs/0022-portal-reads.md`.
+- F2 Accepted records are locked to five edits and a proposal merges only once accepted — source: Lorekeeper `skills/recording-decisions/reference/lifecycle.md` on origin/main.
+- F3 The homes resolver skips the meta-repo and knowledge base and reads `repos[].adrDir` — source: Lorekeeper `scripts/adr/homes.js` on origin/main; `/home/daniel/Source/grantigo/household.json`.
+- F4 The file-data-extraction-service records have no front matter — source: `/home/daniel/Source/grantigo/file-data-extraction-service/docs/architectural-decision-records/`.
+- F5 Rust's RFC merge procedure writes the tracking issue into the RFC header as the canonical cross-link — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §6.
 
 ## Considered options
 - **Decisions authored and stored in the planner** — one place for non-technical readers and comments.
-- **Decisions in repositories only, the planner holds URLs** — zero duplication, but readiness cannot be computed without reading git.
-- **Decisions in repositories, mirrored into the planner by a sync that owns status** — computed readiness with the file still the single truth.
+- **Decisions in repositories only, the planner holds URLs and item keys live in the records** — zero duplication, but readiness cannot be computed without reading git and accepted records cannot take new keys.
+- **Decisions in repositories, mirrored by a central sync that also scans open proposal branches, with links held as planner-owned stubs** — computed readiness with the file still the single truth and no edits to locked records.
 
 ## Decision
-Daniel Thyselius keeps every decision record in its repository or knowledge-base home and has the planner mirror id, title, status, kind, decider, deadline, body and links through a CLI sync, with status writable only by sync, because readiness needs the data in the planner while the versioned file must remain the only truth.
+Daniel Thyselius keeps every decision record in its repository or knowledge-base home, has a central sync mirror id, title, status, kind, decider, due date, body and relations from every home and from open proposal branches, keeps item-to-decision links as required-decision stubs owned by the planner, and identifies a mirror by household, home and record id, because readiness needs the data in the planner while the versioned file must remain the only truth and must not be edited to add links.
 
-- **R1** The planner MUST NOT allow editing a decision's status or body in its UI or API; sync MUST be the sole writer.
-- **R2** Records MUST carry `required_by` listing the item keys that need them, `kind` of architecture, process, tooling or product, and `decide_by` for the proposed phase; the `rfc` field MUST be removed from the template.
-- **R3** Sync MUST walk every ADR home the household manifest declares, MUST stamp each mirror with the source commit, and MUST mark a record missing rather than delete it when its file disappears.
-- **R4** Broad product reasoning MUST live in the initiative brief; a hard-to-reverse non-architectural choice MUST be a decision record of the appropriate kind; no separate RFC artifact MAY be introduced.
+- **R1** The planner MUST NOT allow editing a mirror's status, body or metadata in its UI or API; sync MUST be the sole writer, and comments on a mirror MUST NOT change it.
+- **R2** Lorekeeper's template and lint MUST gain `kind` (architecture, process, tooling, product) and `decision_due`; `rfc` MUST remain a tolerated deprecated key; no item keys MAY be written into records.
+- **R3** Sync MUST run centrally from a household checkout, MUST obtain homes from Lorekeeper's resolver extended to include the meta-repo's home, MUST scan open PR branches for proposed records, MUST tolerate legacy records by deriving the id from repo and number, MUST mark missing only after a complete successful scan of a present home and unknown for a home whose repo is absent, and MUST refuse to overwrite a newer snapshot with an older one.
+- **R4** A required decision MUST be a planner-owned stub with title, decider and due date attached to an initiative, epic or story, bound to a mirror by record id; readiness MUST check stubs, not record contents.
+- **R5** Broad product reasoning MUST live in the initiative brief; a hard-to-reverse non-architectural choice MUST be a decision record of the appropriate kind, and Lorekeeper's record triage MUST draft such records rather than decline them; no separate RFC artifact MAY be introduced.
+- **R6** A mirror's identity MUST be household plus home plus record id.
 
 ## Consequences
 - Non-technical readers see rendered mirrors that can lag the file until the next sync; the commit stamp makes the lag visible.
-- Three front-matter fields and the template change are a cross-tool change to Lorekeeper and its lint.
-- Discussion of a decision by non-engineers happens in the planner, and an agent or engineer writes the record PR; the file never carries the discussion.
+- The template, lint, homes resolver and record triage are cross-tool changes to Lorekeeper.
+- Discussion of a decision by non-engineers happens as comments on the mirror; a human hands a summary to an interactive Lorekeeper session, which drafts or ratifies; the planner never ratifies.
+- Proposed mirrors come from branches and can disappear when a PR is closed unmerged; sync then marks them missing and the stub returns to open.
 
 ## Assumptions and invalidation triggers
-- *Assumes a CI step can run sync on merge to main in every household repo.* Trigger: a repo cannot run the step ⇒ sync runs on a schedule and staleness becomes a readiness reason.
-- *Assumes non-technical participation is satisfied by reading mirrors and discussing in the planner.* Trigger: a demonstrated need to author records outside git ⇒ supersede.
+- *Assumes a scheduled central sync is frequent enough.* Trigger: staleness between merge and sync is routinely noticed ⇒ add staleness as a readiness reason and shorten the schedule.
+- *Assumes non-technical participation is satisfied by reading mirrors and commenting.* Trigger: a demonstrated need to author records outside git ⇒ supersede.
 
 ## Later observations
 <!-- append-only, accepted records only; newest last -->
@@ -595,7 +624,7 @@ Daniel Thyselius keeps every decision record in its repository or knowledge-base
 ---
 id: kb/ADR-0006
 title: "ADR-0006: Lorekeeper drives Reeve through the reeve CLI when a household declares an instance; Reeve never depends on Lorekeeper"
-description: "Lorekeeper skills call the reeve CLI when the household manifest declares a Reeve instance and the CLI is on the path, and Reeve neither links nor requires Lorekeeper, because the planner is the product and the plugin is one client of it; this inverts the earlier rule that Lorekeeper must not know Reeve exists."
+description: "Lorekeeper skills call the reeve CLI when the household manifest declares a Reeve instance and a reeve on the path reports itself as the planner, through new planning-initiative and refining-epic skills rather than modes of brainstorming, and Reeve neither links nor requires Lorekeeper, because the planner is the product and the plugin is one client of it; this inverts the earlier rule that Lorekeeper must not know Reeve exists."
 tags: [adr, reeve, lorekeeper, integration, cli, manifest]
 status: proposed
 date: 2026-10-25
@@ -605,7 +634,7 @@ confidence: high
 reversibility: one-way
 blast_radius: shared
 sensitivity: []
-scope: ["lorekeeper:skills/**", "lorekeeper:scripts/**", "witan-household:schema/**", "reeve:crates/reeve/**"]
+scope: ["lorekeeper:skills/**", "lorekeeper:scripts/**", "lorekeeper:commands/doctor.md", "witan-household:**", "reeve:crates/reeve/**"]
 supersedes: []
 superseded_by:
 depends_on: []
@@ -614,39 +643,41 @@ implements: []
 rfc:
 ---
 
-# ADR-0006: Lorekeeper drives Reeve through the CLI
+# ADR-0006: Lorekeeper drives Reeve through the reeve CLI when a household declares an instance; Reeve never depends on Lorekeeper
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-Reeve's original design hard-required Lorekeeper and stated that Lorekeeper must not know Reeve exists, because Reeve was an execution loop meant to sit beside an existing planning tool. The successor is the planning tool. Initiative-first work means the brainstorming, writing-plans and recording-decisions skills must create epics and stories, attach decisions and read context from the planner. Lorekeeper already drives external tools by shelling out to CLIs such as gh. A Rust CLI with JSON output needs no shared code with a TypeScript plugin.
+Reeve's original design hard-required Lorekeeper and stated that Lorekeeper must not know Reeve exists, because Reeve was an execution loop meant to sit beside an existing planning tool. The successor is the planning tool. Initiative-first work means Lorekeeper must create epics, stories and required decisions, and read context from the planner. Lorekeeper already drives external tools by shelling out to CLIs such as gh. The brainstorming skill has a hard gate and a checklist that ends in a spec file and a hand-off to writing-plans, which planning at the initiative or epic level must not produce. The current Reeve installs a `reeve` binary with different commands, and it keeps running during milestone one. Nothing in Lorekeeper's code validates unknown manifest sections today.
 
 ## Facts relied on
 - F1 The 2026-04-29 design deferred Jira intake and stated Lorekeeper stays a pure plugin unaware of Reeve — source: `docs/superpowers/specs/2026-04-29-reeve-design.md` §Deferred.
-- F2 Lorekeeper skills are Markdown procedures that invoke shell commands and agents — source: `/home/daniel/Source/lorekeeper/skills/*/SKILL.md`.
-- F3 The household manifest is the cross-tool contract shared by Reeve, Lorekeeper and witan-household — source: `CLAUDE.md` §Manifest schema migration.
+- F2 The brainstorming skill's hard gate and checklist force a spec and a writing-plans hand-off — source: Lorekeeper `skills/brainstorming/SKILL.md` on origin/main.
+- F3 The manifest schema file holds only a current version and the migrate script only stamps it — source: Lorekeeper `scripts/manifest-schema.json`, `scripts/migrate-manifest.js` on origin/main.
+- F4 The current Reeve workspace builds a `reeve` CLI binary — source: `crates/reeve/Cargo.toml`.
 
 ## Considered options
 - **Lorekeeper unaware of Reeve; humans copy keys between tools** — no cross-tool coupling.
 - **Reeve exposes an MCP server that Lorekeeper connects to** — richer tool surface for agents.
-- **Reeve exposes a CLI with JSON output; Lorekeeper calls it when the manifest declares an instance** — one surface for humans, agents and skills, degrading gracefully when absent.
+- **Reeve exposes a CLI with JSON output; Lorekeeper calls it from dedicated planning skills when the manifest declares an instance** — one surface for humans, agents and skills, degrading gracefully when absent.
 
 ## Decision
-Daniel Thyselius makes Lorekeeper depend on Reeve through the `reeve` CLI, gated on a `reeve` section in the household manifest and the CLI being on the path, and keeps Reeve free of any Lorekeeper dependency, because the planner is the product every client talks to and a CLI is the surface the plugin already knows how to drive.
+Daniel Thyselius makes Lorekeeper depend on Reeve through the `reeve` CLI, gated on a `reeve` section in the household manifest and a `reeve` on the path whose version output names the planner, implemented as new planning-initiative and refining-epic skills plus one context-reading step in brainstorming, and keeps Reeve free of any Lorekeeper dependency, because the planner is the product every client talks to and a CLI is the surface the plugin already knows how to drive.
 
-- **R1** The household manifest schema MUST gain an optional `reeve` section with the instance URL; its absence MUST leave every Lorekeeper skill behaving as before.
-- **R2** Every `reeve` command used by a skill MUST support `--json`, MUST be idempotent on repeat, and MUST exit non-zero with a typed code on refusal.
-- **R3** Reeve MUST NOT require Lorekeeper to be installed to perform any planning function.
-- **R4** An MCP server, if ever added, MUST wrap the same commands and MUST NOT expose capabilities the CLI lacks.
+- **R1** The household manifest schema MUST gain an optional `reeve` section with the instance URL, validated by Lorekeeper's doctor and migrate scripts and present in the witan-household template; its absence MUST leave every Lorekeeper skill behaving as before.
+- **R2** Skills MUST detect the planner by `reeve --version` reporting `reeve-planner`; the runner's CLI MUST be renamed so it never answers to `reeve`.
+- **R3** Every `reeve` command used by a skill MUST support `--json`, MUST be idempotent on repeat, and MUST exit non-zero with a typed code on refusal.
+- **R4** Initiative and epic planning MUST be separate skills that produce no spec; the brainstorming skill's hard gate and checklist MUST NOT be weakened.
+- **R5** Reeve MUST NOT require Lorekeeper to be installed to perform any planning function; an MCP server, if ever added, MUST wrap the same commands and MUST NOT expose capabilities the CLI lacks.
 
 ## Consequences
-- The manifest schema change ripples through witan-household's validator and Lorekeeper's lint, a three-tool change.
-- Skills gain a conditional branch, which is more test surface for Lorekeeper.
-- Agents act under the user's token in milestone one, so every write is attributed to a person.
+- The manifest schema change ripples through witan-household's template and Lorekeeper's doctor and migrate scripts, a three-tool change.
+- Two new skills and one new step are more test surface for Lorekeeper.
+- Skills run under an automation token in milestone one, so every write is attributed to a person via automation and cannot override the readiness gate.
 
 ## Assumptions and invalidation triggers
-- *Assumes a shell CLI is an adequate agent surface.* Trigger: a skill needs streaming or long-lived state the CLI cannot provide ⇒ add MCP under R4.
+- *Assumes a shell CLI is an adequate agent surface.* Trigger: a skill needs streaming or long-lived state the CLI cannot provide ⇒ add MCP under R5.
 - *Assumes one instance per household.* Trigger: a household needs two instances ⇒ amend the manifest section.
 
 ## Later observations
@@ -687,17 +718,17 @@ implements: []
 rfc:
 ---
 
-# ADR-0007: One key sequence per household with a prefix
+# ADR-0007: Every item takes a key from one sequence per household with a short prefix, and imported Jira keys are kept as external references
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-Keys are the one identifier that leaves the tool: they appear in branch names, commit messages, PR titles, decision records' `required_by` lists and conversations. Jira uses one sequence per project, so the team has PIB-10 for an idea and SCRUM-586 for a story, which tells a reader which project but not which level. Linear uses one sequence per team for every issue type. The household is the grouping unit in Reeve. Beads uses hash ids to avoid collisions under concurrent offline creation, which the planner does not need because it is a single server.
+Keys are the one identifier that leaves the tool: they appear in branch names, commit messages, PR titles, required-decision stubs and conversations. Jira uses one sequence per project, so the team has PIB-10 for an idea and SCRUM-586 for a story, which tells a reader which project but not which level. Linear uses one sequence per team for every issue type. The household is the grouping unit in Reeve. Beads uses hash ids to avoid collisions under concurrent offline creation, which the planner does not need because it is a single server.
 
 ## Facts relied on
 - F1 Jira Product Discovery and the delivery project use separate key spaces, PIB and SCRUM — source: https://grantigo-team.atlassian.net/jira/polaris/projects/PIB and the SCRUM board, observed 2026-10-25.
-- F2 Decision records will reference items by key in `required_by` — source: kb/ADR-0005 R2.
+- F2 Required-decision stubs attach to items by key and bind to records by id — source: kb/ADR-0005 R4.
 - F3 Reeve artifacts are currently named by card UUID, which the planning-column spec called "uglier" — source: `docs/superpowers/specs/2026-05-26-planning-column-design.md` §Artifact paths.
 
 ## Considered options
@@ -711,7 +742,7 @@ Daniel Thyselius assigns every initiative, epic and story a key from one sequenc
 - **R1** Keys MUST be `<PREFIX>-<n>` with one monotonic sequence per household; numbers MUST NOT be reused.
 - **R2** An item's key MUST NOT change when its level, epic or initiative changes.
 - **R3** Imported items MUST keep their Jira key as an external reference that the API and CLI resolve.
-- **R4** Artifact paths and branch names derived from an item MUST use its key, not its internal id.
+- **R4** Artifact paths MUST use the item key, and branch names MUST be `<key>-<attempt>`, never the internal id.
 
 ## Consequences
 - A key alone does not reveal the level; the UI and CLI show the kind beside it.
@@ -730,7 +761,7 @@ Daniel Thyselius assigns every initiative, epic and story a key from one sequenc
 
 ### kb/ADR-0008
 
-**Title:** ADR-0008: Executors are pluggable clients that claim ready stories and report sessions and activities; scheduling and budgets live in the executor
+**Title:** ADR-0008: Executors are pluggable clients that claim ready stories under a lease and epoch and report sessions and activities; scheduling and budgets live in the executor behind three planner-side brakes
 
 **Tier:** high
 
@@ -739,8 +770,8 @@ Daniel Thyselius assigns every initiative, epic and story a key from one sequenc
 ```markdown
 ---
 id: kb/ADR-0008
-title: "ADR-0008: Executors are pluggable clients that claim ready stories and report sessions and activities; scheduling and budgets live in the executor"
-description: "Any holder of an agent-principal token that implements claim, session state and typed activities over the HTTP API is an executor, with the claim guarded by readiness and row version, stop signalled by moving the story out of in progress, and scheduling and budgets kept in the executor, because the planner must not privilege one runtime."
+title: "ADR-0008: Executors are pluggable clients that claim ready stories under a lease and epoch and report sessions and activities; scheduling and budgets live in the executor behind three planner-side brakes"
+description: "Any holder of an agent-principal token that implements claim, heartbeat, session state and typed activities over the HTTP API is an executor; a claim issues a lease and a fencing epoch, stop is a flag read from a per-session endpoint, and the planner enforces only a live-session cap, lease expiry and token revocation while scheduling and budgets stay in the executor, because the planner must not privilege one runtime yet must be able to stop any of them."
 tags: [adr, reeve, executor, loops, protocol, agents]
 status: proposed
 date: 2026-10-25
@@ -750,7 +781,7 @@ confidence: medium
 reversibility: one-way
 blast_radius: shared
 sensitivity: [security]
-scope: ["reeve:crates/reeve-protocol/**", "reeve:crates/reeve-identity/**", "reeve:crates/reeve-session/**", "reeve-runner:**"]
+scope: ["reeve:crates/reeve-protocol/**", "reeve:crates/reeve-identity/**", "reeve:crates/reeve-planning/**", "reeve-runner:**"]
 supersedes: []
 superseded_by:
 depends_on: [kb/ADR-0001, kb/ADR-0003, kb/ADR-0004]
@@ -759,13 +790,13 @@ implements: []
 rfc:
 ---
 
-# ADR-0008: Executors are pluggable clients of the planner
+# ADR-0008: Executors are pluggable clients that claim ready stories under a lease and epoch and report sessions and activities; scheduling and budgets live in the executor behind three planner-side brakes
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-Autonomous loops are a later milestone, but the planning model shipped first must not block them. Published orchestrators share one shape: the tracker is the state machine, a supervisor polls, claims atomically, caps concurrency, times out stalls and backs off, and each task runs in an isolated workspace whose agent pushes a branch and never merges. Symphony keeps scheduling in the supervisor and stops a run when the ticket's state changes. Linear models the agent as a delegate with a typed session. The executor behind Reeve could be the existing runner, Claude Code background agents, or a hosted sandbox service, and that choice is best made with usage evidence.
+Autonomous loops are a later milestone, but the planning model shipped first must not block them. Published orchestrators share one shape: the tracker is the state machine, a supervisor polls, claims atomically, caps concurrency, times out stalls and backs off, and each task runs in an isolated workspace whose agent pushes a branch and never merges. Symphony keeps scheduling in the supervisor and stops a run when the ticket's state changes. Linear models the agent as a delegate with a typed session. Review of the first draft found that silence-based staleness without a lease lets a partitioned executor resume and push over a successor's branch, that a global event stream leaks other households' activity to a hosted executor and can be missed, and that a planner with no brake at all cannot stop a third-party runtime. The executor behind Reeve could be the existing runner, Claude Code background agents, or a hosted sandbox service, and that choice is best made with usage evidence.
 
 ## Facts relied on
 - F1 Symphony polls on an interval, claims by state and labels, caps concurrency, requeues on stall, and stops a run when the ticket state changes — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §5.
@@ -774,25 +805,28 @@ Autonomous loops are a later milestone, but the planning model shipped first mus
 
 ## Considered options
 - **Scheduler inside the planner that pushes work to registered executors** — one place for caps and budgets.
-- **Executors poll and claim; scheduling and budgets inside each executor** — the planner stays a state machine and any runtime can participate.
+- **Executors poll and claim under a lease and epoch; scheduling and budgets inside each executor; three brakes in the planner** — the planner stays a state machine any runtime can drive and can still stop any of them.
 - **No contract; the Reeve runner reads the database directly** — least API work, but binds the planner to one executor.
 
 ## Decision
-Daniel Thyselius defines an executor as any client holding an agent-principal token that implements claim, session state and typed activities over the public HTTP API, with scheduling, concurrency caps and budgets inside the executor, because the planner must remain a state machine that any runtime can drive without the planner knowing how it runs.
+Daniel Thyselius defines an executor as any client holding an agent-principal token that implements claim, heartbeat, session state and typed activities over the public HTTP API, with a lease and a fencing epoch issued at claim, a per-session stop endpoint, and scheduling and fine-grained budgets inside the executor behind three planner-side brakes, because the planner must remain a state machine that any runtime can drive while retaining the means to stop one.
 
-- **R1** A claim MUST succeed only if the story is ready, in todo, delegated to that agent or an agent pool, and without a live session, and MUST atomically create a pending session and move delivery to in progress under the row version.
-- **R2** Session state and activities MUST be written only through executor endpoints; the executor MUST observe the event stream and MUST tear down when the story leaves in progress.
-- **R3** An agent principal MUST be distinct from a user; a story's owner MUST remain a human; agents MAY be delegates only.
-- **R4** The planner MUST NOT enforce budgets or concurrency; the session MUST carry reported cost and duration so oversight can show them.
-- **R5** Executors MUST NOT hold repository credentials inside the agent's sandbox; pushing and PR creation MUST pass through an executor-owned bridge.
+- **R1** A claim MUST succeed only if the story is ready, delegated to that agent or its pool, in todo or in progress without a live session, and MUST atomically create a pending session with a new epoch and lease and move delivery to in progress under the row version.
+- **R2** Every session, activity, PR and bridge call MUST carry the session epoch; the planner MUST refuse a superseded epoch with conflict; a session whose lease expires without heartbeat MUST become stale and MUST NOT count as live.
+- **R3** The authoritative stop channel MUST be a per-session poll endpoint exposing the story's stop-request flag; the event stream MUST be filtered to the principal's scope and is an optimisation only; an executor MUST tear down when stop is requested or its epoch is superseded.
+- **R4** An agent principal MUST be distinct from a user; a story's owner MUST remain a user; agents MAY be delegates only; a pool MUST be a named delegate that any of its agents may claim for.
+- **R5** Executors MUST NOT hold repository or planner credentials inside the agent's sandbox; pushing, PR creation and planner calls MUST pass through an executor-owned bridge outside the sandbox.
+- **R6** The planner MUST enforce a per-principal cap on live sessions, lease expiry and token revocation, and MUST NOT enforce fine-grained budgets or scheduling; the session MUST carry reported cost and duration.
+- **R7** Branch names MUST be `<key>-<attempt>` so that successive sessions on one story never share a branch.
 
 ## Consequences
 - Two executors can race on the same story and one loses the claim, which is intended.
-- The planner cannot stop a runaway spend by itself; the executor's budget is the only brake, and oversight shows reported cost.
-- Milestone one ships the delegate field, activity log and row versions so that this contract is additive later.
+- A partitioned executor that rejoins is refused on its stale epoch and cannot damage its successor's work.
+- The planner's brakes are coarse; fine budgets remain the executor's job, and oversight shows reported cost.
+- Milestone one ships principals with kinds, the delegate as a principal, the activity log, row versions, the stop-request flag and attempt-numbered branches so that this contract is additive later.
 
 ## Assumptions and invalidation triggers
-- *Assumes executors are trusted deployments operated by the team.* Trigger: third-party or multi-tenant executors ⇒ supersede with server-side limits.
+- *Assumes executors are trusted deployments operated by the team or a vendor the team configured.* Trigger: untrusted or multi-tenant executors ⇒ supersede with finer server-side limits.
 - *Assumes polling is adequate.* Trigger: claim latency matters at scale ⇒ add push assignment without changing R1.
 
 ## Later observations
@@ -833,7 +867,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0001: Rust server with a statically built SvelteKit client
+# ADR-0001: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary
 
 ## Status
 Proposed 2026-10-25.
@@ -905,7 +939,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0002: PostgreSQL through sqlx
+# ADR-0002: PostgreSQL is the planner's datastore, accessed through sqlx
 
 ## Status
 Proposed 2026-10-25.
@@ -941,12 +975,12 @@ Daniel Thyselius uses PostgreSQL accessed through sqlx as the planner's only dat
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0001, reeve/ADR-0005.
+- reeve/ADR-0001, reeve/ADR-0004, reeve/ADR-0005.
 ```
 
 ### reeve/ADR-0003
 
-**Title:** ADR-0003: Users sign in through OpenID Connect with GitHub and Google, identified by verified email, with no password store
+**Title:** ADR-0003: Users sign in through Google OpenID Connect or a GitHub OAuth adapter, identified by allowlisted verified email, with no password store and typed tokens
 
 **Tier:** high
 
@@ -955,9 +989,9 @@ Daniel Thyselius uses PostgreSQL accessed through sqlx as the planner's only dat
 ```markdown
 ---
 id: reeve/ADR-0003
-title: "ADR-0003: Users sign in through OpenID Connect with GitHub and Google, identified by verified email, with no password store"
-description: "The planner authenticates humans through a generic OpenID Connect layer with GitHub and Google as providers, treats a verified email as the user identity, derives roles from GitHub team membership with admin override, and stores no passwords, because not every team member has GitHub and a password store is the account-management work that sank Mothra."
-tags: [adr, reeve, identity, auth, oidc]
+title: "ADR-0003: Users sign in through Google OpenID Connect or a GitHub OAuth adapter, identified by allowlisted verified email, with no password store and typed tokens"
+description: "The planner authenticates humans through Google OpenID Connect and a GitHub OAuth adapter, treats an allowlisted verified email as the user identity, holds new users pending approval, derives roles from GitHub teams with admin override and re-checks them on every token use, issues interactive and automation tokens with different powers, and stores no passwords, because not every team member has GitHub, an open sign-in would expose the roadmap, and automation must not pass for a person."
+tags: [adr, reeve, identity, auth, oidc, tokens]
 status: proposed
 date: 2026-10-25
 decided_by: [Daniel Thyselius]
@@ -975,40 +1009,42 @@ implements: []
 rfc:
 ---
 
-# ADR-0003: OpenID Connect with GitHub and Google, no password store
+# ADR-0003: Users sign in through Google OpenID Connect or a GitHub OAuth adapter, identified by allowlisted verified email, with no password store and typed tokens
 
 ## Status
 Proposed 2026-10-25.
 
 ## Context
-The household manifest declares GitHub teams including core-team, core-non-coders, interns and ai-researchers, and PR linking and role mapping benefit from a GitHub identity, but not every team member has a GitHub account. Everyone has a Google identity. Mothra built seat and role management and an Entra sign-in that was blocked on admin consent, and that work displaced the product's core. The CLI needs a credential that is not a browser session.
+The household manifest declares GitHub teams including core-team, core-non-coders, interns and ai-researchers, and PR linking and role mapping benefit from a GitHub identity, but not every team member has a GitHub account. Everyone has a Google identity. GitHub's human sign-in is OAuth 2.0 followed by API calls, and verified emails come from a separate endpoint, so it cannot be configured as a plain OpenID Connect provider. Mothra built seat and role management and an Entra sign-in that was blocked on admin consent, and that work displaced the product's core. The CLI needs a credential that is not a browser session, Lorekeeper skills act for a person but must not be able to use the human-only readiness override, and a token that outlives its owner's role is a hole. Review of the first draft found that without an allowlist any verified Google account could sign in and read every roadmap and decision.
 
 ## Facts relied on
 - F1 The household manifest maps GitHub teams to repository access, including a core-non-coders team — source: `/home/daniel/Source/grantigo/household.json`.
-- F2 Mothra's deployment was blocked on Entra admin consent and its auth hook fell back to the first user — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §3.
-- F3 Jira's login for the team offers Google, Microsoft, Apple and Slack alongside email — source: https://id.atlassian.com/login observed 2026-10-25.
+- F2 GitHub authorizes OAuth apps and lists verified emails through its REST API — source: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps and https://docs.github.com/en/rest/users/emails.
+- F3 Mothra's deployment was blocked on Entra admin consent and its auth hook fell back to the first user — source: `docs/superpowers/research/2026-10-25-agent-first-planning-research.md` §3.
 
 ## Considered options
 - **GitHub OAuth only** — simplest, and the roles come for free; excludes members without GitHub.
 - **Local accounts with passwords and invitations** — works for everyone; requires hashing, reset flows and invitation management.
-- **Generic OpenID Connect with GitHub and Google, identity by verified email, roles from GitHub teams with admin override** — covers everyone without a password store.
+- **Google OpenID Connect plus a GitHub OAuth adapter, allowlisted verified email as identity, pending approval, roles from GitHub teams with admin override, typed tokens** — covers everyone without a password store and without an open door.
 
 ## Decision
-Daniel Thyselius authenticates humans through a generic OpenID Connect layer with GitHub and Google configured as providers, identifies a user by verified email so that both providers resolve to one user, derives roles from GitHub team membership where a GitHub identity is linked and otherwise lets an admin assign them, and stores no passwords, because that covers every team member with the least account management.
+Daniel Thyselius authenticates humans through Google OpenID Connect and a GitHub OAuth adapter, identifies a user by verified email that matches an allowlist so that both providers resolve to one user, holds new users pending approval with no role, derives roles from GitHub team membership where a GitHub identity is linked and otherwise lets an admin assign them, re-checks roles on every token use, issues interactive and automation tokens with different powers, and stores no passwords, because that covers every team member with the least account management and no open door.
 
-- **R1** The planner MUST NOT store password hashes or implement password reset; sign-in MUST go through a configured OpenID Connect provider.
-- **R2** A user MUST be keyed by verified email; two providers presenting the same verified email MUST resolve to one user.
-- **R3** Roles MUST be admin, member or viewer; a role MUST be derived from manifest-declared GitHub teams when a GitHub identity is linked and MUST be settable by an admin otherwise.
-- **R4** The CLI MUST authenticate with a personal token issued from the web client, revocable there, and MUST NOT reuse the browser session.
+- **R1** The planner MUST NOT store password hashes or implement password reset; sign-in MUST go through Google OpenID Connect or the GitHub OAuth adapter, and the GitHub adapter MUST take verified emails from GitHub's email endpoint.
+- **R2** A user MUST be keyed by verified email; sign-in MUST be refused unless the email matches an allowlisted domain or address; a new user MUST have role none and status pending approval until an admin approves; two providers presenting the same verified email MUST resolve to one user.
+- **R3** Roles MUST be admin, member or viewer; a role MUST be derived from manifest-declared GitHub teams when a GitHub identity is linked, refreshed at least daily, and MUST be settable by an admin otherwise; every token use MUST check the current role and status.
+- **R4** Tokens MUST be interactive or automation; the CLI MUST authenticate with a token issued from the web client; automation tokens MUST NOT override readiness, administer, or mint tokens, and their writes MUST be logged as the owner via automation; tokens MUST be revoked when the owner's role drops or status changes.
+- **R5** Planner tokens MUST NOT be placed inside an agent sandbox; a bridge outside the sandbox MUST hold them.
 
 ## Consequences
-- Adding a provider is configuration plus a callback; Microsoft can follow if needed.
-- Email as identity trusts the provider's verification; an unverified email MUST be rejected at sign-in.
-- Milestone one has no per-item access control; a viewer sees every household in the instance.
+- Adding a provider is configuration plus a callback for OpenID Connect providers, or an adapter for OAuth-only ones; Microsoft can follow if needed.
+- Email as identity trusts the provider's verification; an unverified email is rejected at sign-in.
+- Milestone one has no per-item access control; an approved viewer sees every household in the instance.
+- An admin must approve each new user once, which is the whole of account management.
 
 ## Assumptions and invalidation triggers
 - *Assumes every team member has a Google or GitHub identity.* Trigger: a member with neither ⇒ add a provider, never a password.
-- *Assumes role by GitHub team is current enough.* Trigger: team membership changes faster than sign-ins refresh it ⇒ add a periodic refresh.
+- *Assumes daily role refresh is current enough.* Trigger: a removed team member retains access for longer than a day ⇒ refresh on every sign-in and shorten the interval.
 
 ## Later observations
 <!-- append-only, accepted records only; newest last -->
@@ -1048,7 +1084,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0004: Self-hosted, single-tenant, household as the only grouping
+# ADR-0004: The planner is self-hosted and single-tenant, with the household as the only grouping
 
 ## Status
 Proposed 2026-10-25.
@@ -1118,7 +1154,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0005: Bounded context per crate and the rules that keep contexts apart
+# ADR-0005: The planner keeps one bounded context per crate, consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
 
 ## Status
 Proposed 2026-10-25.
@@ -1143,7 +1179,8 @@ Daniel Thyselius carries Reeve's architecture rules into the planner as binding 
 - **R2** A cross-context port MUST be defined in the consuming crate and implemented in the supplying crate; adapters MUST be crate-private and reachable only through factories returning trait objects.
 - **R3** Tables MUST be owned by one context; foreign keys MUST NOT cross contexts; references MUST be by id or key.
 - **R4** Handlers MUST own time by passing a single timestamp into repositories; repositories MUST NOT read the clock.
-- **R5** CI MUST run the context-isolation lint; the activity log MUST be an append-only table, and the planner MUST NOT adopt event sourcing or asynchronous projections.
+- **R5** CI MUST run the context-isolation lint; the activity log and comments MUST be shared-kernel crates reached through ports, the activity log MUST be an append-only table, and the planner MUST NOT adopt event sourcing or asynchronous projections.
+- **R6** The household key sequence MUST be owned by the planning context so that creating an item is a single-context transaction.
 
 ## Consequences
 - More crates and more boilerplate than a single crate, accepted for parallelism.
