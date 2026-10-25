@@ -39,7 +39,7 @@ Research across agent-first trackers, orchestration loops, decision processes an
 
 ## Milestones
 
-**Milestone one: migrate off Jira.** The planning server, the SvelteKit client, the CLI, the Jira import, the record check, comments, PR links, backlog rank, the Lorekeeper planning skills, and the TUI last. Humans and automation acting for a human are the only actors. Build order: server and API, planning view and board, import, required decisions and the decisions view, Lorekeeper skills, TUI.
+**Milestone one: migrate off Jira.** The planning server, the CLI, the SvelteKit client, the Jira import, the record check, comments, PR links, backlog rank, and the Lorekeeper planning skills. Humans and automation acting for a human are the only actors. Build order: first the smallest complete flow on the CLI, hierarchy, criteria, required decisions, the record check, readiness and the gate, which is the acceptance test below; then the planning view and the board; then required decisions in the web and the decisions view; then the import; then the Lorekeeper skills. The TUI comes after cut-over and does not block it.
 
 **Milestone two: loops.** Agent principals, delegation, sessions, the executor contract, oversight views, budgets. The executor behind the contract is chosen then: the Reeve runner, Claude Code background agents, or a hosted sandbox. The interface sketch at the end of this document is what milestone one must not block.
 
@@ -69,7 +69,7 @@ An instance serves one team. Instance configuration holds the key prefix, the li
 
 **Comment.** On a story or a required decision: author, Markdown body, timestamp, optional external source id for imported comments. Plain and unthreaded. Comments never change state.
 
-**Readiness.** A story is ready when: every initiative and epic above it has its discovery mark and no open unsatisfied required decision; a story of kind story has an epic; every open required decision on the story itself is satisfied; it has at least one acceptance criterion; and no story that blocks it is unfinished, where unfinished means not done. A required decision is satisfied when its last check found the record accepted on the repository's default branch. Otherwise the reason is one of: no record yet; proposed, PR open; record not found; or the record's status, with "superseded by X, re-point" when that is the status. Closed required decisions are ignored. The computation returns the reasons when it fails. Cycles in blocks edges are not prevented; a cycle leaves every story in it blocked with a visible reason.
+**Readiness.** A story is ready when: every initiative and epic above it has its discovery mark and no open unsatisfied required decision; a story of kind story has an epic; every open required decision on the story itself is satisfied; it has at least one acceptance criterion; and no story that blocks it is unfinished, where unfinished means not done. A required decision is satisfied when its last check found the record accepted on the repository's default branch. Otherwise the reason is one of: no record yet; proposed, PR open; record not found; or the record's status, with "superseded by X, re-point" when that is the status. Closed required decisions are ignored; satisfied ones stay under check. The computation returns the reasons when it fails. Cycles in blocks edges are not prevented; a cycle leaves every story in it blocked with a visible reason.
 
 **Keys.** One sequence with the configured prefix, so an initiative, epic or story is `GRA-412` whatever its level, and the kind is shown beside the key. Imported Jira keys are kept as external references the API and CLI resolve. Artifact paths and branch names use the key.
 
@@ -79,15 +79,15 @@ An instance serves one team. Instance configuration holds the key prefix, the li
 
 ### Activity context
 
-One append-only table: actor, via (interactive or automation), entity (type and key), action, payload, timestamp. Feeds the activity feed, the override filter and the event stream. The planning and identity contexts write to it through a port.
+One append-only table: actor, via (interactive or automation), entity (type and key), action, payload, timestamp. Feeds the activity feed, the override filter and the event stream. The planning and identity contexts write to it through a port that takes the caller's database transaction, so a mutation and its activity entry commit together or not at all; the event stream publishes only after commit. An override reason can therefore never be lost, and a failed change never leaves an entry.
 
 ## Lifecycles and gates
 
 **Discovery** on initiatives and epics is a mark: the owner declares discovery complete, which stores the timestamp and person; clearing it is logged. Discovery is where humans and agents research and create required decisions. The planning view and the decisions view show every open required decision with its age, and the due date when one was set.
 
-**Delivery** on stories is free movement between todo, in progress, in review, testing and done, with two rules. Leaving todo for in progress, in review or testing requires ready, or an override by an interactive user with a written reason, logged; automation cannot override. Entering done requires a resolution, completed or dropped; dropped is the one ungated way out of todo. Moving a story to in progress sets the owner to the mover if it has none. The override filter on the activity feed is how the lead watches the gate; tightening it is a later decision backed by that count.
+**Delivery** on stories is free movement between todo, in progress, in review, testing and done, with two rules. Entering an active state, in progress, in review or testing, from todo or from done requires ready, or an override by an interactive user with a written reason, logged; automation cannot override. Entering done requires a resolution: completed from any active state, dropped from any state. Todo to done is therefore only ever dropped, and reopening a dropped story into active work passes the gate like any other start. Moving a story to in progress sets the owner to the mover if it has none. The override filter on the activity feed is how the lead watches the gate; tightening it is a later decision backed by that count.
 
-**Required decisions** are open until their record is accepted, or until a person closes them with a reason. Setting or changing the record reference resets the check result and runs the check for that one decision immediately. The record's own lifecycle, proposed, accepted, rejected, superseded, lives in the file and in Lorekeeper; the planner only reads it.
+**Required decisions** carry two separate facts: whether a person has closed them with a reason, and whether the last check found their record accepted. Closed ones are ignored by readiness and by the check. Every other one is checked on every run, including those currently satisfied, so a record that is later superseded or rejected unsatisfies the decisions that depend on it. Setting or changing the record reference resets the check result and runs the check for that one decision immediately. The record's own lifecycle, proposed, accepted, rejected, superseded, lives in the file and in Lorekeeper; the planner only reads it.
 
 **Intake.** A story of kind story without an epic is untriaged and appears in the triage filter on the board. Triage applies the placement tree: broken behaviour becomes a bug under the owning epic or none; a product change finds the covering epic, else the covering initiative and a new epic, else a new initiative in the last bucket before Won't do; internal work becomes a chore. In milestone one the triage skill proposes and a person confirms by setting the epic.
 
@@ -105,7 +105,7 @@ One append-only table: actor, via (interactive or automation), entity (type and 
 
 **Identity.** Google sign-in through OpenID Connect. Sign-in is refused unless the verified email matches a configured domain or address. Emails listed as admins in configuration are admins; everyone else is a member. An admin can disable a user, which revokes their tokens. Every authenticated request checks the current role and disabled flag. Tokens are interactive or automation: an interactive token comes from `reeve auth login`; an automation token is issued from the user's token page and passed to the CLI through an environment variable, which is how Lorekeeper skills run. Automation tokens cannot override the gate or issue tokens, and their writes are logged as the owner via automation. GitHub sign-in is added when something needs it.
 
-**CLI.** `reeve` with subcommand groups `initiative`, `epic`, `story`, `decision`, `comment`, `auth`, `import`, and `tui`. Every command supports `--json`. A command either succeeds, is refused with reasons, or fails, and the exit status says which. Create commands used by skills are idempotent on the key or title they are given.
+**CLI.** `reeve` with subcommand groups `initiative`, `epic`, `story`, `decision`, `comment`, `auth`, `import`, and `tui`. Every command supports `--json`. A command either succeeds, is refused with reasons, or fails, and the exit status says which. Create commands accept a caller-supplied idempotency key, so a skill that retries gets the item it already created; titles are ordinary editable data and are never used for deduplication.
 
 ## Lorekeeper integration
 
@@ -118,7 +118,7 @@ One append-only table: actor, via (interactive or automation), entity (type and 
 
 Recording-decisions gains one step: when it drafts a record for a required decision, it runs `reeve decision link <id> --record <record-id> --repo <name> --path <path> --pr <url>` from the checkout where the path is known. Its triage is changed so that process, tooling and product decisions are drafted as records rather than declined. The triage skill runs the placement tree against `reeve story ls --untriaged --json` and proposes placements.
 
-**Record check.** `reeve decision check` reads, for every open required decision with a reference, the file at its path on the repository's default branch and parses `status` and `superseded_by` from front matter. It runs every ten minutes, on every link, and on demand. A file that cannot be read yields not found, or "proposed, PR open" when a PR url is set. The few legacy records without front matter get front matter once.
+**Record check.** `reeve decision check` reads, for every required decision that has a reference and is not closed, the file at its path on the repository's default branch and parses `status` and `superseded_by` from front matter. It runs every ten minutes, on every link, and on demand. A file that cannot be read yields not found, or "proposed, PR open" when a PR url is set. The few legacy records without front matter get front matter once.
 
 **Context packaging.** `reeve story context <key>` emits one bundle, as Markdown or JSON: the initiative brief, the epic brief, every required decision with its check result and record path, the criteria, the blockers, and the comments.
 
@@ -140,7 +140,7 @@ Recording-decisions gains one step: when it drafts a record for a required decis
 - Epics → epics, orphaned and flagged when no idea links them.
 - Stories, bugs, tasks → stories with kind. Columns map one to one; Won't Do and Duplicate → done, dropped. Assignee → owner by email. Labels preserved. Checklists and "Acceptance criteria" sections in descriptions → criteria. Jira key → external reference. Comments → comments with original author and date, keyed by Jira comment id.
 - Grandfathering: stories in progress, in review or testing at import, and the epics and initiatives above them, get the discovery mark with a legacy label, and their overrides are excluded from the count.
-- Rollback within two weeks is re-enabling Jira writes and abandoning the instance.
+- Rollback is possible on cut-over day only, by re-enabling Jira writes before anyone has written to Reeve. From the next day the team fixes forward. `reeve export` writes the whole instance as JSON and is the backup of record alongside the database backups.
 - Not imported: Confluence, sprints, attachments beyond a link.
 
 After import, most of the backlog is blocked for want of criteria or discovery. That is the true baseline, and refining-epic is the fastest way to work it down.
@@ -268,7 +268,7 @@ Daniel Thyselius keeps the planner in a fresh repository named `reeve` and renam
 ---
 id: kb/ADR-0002
 title: "ADR-0002: Work is initiative, epic and story under one key sequence, with a discovery mark above and five delivery states under two rules below"
-description: "Reeve models work as initiative → epic → story with kinds story, bug and chore, one key sequence per instance, a discovery-complete mark on initiatives and epics, and five freely movable delivery states constrained only by a readiness rule on leaving todo and a resolution rule on entering done, because three levels with one artifact each is the simplest model that forces product planning upfront while keeping design just-in-time."
+description: "Reeve models work as initiative → epic → story with kinds story, bug and chore, one key sequence per instance, a discovery-complete mark on initiatives and epics, and five freely movable delivery states constrained only by a readiness rule on entering active work and a resolution rule on entering done, because three levels with one artifact each is the simplest model that forces product planning upfront while keeping design just-in-time."
 tags: [adr, reeve, domain, hierarchy, vocabulary, keys, delivery]
 status: proposed
 date: 2026-10-25
@@ -312,7 +312,7 @@ Daniel Thyselius models work as initiative, epic and story with kinds story, bug
 - **R1** A story MUST be sized so that one person or one agent session can finish it; it MAY link to any number of pull requests; the planner MUST NOT introduce a fourth hierarchy level.
 - **R2** Stories MUST carry a kind of story, bug or chore; a story of kind story without an epic MUST be treated as untriaged.
 - **R3** Discovery on initiatives and epics MUST be a mark holding timestamp and person; clearing it MUST be logged; no other refinement state MAY be stored.
-- **R4** Delivery MUST be todo, in progress, in review, testing, done, freely movable, with exactly two rules: leaving todo for an active state MUST satisfy readiness or an interactive override with a written reason, and entering done MUST carry a resolution of completed or dropped; pull-request status MUST NOT move a story.
+- **R4** Delivery MUST be todo, in progress, in review, testing, done, freely movable, with exactly two rules: entering an active state from todo or from done MUST satisfy readiness or an interactive override with a written reason, and entering done MUST carry a resolution, completed only from an active state and dropped from any state; pull-request status MUST NOT move a story.
 - **R5** Keys MUST be `<PREFIX>-<n>` from one monotonic sequence per instance, MUST NOT change when an item moves level or parent, and MUST be used in artifact paths and branch names; imported Jira keys MUST be kept as external references.
 - **R6** The vocabulary initiative, epic, story and decision MUST be used across API, database, CLI and UI.
 
@@ -335,7 +335,7 @@ Daniel Thyselius models work as initiative, epic and story with kinds story, bug
 
 ### kb/ADR-0003
 
-**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except dropping, with an interactive-only override
+**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates every entry into active work, with an interactive-only override
 
 **Tier:** high
 
@@ -344,8 +344,8 @@ Daniel Thyselius models work as initiative, epic and story with kinds story, bug
 ```markdown
 ---
 id: kb/ADR-0003
-title: "ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except dropping, with an interactive-only override"
-description: "A story's readiness is computed on read from its ancestors' discovery marks and required decisions, its own required decisions, its acceptance criteria and its unfinished blockers, never stored, and it gates leaving todo for any active state with a written override for interactive users only, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
+title: "ADR-0003: Readiness is computed from facts, never stored, and gates every entry into active work, with an interactive-only override"
+description: "A story's readiness is computed on read from its ancestors' discovery marks and required decisions, its own required decisions, its acceptance criteria and its unfinished blockers, never stored, and it gates entering any active state from todo or done with a written override for interactive users only, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
 tags: [adr, reeve, readiness, gate, domain]
 status: proposed
 date: 2026-10-25
@@ -364,7 +364,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except dropping, with an interactive-only override
+# ADR-0003: Readiness is computed from facts, never stored, and gates every entry into active work, with an interactive-only override
 
 ## Status
 Proposed 2026-10-25.
@@ -383,11 +383,11 @@ The team's initiative template has a section for decisions required before build
 - **Computed readiness, loose gate on this story's facts and its ancestors, interactive override with a written reason, no automation or agent override** — enforces the gate where it is cheap and measures bypasses.
 
 ## Decision
-Daniel Thyselius computes a story's readiness on every read as: every initiative and epic above it has its discovery mark and no open unsatisfied required decision, a story of kind story has an epic, every open required decision on the story is satisfied, it has at least one acceptance criterion, and no story that blocks it is unfinished; the computation returns reasons on failure, gates leaving todo for any active state, allows an override only from an interactive token with a written reason, and allows none for automation or agents, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
+Daniel Thyselius computes a story's readiness on every read as: every initiative and epic above it has its discovery mark and no open unsatisfied required decision, a story of kind story has an epic, every open required decision on the story is satisfied, it has at least one acceptance criterion, and no story that blocks it is unfinished; the computation returns reasons on failure, gates entering any active state from todo or done, allows an override only from an interactive token with a written reason, and allows none for automation or agents, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
 
 - **R1** The planner MUST NOT persist a readiness value; every readiness answer MUST be derived from current facts and MUST include the failing reasons; no named maturity level other than ready MAY be exposed on stories.
-- **R2** An interactive user MAY move a non-ready story out of todo into an active state only by supplying a written reason, which MUST be written to the activity log; automation tokens and agent principals MUST NOT override.
-- **R3** A required decision MUST be satisfied only when its last check found the referenced record accepted on the repository's default branch; no record, proposed with PR open, not found, and any other status MUST each yield a distinct reason; a closed required decision MUST be ignored.
+- **R2** An interactive user MAY move a non-ready story from todo or done into an active state only by supplying a written reason, which MUST be written to the activity log; automation tokens and agent principals MUST NOT override.
+- **R3** A required decision MUST be satisfied only when its last check found the referenced record accepted on the repository's default branch; no record, proposed with PR open, not found, and any other status MUST each yield a distinct reason; a closed required decision MUST be ignored, and a satisfied one MUST stay under check so a later supersession unsatisfies it.
 - **R4** A story of kind story without an epic MUST be not ready with reason untriaged; bugs and chores MAY be ready without an epic. Unfinished MUST mean delivery not done. Cycles in blocks edges MUST NOT be prevented; they MUST leave every story in the cycle blocked with a visible reason.
 
 ## Consequences
@@ -460,9 +460,9 @@ The team keeps architecture decision records beside the code they govern and sha
 Daniel Thyselius keeps every decision record in its repository or knowledge-base home, tracks the decisions an item requires as planner-owned objects with a decider and an optional due date, links each to a record by repository, path and id written only on the planner side, and runs a check that reads the file's front-matter status on the default branch, because readiness needs one fact per required decision and the versioned file must remain the only truth and must not be edited to add links.
 
 - **R1** The planner MUST NOT edit, accept, reject or cache a record; the only record data it stores is the check result and the reference.
-- **R2** A required decision MUST be a planner-owned object with title and decider, an optional due date, attached to an initiative, epic or story, optionally referencing one record by repository, path and id and one PR url; closing it MUST be a logged action with a reason; a required decision MUST represent a consequential choice that blocks work, not a clarification.
+- **R2** A required decision MUST be a planner-owned object with title and decider, an optional due date, attached to an initiative, epic or story, optionally referencing one record by repository, path and id and one PR url; closed-by-a-person and satisfied-by-the-record MUST be two separate facts, and closing MUST be a logged action with a reason; a required decision MUST represent a consequential choice that blocks work, not a clarification.
 - **R3** Setting or changing a reference MUST reset the check result and trigger an immediate check of that required decision; no item keys MAY be written into records.
-- **R4** The check MUST read each referenced file on the repository's default branch and parse `status` and `superseded_by` from front matter, MUST report not found when the file cannot be read and "proposed, PR open" when a PR url is set, and MUST NOT walk ADR directories or depend on Lorekeeper.
+- **R4** The check MUST cover every required decision that has a reference and is not closed, including satisfied ones, MUST read each referenced file on the repository's default branch and parse `status` and `superseded_by` from front matter, MUST report not found when the file cannot be read and "proposed, PR open" when a PR url is set, and MUST NOT walk ADR directories or depend on Lorekeeper.
 - **R5** Broad product reasoning MUST live in the initiative brief; a hard-to-reverse non-architectural choice MUST be a decision record, and Lorekeeper's record triage MUST draft process, tooling and product records rather than decline them; no separate RFC artifact MAY be introduced.
 
 ## Consequences
@@ -535,7 +535,7 @@ Daniel Thyselius makes Lorekeeper's planning skills an optional capability that 
 
 - **R1** Skills MUST detect the planner by `reeve --version` reporting `reeve-planner` and by a successful login; absent either, every skill MUST behave as before; no manifest change MAY be required.
 - **R2** The runner's CLI MUST be renamed so it never answers to `reeve`.
-- **R3** Every `reeve` command used by a skill MUST support `--json` and MUST exit with a distinct status for success, refusal and failure; create commands used by skills MUST be idempotent on the key or title given.
+- **R3** Every `reeve` command used by a skill MUST support `--json` and MUST exit with a distinct status for success, refusal and failure; create commands MUST accept a caller-supplied idempotency key and MUST NOT deduplicate on titles.
 - **R4** Initiative and epic planning MUST be separate skills that produce no spec; the brainstorming skill's hard gate and checklist MUST NOT be weakened; recording-decisions MUST link a drafted record to its required decision when the planner is present.
 - **R5** Reeve MUST NOT require Lorekeeper for any planning function; an MCP server, if ever added, MUST wrap the same commands.
 
@@ -837,7 +837,7 @@ Daniel Thyselius ships the planner only as a self-hosted instance serving one te
 
 ### reeve/ADR-0005
 
-**Title:** ADR-0005: The planner has three bounded contexts, planning, identity and activity, each its own crate, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
+**Title:** ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
 
 **Tier:** high
 
@@ -846,7 +846,7 @@ Daniel Thyselius ships the planner only as a self-hosted instance serving one te
 ```markdown
 ---
 id: reeve/ADR-0005
-title: "ADR-0005: The planner has three bounded contexts, planning, identity and activity, each its own crate, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time"
+title: "ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time"
 description: "The planner carries Reeve's architecture rules forward as a recorded decision with exactly three bounded contexts, planning, identity and activity, one crate each: ports defined by the consuming crate, adapters private behind factories, a CI isolation lint, no foreign keys across contexts and the handler owning the clock, because these rules exist so that parallel agents can work the codebase without colliding and more contexts than that were found to be ceremony."
 tags: [adr, reeve, architecture, crates, ports]
 status: proposed
@@ -866,7 +866,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0005: The planner has three bounded contexts, planning, identity and activity, each its own crate, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
+# ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
 
 ## Status
 Proposed 2026-10-25.
@@ -887,11 +887,11 @@ Reeve's domain-driven refactor was motivated by a concrete failure: a single lar
 ## Decision
 Daniel Thyselius carries Reeve's architecture rules into the planner with exactly three bounded contexts, planning, identity and activity, because the rules exist to let several agents work the codebase in parallel, and three contexts are the fewest that keep identity and the audit log out of the planning crate.
 
-- **R1** The planning, identity and activity contexts MUST each be one crate; the server MUST be the only composition root; a new context MUST NOT be added without superseding this record.
+- **R1** Bounded contexts MUST each be one crate and the server MUST be the only composition root; planning, identity and activity are the starting set, and adding a context MUST be recorded as a later observation on this record rather than a supersession.
 - **R2** A cross-context port MUST be defined in the consuming crate and implemented in the supplying crate; adapters MUST be crate-private and reachable only through factories returning trait objects.
 - **R3** Tables MUST be owned by one context; foreign keys MUST NOT cross contexts; references MUST be by id or key; initiatives, epics, stories, required decisions and comments MUST all live in the planning context, and the key sequence MUST be owned there.
 - **R4** Handlers MUST own time by passing a single timestamp into repositories; repositories MUST NOT read the clock.
-- **R5** CI MUST run the context-isolation lint; the activity log MUST be an append-only table written through a port, and the planner MUST NOT adopt event sourcing or asynchronous projections.
+- **R5** CI MUST run the context-isolation lint; the activity log MUST be an append-only table written through a port that takes the caller's transaction so that a mutation and its entry commit together, events MUST be published only after commit, and the planner MUST NOT adopt event sourcing or asynchronous projections.
 
 ## Consequences
 - The planning crate is the large one; modules inside it are organised by aggregate so that agents still work separate files.
@@ -899,7 +899,7 @@ Daniel Thyselius carries Reeve's architecture rules into the planner with exactl
 - Within the planning context, foreign keys between its tables are permitted; the rule concerns context boundaries.
 
 ## Assumptions and invalidation triggers
-- *Assumes three contexts stay enough.* Trigger: a second deployable or a second team needs a boundary inside planning ⇒ supersede with the split named.
+- *Assumes the dependency rules, not the crate count, are what protect correctness.* Trigger: a boundary rule itself needs to change ⇒ supersede; a new context is an observation.
 
 ## Later observations
 <!-- append-only, accepted records only; newest last -->
