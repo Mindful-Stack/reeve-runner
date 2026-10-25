@@ -91,7 +91,7 @@ One per story and executor attempt, a sub-aggregate of the story: state (pending
 
 **Discovery** on initiatives and epics is a mark, not a machine: the owner declares discovery complete, which stores the timestamp and person; clearing the mark reopens discovery and is logged. Discovery is where humans and agents research and create required decisions, each with a decider and a due date; a record is linked later. Overdue open required decisions surface on the strategic planning view and the decisions view.
 
-**Delivery** on stories is free movement between todo, in progress, in review, testing and done, with two rules. Entering in progress from todo requires ready, or an interactive override with a reason chosen from a short pick-list plus free text, written to the activity log; automation tokens and agent principals cannot override, and an agent principal may not be delegated a story that is not ready. Entering done requires a resolution: completed is allowed only from testing, won't do and duplicate from any state. The lead owns the weekly override count, which is a first-class query so the gate can be tightened on evidence.
+**Delivery** on stories is free movement between todo, in progress, in review, testing and done, with two rules. Leaving todo for in progress, in review or testing requires ready, or an interactive override with a reason chosen from a short pick-list plus free text, written to the activity log; automation tokens and agent principals cannot override, and an agent principal may not be delegated a story that is not ready. Entering done requires a resolution: completed is allowed only from testing, won't do and duplicate from any state including todo, and those two are the only ungated ways out of todo. The lead owns the weekly override count, which is a first-class query so the gate can be tightened on evidence.
 
 **Session** (milestone two): pending, active, awaiting input, complete, error, stale. Stale means the lease expired without heartbeat; a stale session is not live and frees the claim. Complete atomically moves delivery to in review. A live session carries the current epoch; writes with an older epoch are refused. The stop flag belongs to the session: it is set when delivery leaves in progress or a user asks, and a new claim starts a new session with it clear. A user's "stop and undelegate" also clears the delegate so nothing reclaims automatically.
 
@@ -99,7 +99,7 @@ One per story and executor attempt, a sub-aggregate of the story: state (pending
 
 **Intake.** A story of kind story without an epic is untriaged and appears in the triage inbox. Triage applies the placement tree: broken behaviour becomes a bug under the owning epic or none; a product change finds the covering epic, else the covering initiative and a new epic, else a new initiative in Later; internal work becomes a chore. Triage is a sequence of idempotent CLI commands (create initiative, create epic, set the story's epic) so a human can confirm each. In milestone one the triage skill proposes and a human confirms.
 
-**PR linking.** A GitHub webhook receives pull-request events; the branch name carries the story key (`<key>-<attempt>`, attempt 1 for humans). The PR is linked to the story with its status. Linking never starts a story: a PR on a todo story is linked and flagged on the drawer. Open moves in progress to in review. Merged moves in review to testing only when no linked PR on the story is still open or draft. Closed without merge changes nothing. A linked PR is never deleted.
+**PR linking.** A GitHub webhook receives pull-request events; the branch name carries the story key (`<key>-<attempt>`, attempt 1 for humans). The PR is linked to the story with its status. PR status is information, not control: the only automatic move is that a PR opening on a story in progress moves it to in review. Linking never starts a story, and a PR on a todo story is linked and flagged on the drawer. Merging moves nothing, because the planner cannot know the complete set of PRs a story needs; a human, or in milestone two the executor's complete transition, moves the story on. A linked PR is never deleted.
 
 ## Topology
 
@@ -111,7 +111,7 @@ One per story and executor attempt, a sub-aggregate of the story: state (pending
 
 **Tenancy.** Self-hosted, single-tenant. No organisation column. Household is the only grouping; one instance can hold several households.
 
-**Identity.** Google through OpenID Connect and GitHub through an OAuth adapter that fetches verified emails from GitHub's email endpoint; both resolve to a user keyed by verified email. Sign-in is refused unless the email matches the allowlist. A new user has role none and status pending approval until an admin approves and assigns a role; roles are admin, member, viewer and are set only by admins. Disabling a user revokes their tokens. Tokens are interactive or automation; automation tokens cannot override, administer or mint tokens, and their writes are logged as the owner via automation. The first admin is created at deployment with `reeve-server bootstrap-admin <email>`, which allowlists the email with role admin so the first sign-in is active. A viewer sees every household in the instance; per-item access control is out of scope.
+**Identity.** Google through OpenID Connect and GitHub through an OAuth adapter that fetches verified emails from GitHub's email endpoint; both resolve to a user keyed by verified email. Sign-in is refused unless the email matches the allowlist. A new user has role none and status pending approval until an admin approves and assigns a role; roles are admin, member, viewer and are set only by admins. Every authenticated request checks the owner's current role and status, so a demotion or a disabling takes effect on the next request; disabling a user also revokes their tokens. Tokens are interactive or automation; automation tokens cannot override, administer or mint tokens, and their writes are logged as the owner via automation. The first admin is created at deployment with `reeve-server bootstrap-admin <email>`, which allowlists the email with role admin so the first sign-in is active. A viewer sees every household in the instance; per-item access control is out of scope.
 
 **Keys.** One sequence per household with a short prefix, for example `GRA-412` for any level; the kind is shown beside the key. Imported Jira keys are external references that the API and CLI resolve. Artifact paths use the key; branch names use `<key>-<attempt>`.
 
@@ -128,7 +128,7 @@ One per story and executor attempt, a sub-aggregate of the story: state (pending
 
 Lorekeeper's record triage is changed so that process, tooling and product decisions are drafted as records rather than declined as "no code behind it", with an optional `kind` front-matter field.
 
-**Linking a record.** When recording-decisions drafts a record for a required decision, it runs `reeve decision link <id> --record <record-id> --repo <name> --path <path> --pr <url>` from the household checkout, where the path is known. The planner stores the reference; no item keys are written into records, so accepted records stay locked.
+**Linking a record.** When recording-decisions drafts a record for a required decision, it runs `reeve decision link <id> --record <record-id> --repo <name> --path <path> --pr <url>` from the household checkout, where the path is known. The planner stores the reference, resets the check result to unchecked, and runs the check for that one required decision immediately; re-pointing an existing reference does the same, so a previous acceptance never carries over to a new record. No item keys are written into records, so accepted records stay locked.
 
 **Record check.** `reeve decision check` is one scheduled job, also runnable by hand, that for every open required decision with a reference reads the file at its path on the repository's default branch, parses the front-matter status and `superseded_by`, tolerating legacy records without front matter by reading their status line, and stores the result with the commit. For accepted records it also caches the body for the decisions view. It never walks ADR homes and does not use Lorekeeper. A file that cannot be read yields not found.
 
@@ -182,7 +182,7 @@ After import, initiatives and epics without in-flight work have no discovery mar
 
 1. Domain tests, pure and fast: readiness computation including every check result, progress with every resolution, cycle rejection, the delivery rules, placement rules, front-matter and legacy status parsing against copies of real records from the Grantigo knowledge base and the file-data-extraction-service.
 2. Repository tests against a real PostgreSQL started per test run, one set per context.
-3. API tests through the axum router with a test database, including the GitHub webhook, the PR-set rule and token-kind enforcement; an OpenAPI snapshot so a wire change is a deliberate diff; generated client types checked in CI.
+3. API tests through the axum router with a test database, including the GitHub webhook, the todo-exit gate on every target state, per-request role checks and token-kind enforcement; an OpenAPI snapshot so a wire change is a deliberate diff; generated client types checked in CI.
 4. CLI end-to-end against a running server with a recorded Jira export as the import fixture and a fixture household with ADR files as the check fixture.
 5. Web: a Playwright smoke across the strategic planning view, the decisions view and the board.
 
@@ -372,7 +372,7 @@ Daniel Thyselius models work as initiative, epic and story, with a story being w
 
 ### kb/ADR-0003
 
-**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates only entry into in progress with an interactive-only override
+**Title:** ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except cancellation, with an interactive-only override
 
 **Tier:** high
 
@@ -381,8 +381,8 @@ Daniel Thyselius models work as initiative, epic and story, with a story being w
 ```markdown
 ---
 id: kb/ADR-0003
-title: "ADR-0003: Readiness is computed from facts, never stored, and gates only entry into in progress with an interactive-only override"
-description: "A story's readiness is computed on read from its epic's and initiative's required decisions, its own required decisions, its acceptance criteria and its open blockers, never stored, and it gates entering in progress from todo with a reasoned override for interactive users only, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
+title: "ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except cancellation, with an interactive-only override"
+description: "A story's readiness is computed on read from its epic's and initiative's required decisions, its own required decisions, its acceptance criteria and its open blockers, never stored, and it gates every exit from todo except cancellation with a reasoned override for interactive users only, because a stored flag rots and an unmeasured gate cannot be tightened honestly."
 tags: [adr, reeve, readiness, gate, domain]
 status: proposed
 date: 2026-10-25
@@ -401,7 +401,7 @@ implements: []
 rfc:
 ---
 
-# ADR-0003: Readiness is computed from facts, never stored, and gates only entry into in progress with an interactive-only override
+# ADR-0003: Readiness is computed from facts, never stored, and gates every exit from todo except cancellation, with an interactive-only override
 
 ## Status
 Proposed 2026-10-25.
@@ -421,10 +421,10 @@ The team's initiative template has a section for decisions required before build
 - **Computed readiness, loose gate on this story's facts, interactive override with reason, no automation or agent override** — enforces the gate where it is cheap and measures bypasses.
 
 ## Decision
-Daniel Thyselius computes a story's readiness on every read as: its epic is decided if it has one, a story of kind story has an epic, every open required decision attached to the story is satisfied, it has acceptance criteria, and no blocking story is open; the computation returns reasons on failure, gates entering in progress from todo, allows an override only from an interactive token with a recorded reason, and allows none for automation or agent principals, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
+Daniel Thyselius computes a story's readiness on every read as: its epic is decided if it has one, a story of kind story has an epic, every open required decision attached to the story is satisfied, it has acceptance criteria, and no blocking story is open; the computation returns reasons on failure, gates leaving todo for any state other than a cancelled done, allows an override only from an interactive token with a recorded reason, and allows none for automation or agent principals, because a computed value cannot rot and a recorded override lets the gate be tightened on evidence.
 
 - **R1** The planner MUST NOT persist a readiness value; every readiness answer MUST be derived from current facts and MUST include the failing reasons.
-- **R2** An interactive user MAY move a non-ready story from todo to in progress only by supplying a reason code and text, which MUST be written to the activity log; automation tokens and agent principals MUST NOT override.
+- **R2** An interactive user MAY move a non-ready story out of todo into in progress, in review or testing only by supplying a reason code and text, which MUST be written to the activity log; automation tokens and agent principals MUST NOT override.
 - **R3** Epic decided MUST mean discovery marked complete, its initiative decided if it has one, and every open required decision satisfied; epic refined MUST additionally require at least one story and criteria on every story; initiative decided MUST mean discovery marked complete and every open required decision satisfied.
 - **R4** A required decision MUST be satisfied only when its last check found the referenced record accepted on the repository's default branch; no record, record not found, and any other status MUST each yield a distinct reason; a closed required decision MUST be ignored.
 - **R5** A story of kind story without an epic MUST be not ready with reason untriaged; bugs and chores MAY be ready without an epic. Open MUST mean delivery not done.
@@ -457,7 +457,7 @@ Daniel Thyselius computes a story's readiness on every read as: its epic is deci
 ---
 id: kb/ADR-0004
 title: "ADR-0004: Discovery is a mark, delivery is free movement under two rules, sessions carry their own state and stop flag, and pull requests are linked records rather than a state"
-description: "Reeve keeps discovery as a completion mark on initiatives and epics, delivery as free movement between five states with a readiness rule on entering in progress and a resolution rule on entering done, and sessions as a separate machine with their own stop flag, with PRs as linked records, because one column enum was only honest when the agent was the sole actor and an explicit edge list is a liability for a small team."
+description: "Reeve keeps discovery as a completion mark on initiatives and epics, delivery as free movement between five states with a readiness rule on leaving todo and a resolution rule on entering done, and sessions as a separate machine with their own stop flag, with PRs as linked records, because one column enum was only honest when the agent was the sole actor and an explicit edge list is a liability for a small team."
 tags: [adr, reeve, state-machine, domain, protocol]
 status: proposed
 date: 2026-10-25
@@ -499,10 +499,10 @@ Reeve's single column enum, shared by wire, database and CLI, was a deliberate s
 Daniel Thyselius models discovery as a completion mark, delivery as free movement between five states constrained by a readiness rule and a resolution rule, and sessions as a separate machine carrying their own stop flag, and represents pull requests as linked records on a story, because the gate and the resolution are the only transitions that need a rule and every other edge list was found incomplete.
 
 - **R1** Discovery MUST be a mark holding timestamp and person; clearing it MUST be logged; decided and refined MUST be derived.
-- **R2** Delivery MUST be todo, in progress, in review, testing, done, freely movable, with exactly two rules: entering in progress from todo MUST satisfy readiness or an interactive override, and entering done MUST carry a resolution of completed, won't do or duplicate, where completed MUST only be entered from testing; no other delivery state or rule MAY be added without superseding this record.
+- **R2** Delivery MUST be todo, in progress, in review, testing, done, freely movable, with exactly two rules: leaving todo for in progress, in review or testing MUST satisfy readiness or an interactive override, and entering done MUST carry a resolution of completed, won't do or duplicate, where completed MUST only be entered from testing and won't do or duplicate are the only ungated exits from todo; no other delivery state or rule MAY be added without superseding this record.
 - **R3** Session state and activities MUST be written only by executors through the executor contract, except a user's response activity answering an elicitation; the planning context MUST NOT derive delivery from session internals.
 - **R4** The stop flag MUST belong to the session; delivery leaving in progress or a user request MUST set it; a new claim MUST start a session with it clear; a session's complete transition MUST atomically move delivery to in review.
-- **R5** A PR MUST be a linked record with status draft, open, merged or closed; "shipped" MUST NOT be a delivery state; a linked PR MUST NOT be deleted; linking MUST NOT move a story out of todo.
+- **R5** A PR MUST be a linked record with status draft, open, merged or closed; "shipped" MUST NOT be a delivery state; a linked PR MUST NOT be deleted; linking MUST NOT move a story out of todo; the only automatic delivery move from PR events MUST be in progress to in review on a PR opening, and merging MUST move nothing.
 
 ## Consequences
 - A story can be dragged backwards or forwards without ceremony, as in Jira; the two rules are the whole policy and are easy to teach.
@@ -576,7 +576,7 @@ Daniel Thyselius keeps every decision record in its repository or knowledge-base
 
 - **R1** The planner MUST NOT edit, accept or reject a record; the only record data it stores is the check result, the commit it was read at, and a cached body for accepted records, all written only by the check.
 - **R2** A required decision MUST be a planner-owned object with title, decider and due date, attached to an initiative, epic or story, optionally referencing one record by repository, path and id and one PR url; closing it MUST be a logged human action with a reason.
-- **R3** The link MUST be stored in the planner only; no item keys MAY be written into records; `rfc` MUST remain a tolerated deprecated key in Lorekeeper's template.
+- **R3** Setting or changing a reference MUST reset the check result to unchecked and trigger an immediate check of that required decision, so a previous acceptance never carries over; the link MUST be stored in the planner only; no item keys MAY be written into records; `rfc` MUST remain a tolerated deprecated key in Lorekeeper's template.
 - **R4** The check MUST read each referenced file on the repository's default branch, MUST parse status and `superseded_by` from front matter and the status line of legacy records, MUST report not found when the file cannot be read, and MUST NOT walk ADR homes or depend on Lorekeeper.
 - **R5** Broad product reasoning MUST live in the initiative brief; a hard-to-reverse non-architectural choice MUST be a decision record, and Lorekeeper's record triage MUST draft process, tooling and product records rather than decline them; no separate RFC artifact MAY be introduced.
 
@@ -1017,7 +1017,7 @@ Daniel Thyselius authenticates humans through Google OpenID Connect and a GitHub
 
 - **R1** The planner MUST NOT store password hashes or implement password reset; sign-in MUST go through Google OpenID Connect or the GitHub OAuth adapter, and the GitHub adapter MUST take verified emails from GitHub's email endpoint.
 - **R2** A user MUST be keyed by verified email; sign-in MUST be refused unless the email matches an allowlisted domain or address; a new user MUST have role none and status pending approval until an admin approves; two providers presenting the same verified email MUST resolve to one user.
-- **R3** Roles MUST be admin, member or viewer and MUST be set only by an admin; disabling a user MUST revoke every token they own; the first admin MUST be created by `reeve-server bootstrap-admin <email>` at deployment, which allowlists the email with role admin.
+- **R3** Roles MUST be admin, member or viewer and MUST be set only by an admin; every authenticated request MUST check the owner's current role and status; disabling a user MUST revoke every token they own; the first admin MUST be created by `reeve-server bootstrap-admin <email>` at deployment, which allowlists the email with role admin.
 - **R4** Tokens MUST be interactive or automation; the CLI MUST authenticate with a token issued from the web client; automation tokens MUST NOT override readiness, administer, or mint tokens, and their writes MUST be logged as the owner via automation.
 - **R5** Planner tokens MUST NOT be placed inside an agent sandbox; a bridge outside the sandbox MUST hold them.
 
