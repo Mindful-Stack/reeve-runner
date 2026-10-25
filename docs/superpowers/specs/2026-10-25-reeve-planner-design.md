@@ -48,7 +48,7 @@ Research across agent-first trackers, orchestration loops, decision processes an
 - `reeve` (new): the planner. Server, web client, CLI and TUI, OpenAPI document. Seeds carried over from the current repo: the card crate as the start of the planning crate, the protocol crate's type discipline, the architecture rules, the lore knowledge base, and the CLI and TUI crate's event, action and render structure. Binaries: `reeve-server` and `reeve`.
 - `reeve-runner` (the current repository, renamed): untouched until milestone two, when it is gutted into an executor or retired. Its CLI binary is renamed from `reeve` to `reeve-runner` so the two can coexist on one machine; its daemon stays `reeved`.
 - `reeve --version` prints `reeve-planner <semver>`, which is how Lorekeeper tells the planner from anything else on the path.
-- Both repositories are members of one Witan household. The existing `reeve-household` directory becomes that household once its manifest is migrated; its knowledge base holds the shared ADR home.
+- The planner repository is its own Witan household: `household.json` names the runner as a sibling, and the inline `lore/` knowledge base holds the one ADR home at `lore/knowledge/adrs/`, where every record lives under the `kb/` prefix. Lorekeeper's homes resolver does not treat a meta-repo's own `docs/adr` as a home, so a one-repo household has exactly one home and the repo-versus-shared distinction collapses.
 - The runner never links a planner crate. Coupling is the public HTTP API and the CLI only, and every CLI read has an HTTP endpoint.
 
 ## Domain model
@@ -157,10 +157,10 @@ A response is ok, refused with reasons, or an error with a code; writes carry a 
 
 | Existing Reeve choice | Verdict |
 |---|---|
-| Bounded context per crate, consumer-defined ports, private adapters, isolation lint | Keep, with three contexts (reeve/ADR-0005) |
-| SQLite through rusqlite | Drop; PostgreSQL through sqlx (reeve/ADR-0002) |
-| No cross-context foreign keys, handler owns the clock | Keep (reeve/ADR-0005) |
-| Unix-socket JSON lines protocol | Drop; HTTP API with generated OpenAPI (reeve/ADR-0001) |
+| Bounded context per crate, consumer-defined ports, private adapters, isolation lint | Keep, with three contexts (kb/ADR-0010) |
+| SQLite through rusqlite | Drop; PostgreSQL through sqlx (kb/ADR-0007) |
+| No cross-context foreign keys, handler owns the clock | Keep (kb/ADR-0010) |
+| Unix-socket JSON lines protocol | Drop; HTTP API with generated OpenAPI (kb/ADR-0006) |
 | Per-card socket as agent identity; one story, one devcontainer; reference clones; no credentials in the container | Keep in the runner, untouched until milestone two |
 | Column transition runs the workspace lifecycle synchronously | Change; the planner never provisions |
 | Single column enum mirroring the agent's phase | Change; discovery mark plus delivery state with two rules (kb/ADR-0002) |
@@ -180,9 +180,9 @@ A response is ok, refused with reasons, or an error with a code; writes carry a 
 
 ## Decisions
 
-**Binding records followed:** none. Neither repository has an ADR home today; creating `docs/adr/` in the planner and `adrs/` in the household knowledge base is the first task of milestone one.
+**Binding records followed:** none. The planner's home is `lore/knowledge/adrs/`; the records below are proposed there in one pull request, because Lorekeeper's lint requires records that reference each other to coexist in the home.
 
-**Proposed records.** Ten, all high tier, so each gets its own ADR-only PR and implementation waits until it is accepted. Numbers are per home and provisional until the homes exist. The executor contract is not recorded here; it is drafted when milestone two is planned. Full drafted text follows so a later session can apply each record without this conversation.
+**Proposed records.** Ten, all high tier, so implementation waits until each is accepted; they travel in one ADR-only PR and a ratifier accepts them by name. Records 1 to 5 govern the planner together with the runner and Lorekeeper; records 6 to 10 govern the planner alone and carry the shared classification only because a one-repo household has one home. The executor contract is not recorded here; it is drafted when milestone two is planned. Full drafted text follows so a later session can apply each record without this conversation.
 
 ### kb/ADR-0001
 
@@ -190,7 +190,7 @@ A response is ok, refused with reasons, or an error with a code; writes carry a 
 
 **Tier:** high
 
-**Home:** shared home (household knowledge base `adrs/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
@@ -262,7 +262,7 @@ Daniel Thyselius keeps the planner in a fresh repository named `reeve` and renam
 
 **Tier:** high
 
-**Home:** shared home (household knowledge base `adrs/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
@@ -339,7 +339,7 @@ Daniel Thyselius models work as initiative, epic and story with kinds story, bug
 
 **Tier:** high
 
-**Home:** shared home (household knowledge base `adrs/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
@@ -412,7 +412,7 @@ Daniel Thyselius computes a story's readiness on every read as: every initiative
 
 **Tier:** high
 
-**Home:** shared home (household knowledge base `adrs/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
@@ -487,7 +487,7 @@ Daniel Thyselius keeps every decision record in its repository or knowledge-base
 
 **Tier:** high
 
-**Home:** shared home (household knowledge base `adrs/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
@@ -553,18 +553,18 @@ Daniel Thyselius makes Lorekeeper's planning skills an optional capability that 
 - kb/ADR-0004, kb/ADR-0002.
 ```
 
-### reeve/ADR-0001
+### kb/ADR-0006
 
-**Title:** ADR-0001: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary
+**Title:** ADR-0006: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary
 
 **Tier:** high
 
-**Home:** local home (`reeve/docs/adr/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
-id: reeve/ADR-0001
-title: "ADR-0001: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary"
+id: kb/ADR-0006
+title: "ADR-0006: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary"
 description: "The planner server is Rust on axum and sqlx and serves a SvelteKit client built as static assets from the same binary, because Rust's compiler gives agents the fastest wrong-shape feedback, the TUI and runner are already Rust, and one container is the simplest thing to host."
 tags: [adr, reeve, stack, rust, sveltekit]
 status: proposed
@@ -573,18 +573,18 @@ decided_by: [Daniel Thyselius]
 consulted: []
 confidence: high
 reversibility: one-way
-blast_radius: repo
+blast_radius: shared
 sensitivity: []
-scope: ["crates/**", "web/**"]
+scope: ["reeve:crates/**", "reeve:web/**"]
 supersedes: []
 superseded_by:
 depends_on: []
-related: [reeve/ADR-0002, reeve/ADR-0005]
+related: [kb/ADR-0007, kb/ADR-0010]
 implements: []
 rfc:
 ---
 
-# ADR-0001: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary
+# ADR-0006: The planner is a Rust server on axum and sqlx serving a statically built SvelteKit client from the same binary
 
 ## Status
 Proposed 2026-10-25.
@@ -622,21 +622,21 @@ Daniel Thyselius builds the planner server in Rust on axum and sqlx and serves a
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0002, reeve/ADR-0005.
+- kb/ADR-0007, kb/ADR-0010.
 ```
 
-### reeve/ADR-0002
+### kb/ADR-0007
 
-**Title:** ADR-0002: PostgreSQL is the planner's datastore, accessed through sqlx
+**Title:** ADR-0007: PostgreSQL is the planner's datastore, accessed through sqlx
 
 **Tier:** high
 
-**Home:** local home (`reeve/docs/adr/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
-id: reeve/ADR-0002
-title: "ADR-0002: PostgreSQL is the planner's datastore, accessed through sqlx"
+id: kb/ADR-0007
+title: "ADR-0007: PostgreSQL is the planner's datastore, accessed through sqlx"
 description: "The planner stores everything in PostgreSQL through sqlx, replacing Reeve's SQLite-over-rusqlite, because the planner is a hosted multi-user service whose operations already run PostgreSQL and whose readiness queries join across several tables."
 tags: [adr, reeve, storage, postgres]
 status: proposed
@@ -645,18 +645,18 @@ decided_by: [Daniel Thyselius]
 consulted: []
 confidence: high
 reversibility: one-way
-blast_radius: repo
+blast_radius: shared
 sensitivity: []
-scope: ["crates/*/src/repo.rs", "migrations/**"]
+scope: ["reeve:crates/*/src/repo.rs", "reeve:migrations/**"]
 supersedes: []
 superseded_by:
-depends_on: [reeve/ADR-0001]
-related: [reeve/ADR-0001]
+depends_on: [kb/ADR-0006]
+related: [kb/ADR-0006]
 implements: []
 rfc:
 ---
 
-# ADR-0002: PostgreSQL is the planner's datastore, accessed through sqlx
+# ADR-0007: PostgreSQL is the planner's datastore, accessed through sqlx
 
 ## Status
 Proposed 2026-10-25.
@@ -678,7 +678,7 @@ Daniel Thyselius uses PostgreSQL accessed through sqlx as the planner's only dat
 
 - **R1** Every context's repository adapter MUST target PostgreSQL through sqlx; no second storage engine MAY be introduced for planning data.
 - **R2** Schema changes MUST be sqlx migrations committed with the code that needs them.
-- **R3** Each bounded context MUST own its tables; cross-context references MUST be by key or id without foreign keys, per reeve/ADR-0005.
+- **R3** Each bounded context MUST own its tables; cross-context references MUST be by key or id without foreign keys, per kb/ADR-0010.
 
 ## Consequences
 - Tests need a real PostgreSQL per run, which is slower than in-memory SQLite.
@@ -692,21 +692,21 @@ Daniel Thyselius uses PostgreSQL accessed through sqlx as the planner's only dat
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0001, reeve/ADR-0005.
+- kb/ADR-0006, kb/ADR-0010.
 ```
 
-### reeve/ADR-0003
+### kb/ADR-0008
 
-**Title:** ADR-0003: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store
+**Title:** ADR-0008: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store
 
 **Tier:** high
 
-**Home:** local home (`reeve/docs/adr/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
-id: reeve/ADR-0003
-title: "ADR-0003: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store"
+id: kb/ADR-0008
+title: "ADR-0008: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store"
 description: "The planner authenticates humans through Google OpenID Connect only, refuses emails outside configured domains and addresses, treats configured emails as admins and everyone else as members, issues interactive and automation tokens with different powers, and stores no passwords, because everyone on the team has a Google identity, an open sign-in would expose the roadmap, and automation must not pass for a person."
 tags: [adr, reeve, identity, auth, oidc, tokens]
 status: proposed
@@ -715,18 +715,18 @@ decided_by: [Daniel Thyselius]
 consulted: []
 confidence: high
 reversibility: one-way
-blast_radius: repo
+blast_radius: shared
 sensitivity: [security]
-scope: ["crates/reeve-identity/**", "crates/reeve-server/src/auth/**", "web/src/routes/auth/**"]
+scope: ["reeve:crates/reeve-identity/**", "reeve:crates/reeve-server/src/auth/**", "reeve:web/src/routes/auth/**"]
 supersedes: []
 superseded_by:
 depends_on: []
-related: [reeve/ADR-0004]
+related: [kb/ADR-0009]
 implements: []
 rfc:
 ---
 
-# ADR-0003: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store
+# ADR-0008: Users sign in with Google, gated by a configured allowlist, with admins named in configuration, two token kinds and no password store
 
 ## Status
 Proposed 2026-10-25.
@@ -763,21 +763,21 @@ Daniel Thyselius authenticates humans through Google OpenID Connect only, refuse
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0004.
+- kb/ADR-0009.
 ```
 
-### reeve/ADR-0004
+### kb/ADR-0009
 
-**Title:** ADR-0004: The planner is self-hosted, one team per instance, with no organisation or household column
+**Title:** ADR-0009: The planner is self-hosted, one team per instance, with no organisation or household column
 
 **Tier:** high
 
-**Home:** local home (`reeve/docs/adr/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
-id: reeve/ADR-0004
-title: "ADR-0004: The planner is self-hosted, one team per instance, with no organisation or household column"
+id: kb/ADR-0009
+title: "ADR-0009: The planner is self-hosted, one team per instance, with no organisation or household column"
 description: "Reeve is deployed as one self-hosted instance per team, with the key prefix, repositories and sign-in rules in configuration and no organisation or household column in the schema, because a hosted multi-organisation service and its tenant scoping are effort the product does not need and a recurring source of bugs."
 tags: [adr, reeve, deployment, tenancy, hosting]
 status: proposed
@@ -786,18 +786,18 @@ decided_by: [Daniel Thyselius]
 consulted: []
 confidence: high
 reversibility: one-way
-blast_radius: repo
+blast_radius: shared
 sensitivity: [privacy]
-scope: ["crates/**", "deploy/**"]
+scope: ["reeve:crates/**", "reeve:deploy/**"]
 supersedes: []
 superseded_by:
 depends_on: []
-related: [reeve/ADR-0003, reeve/ADR-0002]
+related: [kb/ADR-0008, kb/ADR-0007]
 implements: []
 rfc:
 ---
 
-# ADR-0004: The planner is self-hosted, one team per instance, with no organisation or household column
+# ADR-0009: The planner is self-hosted, one team per instance, with no organisation or household column
 
 ## Status
 Proposed 2026-10-25.
@@ -832,21 +832,21 @@ Daniel Thyselius ships the planner only as a self-hosted instance serving one te
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0002, reeve/ADR-0003.
+- kb/ADR-0007, kb/ADR-0008.
 ```
 
-### reeve/ADR-0005
+### kb/ADR-0010
 
-**Title:** ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
+**Title:** ADR-0010: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
 
 **Tier:** high
 
-**Home:** local home (`reeve/docs/adr/`)
+**Home:** `lore/knowledge/adrs/` (the household's single home)
 
 ```markdown
 ---
-id: reeve/ADR-0005
-title: "ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time"
+id: kb/ADR-0010
+title: "ADR-0010: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time"
 description: "The planner carries Reeve's architecture rules forward as a recorded decision with exactly three bounded contexts, planning, identity and activity, one crate each: ports defined by the consuming crate, adapters private behind factories, a CI isolation lint, no foreign keys across contexts and the handler owning the clock, because these rules exist so that parallel agents can work the codebase without colliding and more contexts than that were found to be ceremony."
 tags: [adr, reeve, architecture, crates, ports]
 status: proposed
@@ -855,18 +855,18 @@ decided_by: [Daniel Thyselius]
 consulted: []
 confidence: high
 reversibility: one-way
-blast_radius: repo
+blast_radius: shared
 sensitivity: []
-scope: ["crates/**", "Cargo.toml", "scripts/check-context-isolation.sh"]
+scope: ["reeve:crates/**", "reeve:Cargo.toml", "reeve:scripts/check-context-isolation.sh"]
 supersedes: []
 superseded_by:
-depends_on: [reeve/ADR-0001]
-related: [reeve/ADR-0002]
+depends_on: [kb/ADR-0006]
+related: [kb/ADR-0007]
 implements: []
 rfc:
 ---
 
-# ADR-0005: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
+# ADR-0010: The planner keeps one crate per bounded context, starting with planning, identity and activity, with consumer-defined ports, private adapters behind factories, no cross-context foreign keys and handler-owned time
 
 ## Status
 Proposed 2026-10-25.
@@ -905,6 +905,6 @@ Daniel Thyselius carries Reeve's architecture rules into the planner with exactl
 <!-- append-only, accepted records only; newest last -->
 
 ## See also
-- reeve/ADR-0001, reeve/ADR-0002.
+- kb/ADR-0006, kb/ADR-0007.
 ```
 
